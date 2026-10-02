@@ -42,9 +42,18 @@ identifier (`com.coolerbox.tracker`) and deep-link scheme (`tracker://`)
 live in `src-tauri/`. Capabilities (least-privilege plugin scopes) live in
 `src-tauri/capabilities/`.
 
-Auth, OAuth (Google/Xero/Frame.io), Paystack and email token links
-(`/view|/quote|/invoice|/invite`, `/cb/*`) open in the **system browser**
-and finish via `tracker://auth/callback` — Google blocks embedded WebViews.
+URL routing (`src-tauri/src/lib.rs`, unit-tested): the tracker host,
+Supabase Auth and the OAuth/billing sign-in pages stay in the WebView so the
+session lands in the app's own cookie jar; anything else opens in the
+**system browser**. Inbound `tracker://` links (`auth`, `view`, `quote`,
+`invoice`, `invite`, `cb`, `r`, `offline`) load the matching page or window.
+Google may refuse embedded WebViews — password/magic-link in the same window
+is the v1 fallback.
+
+System tray (Show Tracker / Saved for offline / Quit; left-click focuses)
+plus OS toasts on offline save/fail. Live message/approval toasts are
+parked: the shell cannot see page state, and screen-scraping the remote DOM
+is off the table without a web-side hook (out of scope for this repo).
 
 ## Release (free signing)
 

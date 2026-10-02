@@ -21,6 +21,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, Runtime, State};
+use tauri_plugin_notification::NotificationExt;
 
 use crate::webview_may_load;
 
@@ -243,6 +244,11 @@ pub(crate) fn finish_download<R: Runtime>(app: &AppHandle<R>, url: &url::Url, su
 
     if !success {
         let _ = std::fs::remove_file(&capture.dest_path);
+        notify(
+            app,
+            "Save failed",
+            &format!("{} could not be downloaded.", capture.label),
+        );
         emit_to_library(
             app,
             "offline-failed",
@@ -261,6 +267,11 @@ pub(crate) fn finish_download<R: Runtime>(app: &AppHandle<R>, url: &url::Url, su
                 .sum();
             if others_bytes.saturating_add(size) > MAX_TOTAL_BYTES {
                 let _ = std::fs::remove_file(&capture.dest_path);
+                notify(
+                    app,
+                    "Save failed",
+                    "Offline storage is full (500 MB) — delete a saved PDF first.",
+                );
                 emit_to_library(
                     app,
                     "offline-failed",
@@ -279,10 +290,16 @@ pub(crate) fn finish_download<R: Runtime>(app: &AppHandle<R>, url: &url::Url, su
             items.push(item.clone());
             match write_index(app, &items) {
                 Ok(()) => {
+                    notify(
+                        app,
+                        "Saved for offline",
+                        &format!("{} is available offline.", capture.label),
+                    );
                     emit_to_library(app, "offline-saved", serde_json::json!({ "item": item }))
                 }
                 Err(e) => {
                     let _ = std::fs::remove_file(&capture.dest_path);
+                    notify(app, "Save failed", &e);
                     emit_to_library(
                         app,
                         "offline-failed",
@@ -293,6 +310,7 @@ pub(crate) fn finish_download<R: Runtime>(app: &AppHandle<R>, url: &url::Url, su
         }
         _ => {
             let _ = std::fs::remove_file(&capture.dest_path);
+            notify(app, "Save failed", "Empty or oversized file (25 MB max).");
             emit_to_library(
                 app,
                 "offline-failed",
@@ -300,6 +318,13 @@ pub(crate) fn finish_download<R: Runtime>(app: &AppHandle<R>, url: &url::Url, su
             );
         }
     }
+}
+
+/// Best-effort OS toast. Failures are swallowed: the Library window event
+/// alongside every call site is the reliable channel, the toast is garnish
+/// (headless CI and permission-denied machines must not fail a save).
+fn notify<R: Runtime>(app: &AppHandle<R>, title: &str, body: &str) {
+    let _ = app.notification().builder().title(title).body(body).show();
 }
 
 #[tauri::command]

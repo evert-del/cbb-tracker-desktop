@@ -14,7 +14,12 @@
 //!   are translated to their hosted https equivalents and loaded in the main
 //!   window. Unknown shapes are ignored, never navigated blindly.
 
-use tauri::{webview::WebviewWindowBuilder, AppHandle, Manager, Runtime, WebviewUrl};
+use tauri::{
+    menu::{Menu, MenuItem},
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    webview::WebviewWindowBuilder,
+    AppHandle, Manager, Runtime, WebviewUrl,
+};
 use tauri_plugin_deep_link::DeepLinkExt;
 use tauri_plugin_opener::OpenerExt;
 
@@ -72,11 +77,7 @@ fn hosted_url_for_deep_link(url: &url::Url) -> Option<url::Url> {
 /// `tracker://offline` opens the Saved-for-offline library instead.
 fn route_deep_link<R: Runtime>(app: &AppHandle<R>, url: &url::Url) {
     if url.scheme() == "tracker" && url.host_str() == Some("offline") {
-        if let Some(library) = app.get_webview_window("library") {
-            let _ = library.show();
-            let _ = library.unminimize();
-            let _ = library.set_focus();
-        }
+        show_library(app);
         return;
     }
     let Some(hosted) = hosted_url_for_deep_link(url) else {
@@ -89,6 +90,24 @@ fn route_deep_link<R: Runtime>(app: &AppHandle<R>, url: &url::Url) {
     }
 }
 
+/// Bring the main window forward.
+pub(crate) fn show_main<R: Runtime>(app: &AppHandle<R>) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+}
+
+/// Bring the Saved-for-offline library forward.
+pub(crate) fn show_library<R: Runtime>(app: &AppHandle<R>) {
+    if let Some(library) = app.get_webview_window("library") {
+        let _ = library.show();
+        let _ = library.unminimize();
+        let _ = library.set_focus();
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -97,10 +116,17 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             // A second launch carrying a tracker:// URL (Windows/Linux)
             // lands here; forward it to the running window.
+            let mut routed = false;
             for arg in args {
                 if let Ok(url) = arg.parse::<url::Url>() {
-                    route_deep_link(app, &url);
+                    if url.scheme() == "tracker" {
+                        route_deep_link(app, &url);
+                        routed = true;
+                    }
                 }
+            }
+            if !routed {
+                show_main(app);
             }
         }))
         .plugin(tauri_plugin_deep_link::init())
@@ -167,6 +193,42 @@ pub fn run() {
                     route_deep_link(&link_handle, &url);
                 }
             });
+
+            // System tray: quick access without a dock/taskbar window.
+            // Live message/approval toasts are deliberately not here: the
+            // shell cannot see page state without web-side cooperation, so
+            // screen-scraping the remote DOM is off the table. The tray menu
+            // and the offline save/fail toasts below are the v1 surface.
+            let tray_show =
+                MenuItem::with_id(app, "tray-show", "Show Tracker", true, None::<&str>)?;
+            let tray_offline =
+                MenuItem::with_id(app, "tray-offline", "Saved for offline", true, None::<&str>)?;
+            let tray_quit = MenuItem::with_id(app, "tray-quit", "Quit", true, None::<&str>)?;
+            let tray_menu = Menu::with_items(app, &[&tray_show, &tray_offline, &tray_quit])?;
+            let _tray = TrayIconBuilder::new()
+                .icon(app.default_window_icon().cloned().unwrap_or_else(|| {
+                    tauri::image::Image::from_bytes(include_bytes!("../icons/32x32.png"))
+                        .expect("bundled tray icon parses")
+                }))
+                .menu(&tray_menu)
+                .tooltip("CoolerBox Tracker")
+                .on_menu_event(|app, event| match event.id.as_ref() {
+                    "tray-show" => show_main(app),
+                    "tray-offline" => show_library(app),
+                    "tray-quit" => app.exit(0),
+                    _ => {}
+                })
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        show_main(tray.app_handle());
+                    }
+                })
+                .build(app)?;
             Ok(())
         })
         .run(tauri::generate_context!())

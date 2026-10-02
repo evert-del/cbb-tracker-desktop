@@ -17,16 +17,23 @@
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    webview::WebviewWindowBuilder,
+    webview::{DownloadEvent, PageLoadEvent, WebviewWindowBuilder},
     AppHandle, Manager, Runtime, WebviewUrl,
 };
 use tauri_plugin_deep_link::DeepLinkExt;
 use tauri_plugin_opener::OpenerExt;
 
+mod notify;
 mod offline;
+
+/// Tray icon id, so the poller can update its tooltip.
+const TRAY_ID: &str = "main-tray";
 
 /// Hosted production tracker. The only remote content the WebView loads.
 const APP_ORIGIN: &str = "https://tracker.coolerboxbrothers.com";
+
+/// Bare host of the tracker, for exact-match comparisons.
+const APP_HOST: &str = "tracker.coolerboxbrothers.com";
 
 /// First screen on launch: the sign-in form, never the marketing homepage.
 /// A persisted session signs straight through from here; anyone signed out
@@ -36,10 +43,20 @@ const START_URL: &str = "https://tracker.coolerboxbrothers.com/sign-in";
 /// Hosts allowed to load inside the WebView: the app itself, Supabase Auth,
 /// and the OAuth/billing providers' sign-in pages. Everything else opens in
 /// the system browser. Deliberately explicit (allow-list, not suffix match).
+///
+/// This doubles as the iframe policy: `on_navigation` cannot tell a subframe
+/// load from a top-level one, so any host a first-party page legitimately
+/// embeds must be listed here — otherwise the frame is cancelled in-page AND
+/// flung at the system browser. Found live: cancelling the Turnstile iframe
+/// (`challenges.cloudflare.com`) silently kills every sign-in with BotCheck
+/// while the challenge URL keeps popping open externally.
 const IN_APP_HOSTS: &[&str] = &[
-    "tracker.coolerboxbrothers.com",
+    APP_HOST,
     // Supabase Auth (project-ref host of the public anon URL, not a secret).
     "wlwdhorybvelwbmhtftw.supabase.co",
+    // Turnstile bot-check widget + challenge frames (sign-in, password
+    // reset, invitation ask, sign-up email step).
+    "challenges.cloudflare.com",
     // OAuth + billing sign-in pages.
     "accounts.google.com",
     "login.xero.com",
@@ -95,6 +112,16 @@ fn route_deep_link<R: Runtime>(app: &AppHandle<R>, url: &url::Url) {
     }
 }
 
+/// True when a `document.cookie` string holds a Supabase auth-token cookie.
+/// Chunked jars (`.0`, `.1` suffixes) share the same `sb-<ref>-auth-token`
+/// name prefix, so one check covers both.
+fn has_session_cookie(cookies: &str) -> bool {
+    cookies.split("; ").any(|pair| {
+        let name = pair.split('=').next().unwrap_or("");
+        name.starts_with("sb-") && name.contains("-auth-token")
+    })
+}
+
 /// Bring the main window forward.
 pub(crate) fn show_main<R: Runtime>(app: &AppHandle<R>) {
     if let Some(window) = app.get_webview_window("main") {
@@ -137,6 +164,17 @@ pub fn run() {
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
+        // Closing the main window hides it; the app keeps running in the
+        // tray/menu bar so notifications keep arriving. Quit is in the tray
+        // menu (or Cmd+Q).
+        .on_window_event(|window, event| {
+            if window.label() == "main" {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
+        })
         .manage(std::sync::Mutex::new(None::<offline::PendingCapture>))
         .invoke_handler(tauri::generate_handler![
             offline::offline_save_pdf,
@@ -157,7 +195,9 @@ pub fn run() {
             .inner_size(1280.0, 800.0)
             .min_inner_size(1024.0, 640.0)
             .on_navigation(move |url| {
-                if webview_may_load(url) {
+                // about:blank / about:srcdoc frames are created by widgets
+                // like Turnstile and carry no network content.
+                if url.scheme() == "about" || webview_may_load(url) {
                     return true;
                 }
                 // `tracker://` URLs are delivered to route_deep_link by the
@@ -170,18 +210,40 @@ pub fn run() {
                 }
                 false
             })
-            .on_download(move |_webview, event| {
-                use tauri::webview::DownloadEvent;
-                match event {
-                    DownloadEvent::Requested { url, destination } => {
-                        offline::handle_download(&download_handle, &url, destination)
-                    }
-                    DownloadEvent::Finished { url, success, .. } => {
-                        offline::finish_download(&download_handle, &url, success);
-                        true
-                    }
-                    _ => true,
+            .on_download(move |_webview, event| match event {
+                DownloadEvent::Requested { url, destination } => {
+                    offline::handle_download(&download_handle, &url, destination)
                 }
+                DownloadEvent::Finished { url, success, .. } => {
+                    offline::finish_download(&download_handle, &url, success);
+                    true
+                }
+                _ => true,
+            })
+            .on_page_load(|window, payload| {
+                if !matches!(payload.event(), PageLoadEvent::Finished) {
+                    return;
+                }
+                let Ok(page) = payload.url().to_string().parse::<url::Url>() else {
+                    return;
+                };
+                if page.host_str() != Some(APP_HOST) || page.path() != "/sign-in" {
+                    return;
+                }
+                // Cold start with a persisted session: the Supabase
+                // auth-token cookie is script-readable, so peek at the jar
+                // and skip the form straight to the dashboard. No cookie —
+                // stay on the login screen. An expired session bounces back
+                // here through the app's own auth gate.
+                let probe = window.clone();
+                let _ = window.eval_with_callback("document.cookie", move |cookies_json| {
+                    let cookies: String = serde_json::from_str(&cookies_json).unwrap_or_default();
+                    if has_session_cookie(&cookies) {
+                        if let Ok(home) = APP_ORIGIN.parse::<url::Url>() {
+                            let _ = probe.navigate(home);
+                        }
+                    }
+                });
             })
             .build()?;
 
@@ -206,11 +268,16 @@ pub fn run() {
             // and the offline save/fail toasts below are the v1 surface.
             let tray_show =
                 MenuItem::with_id(app, "tray-show", "Show Tracker", true, None::<&str>)?;
+            let tray_notifications =
+                MenuItem::with_id(app, "tray-notifications", "Notifications", true, None::<&str>)?;
             let tray_offline =
                 MenuItem::with_id(app, "tray-offline", "Saved for offline", true, None::<&str>)?;
             let tray_quit = MenuItem::with_id(app, "tray-quit", "Quit", true, None::<&str>)?;
-            let tray_menu = Menu::with_items(app, &[&tray_show, &tray_offline, &tray_quit])?;
-            let _tray = TrayIconBuilder::new()
+            let tray_menu = Menu::with_items(
+                app,
+                &[&tray_show, &tray_notifications, &tray_offline, &tray_quit],
+            )?;
+            let _tray = TrayIconBuilder::with_id(TRAY_ID)
                 .icon(app.default_window_icon().cloned().unwrap_or_else(|| {
                     tauri::image::Image::from_bytes(include_bytes!("../icons/32x32.png"))
                         .expect("bundled tray icon parses")
@@ -219,6 +286,15 @@ pub fn run() {
                 .tooltip("CoolerBox Tracker")
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "tray-show" => show_main(app),
+                    "tray-notifications" => {
+                        if let (Some(window), Ok(url)) = (
+                            app.get_webview_window("main"),
+                            format!("{APP_ORIGIN}/notifications").parse::<url::Url>(),
+                        ) {
+                            let _ = window.navigate(url);
+                        }
+                        show_main(app);
+                    }
                     "tray-offline" => show_library(app),
                     "tray-quit" => app.exit(0),
                     _ => {}
@@ -234,6 +310,8 @@ pub fn run() {
                     }
                 })
                 .build(app)?;
+
+            notify::start(app.handle().clone());
             Ok(())
         })
         .run(tauri::generate_context!())
@@ -261,6 +339,8 @@ mod tests {
             "https://wlwdhorybvelwbmhtftw.supabase.co/auth/v1/authorize",
             "https://accounts.google.com/o/oauth2/v2/auth",
             "https://checkout.paystack.com/",
+            "https://challenges.cloudflare.com/turnstile/v0/api.js",
+            "https://challenges.cloudflare.com/cdn-cgi/challenge-platform/h/b/turnstile/f/av0/rch/ifstq/sitekey/light/fbE/new/flexible?lang=auto",
         ] {
             assert!(webview_may_load(&parsed(raw)), "{raw}");
         }
@@ -310,6 +390,19 @@ mod tests {
             "mailto:crew@example.com",
         ] {
             assert!(hosted_url_for_deep_link(&parsed(raw)).is_none(), "{raw}");
+        }
+    }
+
+    #[test]
+    fn session_cookie_probe() {
+        assert!(has_session_cookie(
+            "sb-wlwdhorybvelwbmhtftw-auth-token=eyJh; cbb_client=x"
+        ));
+        assert!(has_session_cookie(
+            "sb-wlwdhorybvelwbmhtftw-auth-token.0=aaa; sb-wlwdhorybvelwbmhtftw-auth-token.1=bbb"
+        ));
+        for bare in ["", "cbb_client=x; theme=dark", "sb-other=value"] {
+            assert!(!has_session_cookie(bare), "{bare}");
         }
     }
 }

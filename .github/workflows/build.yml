@@ -1,15 +1,19 @@
-# Builds signed/unsigned desktop installers on tag push.
+# Builds the desktop installers on GitHub.
 #
-# Release flow (free signing):
-#   git tag desktop-v1.0.0 && git push origin desktop-v1.0.0
-# macOS runner produces an ad-hoc-signed .dmg, Windows an unsigned NSIS
-# .exe, Linux a .AppImage + .deb. Artifacts attach to the GitHub Release.
+# Release:  git tag desktop-v0.2.0 && git push origin desktop-v0.2.0
+#   -> macOS (universal: Apple Silicon + Intel .dmg, ad-hoc signed),
+#      Windows (.exe NSIS installer + .msi) and Linux (.AppImage + .deb)
+#      are built and attached to a DRAFT GitHub Release. Review it, then
+#      press "Publish".
 #
-# TODO (first release): add the updater plugin + updater public key to
-# tauri.conf.json, generate the minisign keypair, store the private key as
-# the TAURI_SIGNING_PRIVATE_KEY repo secret (with password in
-# TAURI_SIGNING_PRIVATE_KEY_PASSWORD), and publish latest.json alongside
-# the installers. See README.md "Release (free signing)".
+# Test build: Actions tab -> "Build desktop installers" -> Run workflow.
+#   Builds all three platforms and keeps the installers as run artifacts
+#   (no release is created).
+#
+# TODO (auto-update): add the updater plugin + public key to tauri.conf.json,
+# generate the minisign keypair, store the private key as the
+# TAURI_SIGNING_PRIVATE_KEY repo secret (and TAURI_SIGNING_PRIVATE_KEY_PASSWORD),
+# then pass them to the build step below. See README.md "Release".
 
 name: Build desktop installers
 
@@ -19,12 +23,21 @@ on:
       - "desktop-v*"
   workflow_dispatch:
 
+permissions:
+  contents: write # create/update the draft release
+
 jobs:
   build:
     strategy:
       fail-fast: false
       matrix:
-        platform: [macos-latest, ubuntu-22.04, windows-latest]
+        include:
+          - platform: macos-latest
+            args: "--target universal-apple-darwin"
+          - platform: ubuntu-22.04
+            args: ""
+          - platform: windows-latest
+            args: ""
     runs-on: ${{ matrix.platform }}
     steps:
       - name: Checkout
@@ -38,6 +51,14 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          # Both Mac targets are needed for the universal binary.
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
 
       - name: Install Linux dependencies
         if: matrix.platform == 'ubuntu-22.04'
@@ -54,5 +75,37 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Run Rust tests
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          npm run build
+          cargo test --manifest-path src-tauri/Cargo.toml
+
       - name: Build with Tauri Action
         uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          # Tag pushes publish to a draft release; manual runs only build.
+          tagName: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
+          releaseName: ${{ startsWith(github.ref, 'refs/tags/') && format('CoolerBox Tracker {0}', github.ref_name) || '' }}
+          releaseBody: "Download the installer for your computer below. First launch shows an unsigned-app warning: Mac — right-click the app → Open; Windows — More info → Run anyway."
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}
+
+      # Manual (non-tag) runs: keep the installers so they can be downloaded
+      # from the run page for testing.
+      - name: Upload installers (manual runs)
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: installers-${{ matrix.platform }}
+          if-no-files-found: warn
+          path: |
+            src-tauri/target/release/bundle/**/*.dmg
+            src-tauri/target/release/bundle/**/*.exe
+            src-tauri/target/release/bundle/**/*.msi
+            src-tauri/target/release/bundle/**/*.AppImage
+            src-tauri/target/release/bundle/**/*.deb
+            src-tauri/target/universal-apple-darwin/release/bundle/**/*.dmg

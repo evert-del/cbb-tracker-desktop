@@ -1,0 +1,58 @@
+# Builds signed/unsigned desktop installers on tag push.
+#
+# Release flow (free signing):
+#   git tag desktop-v1.0.0 && git push origin desktop-v1.0.0
+# macOS runner produces an ad-hoc-signed .dmg, Windows an unsigned NSIS
+# .exe, Linux a .AppImage + .deb. Artifacts attach to the GitHub Release.
+#
+# TODO (first release): add the updater plugin + updater public key to
+# tauri.conf.json, generate the minisign keypair, store the private key as
+# the TAURI_SIGNING_PRIVATE_KEY repo secret (with password in
+# TAURI_SIGNING_PRIVATE_KEY_PASSWORD), and publish latest.json alongside
+# the installers. See README.md "Release (free signing)".
+
+name: Build desktop installers
+
+on:
+  push:
+    tags:
+      - "desktop-v*"
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [macos-latest, ubuntu-22.04, windows-latest]
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl wget file \
+            libxdo-dev libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build with Tauri Action
+        uses: tauri-apps/tauri-action@v0

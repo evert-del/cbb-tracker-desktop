@@ -28,6 +28,11 @@ mod offline;
 /// Hosted production tracker. The only remote content the WebView loads.
 const APP_ORIGIN: &str = "https://tracker.coolerboxbrothers.com";
 
+/// First screen on launch: the sign-in form, never the marketing homepage.
+/// A persisted session signs straight through from here; anyone signed out
+/// sees the login form immediately.
+const START_URL: &str = "https://tracker.coolerboxbrothers.com/sign-in";
+
 /// Hosts allowed to load inside the WebView: the app itself, Supabase Auth,
 /// and the OAuth/billing providers' sign-in pages. Everything else opens in
 /// the system browser. Deliberately explicit (allow-list, not suffix match).
@@ -146,7 +151,7 @@ pub fn run() {
             WebviewWindowBuilder::new(
                 app,
                 "main",
-                WebviewUrl::External(APP_ORIGIN.parse().expect("APP_ORIGIN is a valid URL")),
+                WebviewUrl::External(START_URL.parse().expect("START_URL is a valid URL")),
             )
             .title("CoolerBox Tracker")
             .inner_size(1280.0, 800.0)

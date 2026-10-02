@@ -27,7 +27,7 @@
     }
   },
   "plugins": {
-    "deepLink": {
+    "deep-link": {
       "desktop": {
         "schemes": ["tracker"]
       }

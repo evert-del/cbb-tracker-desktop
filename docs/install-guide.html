@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>CoolerBox Tracker — Desktop App Install Guide</title>
+<style>
+  @page { size: A4; margin: 18mm 16mm; }
+  :root { --blue:#0777BF; --purple:#A64EA6; --pink:#DD347C; --ink:#1f2330; --muted:#5b6070; --line:#e3e5ec; --soft:#f6f4f8; }
+  * { box-sizing: border-box; }
+  body { font: 14px/1.55 -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; color: var(--ink); margin: 0; }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 24px 20px 40px; }
+  header { background: linear-gradient(150deg, var(--blue), var(--purple) 50%, var(--pink)); color:#fff; border-radius: 14px; padding: 26px 28px; margin-bottom: 22px; }
+  header h1 { margin: 0 0 4px; font-size: 26px; letter-spacing: .2px; }
+  header p { margin: 0; opacity: .95; }
+  h2 { font-size: 19px; margin: 30px 0 8px; padding-bottom: 6px; border-bottom: 2px solid var(--line); color: var(--ink); break-after: avoid; }
+  h3 { font-size: 15px; margin: 18px 0 6px; color: var(--purple); break-after: avoid; }
+  p, li { margin: 6px 0; }
+  ol, ul { padding-left: 22px; }
+  li { padding-left: 2px; }
+  code, kbd { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; background: var(--soft); border: 1px solid var(--line); border-radius: 5px; padding: 1px 6px; font-size: 12.5px; }
+  pre { background:#1f2330; color:#f3f4f8; padding: 12px 14px; border-radius: 8px; overflow:auto; font: 12.5px/1.5 ui-monospace, Menlo, Consolas, monospace; margin: 8px 0; break-inside: avoid; }
+  .box { border:1px solid var(--line); background: var(--soft); border-radius: 10px; padding: 12px 16px; margin: 12px 0; break-inside: avoid; }
+  .box.warn { border-color:#f0c36d; background:#fff8e8; }
+  .box.ok { border-color:#a8d8b9; background:#effaf3; }
+  .box strong.t { display:block; margin-bottom: 2px; }
+  .pill { display:inline-block; font-size: 11px; font-weight:700; letter-spacing:.5px; text-transform:uppercase; color:#fff; background: var(--purple); padding: 2px 9px; border-radius: 999px; vertical-align: middle; margin-left: 6px; }
+  table { border-collapse: collapse; width:100%; margin: 10px 0; break-inside: avoid; }
+  th, td { border:1px solid var(--line); padding: 8px 10px; text-align:left; vertical-align: top; }
+  th { background: var(--soft); }
+  .toc a { color: var(--blue); text-decoration: none; }
+  .toc li { margin: 3px 0; }
+  footer { margin-top: 30px; color: var(--muted); font-size: 12px; border-top: 1px solid var(--line); padding-top: 10px; }
+  section { break-inside: auto; }
+  .platform { break-before: auto; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>CoolerBox Tracker — Desktop App</h1>
+  <p>Install guide for Windows, Mac and Linux, including what to do when your computer shows a security warning.</p>
+</header>
+
+<div class="box ok">
+  <strong class="t">Why you will see a warning</strong>
+  The desktop app has not yet been signed with the paid certificates that Microsoft and Apple sell, so your computer cannot recognise who made it. It is safe to install <em>as long as the file came straight from CoolerBox Brothers</em>. If you got the file from anywhere else, do not install it.
+</div>
+
+<h2>Jump to your computer</h2>
+<ul class="toc">
+  <li><a href="#windows">Windows 10 / 11</a></li>
+  <li><a href="#mac">Mac</a></li>
+  <li><a href="#linux">Linux (Ubuntu, Debian and others)</a></li>
+  <li><a href="#first">First launch &amp; how the app behaves</a></li>
+  <li><a href="#trouble">Troubleshooting</a></li>
+  <li><a href="#uninstall">Updating and uninstalling</a></li>
+</ul>
+
+<h2 id="windows">Windows 10 / 11</h2>
+<p>Use the file ending in <code>-setup.exe</code>. (If you were also sent an <code>.msi</code> file, ignore it unless you were told to use it.)</p>
+<ol>
+  <li>Double-click the <code>.exe</code> file you were sent.</li>
+  <li>A blue window says <strong>“Windows protected your PC”</strong>. This is the warning described above.<br>
+      Click <strong>More info</strong>, then click <strong>Run anyway</strong>.</li>
+  <li>If Windows asks <em>“Do you want to allow this app to make changes?”</em>, click <strong>Yes</strong>.</li>
+  <li>Let the installer finish. It starts the app when done. You can open it later from the Start menu: <strong>CoolerBox Tracker</strong>.</li>
+</ol>
+<div class="box warn">
+  <strong class="t">If the file will not download, or disappears</strong>
+  Your browser or antivirus may block unsigned programs. In Edge or Chrome open the downloads list, choose <strong>Keep</strong> (or <strong>Keep anyway</strong>) on the file. If Windows Security removed it, open <strong>Windows Security → Virus &amp; threat protection → Protection history</strong>, find the file and choose <strong>Restore</strong>.
+</div>
+<p>The app needs Microsoft’s <em>WebView2</em>, which is already on Windows 10 and 11. If it is missing, the installer fetches it for you (needs internet).</p>
+
+<h2 id="mac">Mac</h2>
+<p>Use the file ending in <code>.dmg</code>. It works on both newer (Apple chip) and older (Intel) Macs.</p>
+<ol>
+  <li>Double-click the <code>.dmg</code>. A window opens showing <strong>CoolerBox Tracker</strong>.</li>
+  <li>Drag <strong>CoolerBox Tracker</strong> onto the <strong>Applications</strong> folder shown next to it. Then close the window and eject the disk.</li>
+  <li>Open <strong>Applications</strong> and open <strong>CoolerBox Tracker</strong>. The first time, your Mac will refuse. Use the method for your version of macOS:</li>
+</ol>
+
+<h3>Mac with macOS 15 (Sequoia) or newer</h3>
+<ol>
+  <li>Try to open the app once. When the warning appears (“Apple could not verify…”), click <strong>Done</strong>.</li>
+  <li>Open <strong>System Settings → Privacy &amp; Security</strong>.</li>
+  <li>Scroll down to the <strong>Security</strong> section. You will see <em>“CoolerBox Tracker was blocked…”</em>. Click <strong>Open Anyway</strong>.</li>
+  <li>Enter your Mac password (or use Touch ID), then click <strong>Open Anyway</strong> again.</li>
+</ol>
+
+<h3>Older macOS (14 Sonoma or earlier)</h3>
+<ol>
+  <li>In <strong>Applications</strong>, <strong>right-click</strong> (or hold Control and click) <strong>CoolerBox Tracker</strong>.</li>
+  <li>Choose <strong>Open</strong>, then click <strong>Open</strong> in the warning box.</li>
+</ol>
+<p>You only do this once. After that the app opens normally.</p>
+
+<div class="box warn">
+  <strong class="t">If it says the app is “damaged and can’t be opened”</strong>
+  The app is not damaged — macOS adds a download flag that triggers this message. Open <strong>Terminal</strong> (press Command + Space, type <em>Terminal</em>, press Enter), paste the line below, press Enter, then open the app again:
+  <pre>xattr -cr "/Applications/CoolerBox Tracker.app"</pre>
+</div>
+
+<h2 id="linux">Linux</h2>
+<p>You were sent either an <code>.AppImage</code> (works on most distributions) or a <code>.deb</code> (Ubuntu, Debian, Linux Mint, Pop!_OS). Choose one — you do not need both.</p>
+
+<h3>Option A — AppImage (no installation)</h3>
+<ol>
+  <li>Save the file somewhere you will remember, for example your <em>Applications</em> or <em>Downloads</em> folder.</li>
+  <li>Make it runnable. In a terminal, in that folder:
+      <pre>chmod +x CoolerBox*.AppImage</pre>
+      (Or right-click the file → <strong>Properties → Permissions → Allow executing file as program</strong>.)</li>
+  <li>Double-click it, or run <code>./CoolerBox*.AppImage</code>.</li>
+</ol>
+<div class="box warn">
+  <strong class="t">If the AppImage will not start (Ubuntu 22.04 and newer)</strong>
+  AppImages need a small helper called FUSE. Install it, then try again:
+  <pre># Ubuntu 22.04
+sudo apt install libfuse2
+# Ubuntu 24.04 and newer
+sudo apt install libfuse2t64</pre>
+</div>
+
+<h3>Option B — .deb package</h3>
+<pre>sudo apt install ./CoolerBox*.deb</pre>
+<p>(Run this in the folder holding the file. <code>apt</code> will also fetch any parts the app needs.) Then open <strong>CoolerBox Tracker</strong> from your applications menu.</p>
+
+<div class="box">
+  <strong class="t">Tray icon on GNOME (Ubuntu, Fedora)</strong>
+  The app lives in the system tray when you close its window. GNOME hides tray icons by default. If you do not see it, install the <em>AppIndicator and KStatusNotifierItem Support</em> extension (search for it in the Extensions app or at extensions.gnome.org). KDE, XFCE, Cinnamon and MATE show it without extra steps.
+</div>
+
+<h2 id="first">First launch &amp; how the app behaves</h2>
+<ul>
+  <li><strong>Signing in:</strong> use your <strong>email and password</strong>. <em>“Continue with Google” does not work inside the desktop app yet</em> — please use email and password.</li>
+  <li><strong>Stay signed in:</strong> you should not need to sign in again every time you open the app.</li>
+  <li><strong>Notifications:</strong> when asked to allow notifications, choose <strong>Allow</strong>. New messages and approvals appear as a banner within about a minute, and the number of unread items shows on the app icon.<br>
+      If banners do not appear: <em>Windows</em> — Settings → System → Notifications (and turn off Focus assist / Do not disturb); <em>Mac</em> — System Settings → Notifications → CoolerBox Tracker → Allow.</li>
+  <li><strong>Closing the window does not quit the app.</strong> It keeps running in the background (system tray on Windows/Linux, menu bar on Mac) so notifications still arrive. To quit completely, click the tray/menu-bar icon and choose <strong>Quit</strong>.</li>
+  <li><strong>Downloads</strong> (PDFs, files) save to your normal <strong>Downloads</strong> folder, and a banner confirms when they finish. Some attachment links open in your web browser instead.</li>
+  <li><strong>Saved for offline:</strong> open it from the tray/menu-bar icon to keep copies of call sheets, quotes and invoices you can read without internet.</li>
+</ul>
+
+<h2 id="trouble">Troubleshooting</h2>
+<table>
+  <tr><th style="width:34%">What you see</th><th>What to try</th></tr>
+  <tr><td>“We could not confirm you are a person” when signing in</td><td>Make sure you are using the latest version of the app you were sent. Check your internet connection and try again. If it keeps happening, send us a screenshot.</td></tr>
+  <tr><td>A web browser opens by itself on launch or sign-in</td><td>You are running an older test version. Install the newest file you were sent.</td></tr>
+  <tr><td>Blank or white window</td><td>Check your internet connection (the app needs it). Quit from the tray icon, then open the app again.</td></tr>
+  <tr><td>I closed the window and can’t find the app</td><td>It is still running. Click its icon in the system tray (bottom-right on Windows, top-right menu bar on Mac) and choose <strong>Show Tracker</strong>.</td></tr>
+  <tr><td>No notification banners</td><td>See “Notifications” above — the computer’s own notification settings must allow them. The app checks about once a minute.</td></tr>
+  <tr><td>A download did nothing</td><td>Look in your <strong>Downloads</strong> folder. Some links open in your browser instead — save the file from there.</td></tr>
+  <tr><td>Mac says “damaged” or “cannot verify”</td><td>See the Mac section above (<strong>Open Anyway</strong>, or the <code>xattr</code> command).</td></tr>
+</table>
+
+<h2 id="uninstall">Updating and uninstalling</h2>
+<ul>
+  <li><strong>Website changes appear automatically.</strong> You do not need to reinstall for them.</li>
+  <li><strong>New app versions:</strong> for now, install the newer file you are sent over the old one. Your sign-in and settings are kept.</li>
+  <li><strong>Uninstall — Windows:</strong> Settings → Apps → Installed apps → CoolerBox Tracker → Uninstall.</li>
+  <li><strong>Uninstall — Mac:</strong> quit the app, then drag <strong>CoolerBox Tracker</strong> from Applications to the Bin.</li>
+  <li><strong>Uninstall — Linux:</strong> delete the AppImage file, or for the .deb run <code>sudo apt remove cooler-box-tracker</code>.</li>
+</ul>
+
+<div class="box">
+  <strong class="t">Still stuck?</strong>
+  Contact the person who sent you this file. A screenshot of what you see and the name of your computer (Windows 11, macOS 15, Ubuntu 24.04, …) helps a lot.
+</div>
+
+<footer>CoolerBox Tracker desktop app — install guide.</footer>
+</div>
+</body>
+</html>

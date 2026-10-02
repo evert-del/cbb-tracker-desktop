@@ -34,9 +34,9 @@ npm install
 npm run tauri dev   # opens the shell pointed at production
 ```
 
-The main window URL, bundle identifier (`com.coolerbox.tracker`) and
-deep-link scheme (`tracker://`) live in `src-tauri/tauri.conf.json`.
-Capabilities (least-privilege plugin scopes) live in
+The main window URL (`APP_ORIGIN` in `src-tauri/src/lib.rs`), bundle
+identifier (`com.coolerbox.tracker`) and deep-link scheme (`tracker://`)
+live in `src-tauri/`. Capabilities (least-privilege plugin scopes) live in
 `src-tauri/capabilities/`.
 
 Auth, OAuth (Google/Xero/Frame.io), Paystack and email token links

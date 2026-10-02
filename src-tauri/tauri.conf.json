@@ -11,17 +11,7 @@
   },
   "app": {
     "withGlobalTauri": true,
-    "windows": [
-      {
-        "label": "main",
-        "title": "CoolerBox Tracker",
-        "url": "https://tracker.coolerboxbrothers.com",
-        "width": 1280,
-        "height": 800,
-        "minWidth": 1024,
-        "minHeight": 640
-      }
-    ],
+    "windows": [],
     "security": {
       "csp": null
     }

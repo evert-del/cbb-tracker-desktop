@@ -57,14 +57,44 @@ is off the table without a web-side hook (out of scope for this repo).
 
 ## Release (free signing)
 
-- Tag `desktop-vX.Y.Z` → GitHub matrix builds macOS (ad-hoc-signed `.dmg`),
-  Windows (unsigned NSIS `.exe`) and Linux (GPG-signed `.AppImage` + `.deb`).
+- Tag `desktop-vX.Y.Z` → GitHub matrix builds macOS (universal, ad-hoc-signed
+  `.dmg`), Windows (unsigned NSIS `.exe` + `.msi`) and Linux (`.AppImage` +
+  `.deb`) into a **draft** release. The repo is private, so only collaborators
+  can see it; download the files from there.
 - No paid Apple/Microsoft accounts: first-run OS warnings are expected and
   documented on the download page (Mac: Right-click → Open; Windows:
-  More info → Run anyway). Auto-updates are still cryptographically verified
-  via the updater's own free minisign keypair.
+  More info → Run anyway).
 - Bundle ID and updater public key are frozen from v1 so paid signing later
   is an upgrade, not a migration.
+
+## Releasing an update (auto-update)
+
+The website itself needs no update — it loads fresh every time. Only changes
+to *this* repo (window, tray, notifications, downloads, routing) need a
+shell release. Installed apps check 30 s after launch and every 6 h, ask the
+user, then verify the bundle's signature against the public key in
+`src-tauri/tauri.conf.json` before installing.
+
+1. Bump `version` in `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml` and
+   `package.json` (must be higher than what is installed).
+2. `git tag desktop-vX.Y.Z && git push origin desktop-vX.Y.Z`; wait for the
+   build, open the draft release.
+3. Download its assets and `latest.json`, then
+   `python3 scripts/selfhost-latest-json.py latest.json https://coolerboxbrothers.com/downloads/tracker/ > latest.json.new`
+   (rewrites the GitHub URLs to our site).
+4. Upload to `https://coolerboxbrothers.com/downloads/tracker/`: the new
+   `latest.json` **last**, after the installers/update bundles (`.dmg`,
+   `.app.tar.gz`, `.exe`, `.msi`, `.AppImage`, `.deb`, and every `.sig`) so
+   nobody is offered an update whose files are not there yet.
+
+The endpoint URL is baked into every installed app — changing it later strands
+installed copies on the old URL. Confirm it before the first real rollout.
+Linux `.deb` installs do not self-update (AppImage does).
+
+Signing key: private key + password are repo secrets
+(`TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`). If the
+key is lost, installed apps can never be updated again — keep an offline copy
+in a password manager.
 
 ## Verified against
 

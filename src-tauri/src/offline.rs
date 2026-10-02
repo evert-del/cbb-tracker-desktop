@@ -14,7 +14,7 @@
 //! completion or failure is reported back to the Library window as an event.
 
 use std::{
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::Mutex,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -209,22 +209,85 @@ pub(crate) async fn offline_save_pdf<R: Runtime>(
 }
 
 /// Called from the `on_download` hook. Returns true to let the download
-/// proceed (redirected when it is our armed capture, untouched otherwise).
+/// proceed. The armed offline capture is redirected into app data; every
+/// other download goes to the user's Downloads folder (never overwriting).
 pub(crate) fn handle_download<R: Runtime>(
     app: &AppHandle<R>,
     url: &url::Url,
     destination: &mut PathBuf,
 ) -> bool {
-    let pending_guard = match app.state::<PendingState>().inner().lock() {
-        Ok(guard) => guard,
-        Err(_) => return true,
-    };
-    if let Some(capture) = pending_guard.as_ref() {
-        if capture.source_url == url.as_str() {
-            *destination = capture.dest_path.clone();
+    if let Ok(guard) = app.state::<PendingState>().inner().lock() {
+        if let Some(capture) = guard.as_ref() {
+            if capture.source_url == url.as_str() {
+                *destination = capture.dest_path.clone();
+                return true;
+            }
         }
     }
+    if let Ok(dir) = app.path().download_dir() {
+        let name = destination
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| "download".to_string());
+        *destination = unique_path(&dir, &name, &|p| p.exists());
+    }
     true
+}
+
+/// `dir/name`, or `dir/stem (1).ext`, `(2)`, … when that already exists.
+fn unique_path(dir: &Path, name: &str, exists: &dyn Fn(&Path) -> bool) -> PathBuf {
+    let first = dir.join(name);
+    if !exists(&first) {
+        return first;
+    }
+    let as_path = Path::new(name);
+    let stem = as_path
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| name.to_string());
+    let ext = as_path
+        .extension()
+        .map(|e| format!(".{}", e.to_string_lossy()))
+        .unwrap_or_default();
+    for n in 1..1000 {
+        let candidate = dir.join(format!("{stem} ({n}){ext}"));
+        if !exists(&candidate) {
+            return candidate;
+        }
+    }
+    first
+}
+
+/// True when `url` is the offline capture currently armed.
+pub(crate) fn is_capture_url<R: Runtime>(app: &AppHandle<R>, url: &url::Url) -> bool {
+    app.state::<PendingState>()
+        .inner()
+        .lock()
+        .map(|guard| {
+            guard
+                .as_ref()
+                .is_some_and(|capture| capture.source_url == url.as_str())
+        })
+        .unwrap_or(false)
+}
+
+/// Finish an ordinary (non-offline) download: tell the user where it landed.
+pub(crate) fn finish_regular_download<R: Runtime>(
+    app: &AppHandle<R>,
+    path: Option<PathBuf>,
+    success: bool,
+) {
+    if !success {
+        notify(app, "Download failed", "The file could not be downloaded.");
+        return;
+    }
+    let name = path
+        .as_deref()
+        .and_then(|p| p.file_name())
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "File".to_string());
+    notify(app, "Download complete", &format!("{name} was saved to Downloads."));
 }
 
 /// Called from the `on_download` Finished event. Finalizes a captured save.
@@ -423,5 +486,18 @@ mod tests {
         for bad in ["", "../x", "a/b", "a\\b", &"x".repeat(129)] {
             assert!(item_path(dir, bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn downloads_never_overwrite() {
+        let dir = Path::new("/dl");
+        let none = |_: &Path| false;
+        assert_eq!(unique_path(dir, "a.pdf", &none), PathBuf::from("/dl/a.pdf"));
+        let taken = |p: &Path| {
+            p == Path::new("/dl/a.pdf") || p == Path::new("/dl/a (1).pdf")
+        };
+        assert_eq!(unique_path(dir, "a.pdf", &taken), PathBuf::from("/dl/a (2).pdf"));
+        let taken_bare = |p: &Path| p == Path::new("/dl/notes");
+        assert_eq!(unique_path(dir, "notes", &taken_bare), PathBuf::from("/dl/notes (1)"));
     }
 }

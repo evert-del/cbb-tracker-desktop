@@ -25,6 +25,7 @@ use tauri_plugin_opener::OpenerExt;
 
 mod notify;
 mod offline;
+mod updater;
 
 /// Tray icon id, so the poller can update its tooltip.
 const TRAY_ID: &str = "main-tray";
@@ -75,6 +76,28 @@ pub(crate) fn webview_may_load(url: &url::Url) -> bool {
         return false;
     }
     matches!(url.host_str(), Some(host) if IN_APP_HOSTS.contains(&host))
+}
+
+/// What to do with a page-requested new window (`target="_blank"`,
+/// `window.open`). The shell never opens extra windows: first-party links
+/// load in the main window (so the session cookie is sent and attachment
+/// links like `/api/coolerbox/<id>` can redirect to their file), everything
+/// else goes to the system browser.
+#[derive(Debug, PartialEq)]
+pub(crate) enum NewWindowAction {
+    LoadInMain,
+    OpenExternal,
+    Ignore,
+}
+
+pub(crate) fn new_window_action(url: &url::Url) -> NewWindowAction {
+    if webview_may_load(url) {
+        return NewWindowAction::LoadInMain;
+    }
+    match url.scheme() {
+        "https" | "http" | "mailto" | "tel" => NewWindowAction::OpenExternal,
+        _ => NewWindowAction::Ignore,
+    }
 }
 
 /// Translate an inbound `tracker://<segment>/...` URL into its hosted https
@@ -164,6 +187,7 @@ pub fn run() {
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         // Closing the main window hides it; the app keeps running in the
         // tray/menu bar so notifications keep arriving. Quit is in the tray
         // menu (or Cmd+Q).
@@ -210,12 +234,33 @@ pub fn run() {
                 }
                 false
             })
+            .on_new_window({
+                let app = app.handle().clone();
+                move |url, _features| {
+                    match new_window_action(&url) {
+                        NewWindowAction::LoadInMain => {
+                            if let Some(main) = app.get_webview_window("main") {
+                                let _ = main.navigate(url);
+                            }
+                        }
+                        NewWindowAction::OpenExternal => {
+                            let _ = app.opener().open_url(url.as_str(), None::<&str>);
+                        }
+                        NewWindowAction::Ignore => {}
+                    }
+                    tauri::webview::NewWindowResponse::Deny
+                }
+            })
             .on_download(move |_webview, event| match event {
                 DownloadEvent::Requested { url, destination } => {
                     offline::handle_download(&download_handle, &url, destination)
                 }
-                DownloadEvent::Finished { url, success, .. } => {
-                    offline::finish_download(&download_handle, &url, success);
+                DownloadEvent::Finished { url, path, success } => {
+                    if offline::is_capture_url(&download_handle, &url) {
+                        offline::finish_download(&download_handle, &url, success);
+                    } else {
+                        offline::finish_regular_download(&download_handle, path, success);
+                    }
                     true
                 }
                 _ => true,
@@ -312,6 +357,7 @@ pub fn run() {
                 .build(app)?;
 
             notify::start(app.handle().clone());
+            updater::start(app.handle().clone());
             Ok(())
         })
         .run(tauri::generate_context!())
@@ -404,5 +450,23 @@ mod tests {
         for bare in ["", "cbb_client=x; theme=dark", "sb-other=value"] {
             assert!(!has_session_cookie(bare), "{bare}");
         }
+    }
+
+    #[test]
+    fn new_windows_route_by_host() {
+        assert_eq!(
+            new_window_action(&parsed("https://tracker.coolerboxbrothers.com/api/coolerbox/abc")),
+            NewWindowAction::LoadInMain
+        );
+        assert_eq!(
+            new_window_action(&parsed("https://files.example.com/signed?x=1")),
+            NewWindowAction::OpenExternal
+        );
+        assert_eq!(
+            new_window_action(&parsed("mailto:crew@example.com")),
+            NewWindowAction::OpenExternal
+        );
+        assert_eq!(new_window_action(&parsed("javascript:alert(1)")), NewWindowAction::Ignore);
+        assert_eq!(new_window_action(&parsed("file:///etc/passwd")), NewWindowAction::Ignore);
     }
 }

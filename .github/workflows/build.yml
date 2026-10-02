@@ -10,10 +10,11 @@
 #   Builds all three platforms and keeps the installers as run artifacts
 #   (no release is created).
 #
-# TODO (auto-update): add the updater plugin + public key to tauri.conf.json,
-# generate the minisign keypair, store the private key as the
-# TAURI_SIGNING_PRIVATE_KEY repo secret (and TAURI_SIGNING_PRIVATE_KEY_PASSWORD),
-# then pass them to the build step below. See README.md "Release".
+# Auto-update: every build also produces signed update bundles (*.sig) and,
+# on tag pushes, a latest.json manifest on the release. Installed apps read
+# latest.json from OUR website (endpoint in src-tauri/tauri.conf.json), so
+# after a release run scripts/selfhost-latest-json.py and upload the files —
+# see README.md "Releasing an update".
 
 name: Build desktop installers
 
@@ -85,6 +86,9 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Signs the auto-update bundles (public half is in tauri.conf.json).
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           # Tag pushes publish to a draft release; manual runs only build.
           tagName: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
@@ -108,4 +112,7 @@ jobs:
             src-tauri/target/release/bundle/**/*.msi
             src-tauri/target/release/bundle/**/*.AppImage
             src-tauri/target/release/bundle/**/*.deb
+            src-tauri/target/release/bundle/**/*.sig
             src-tauri/target/universal-apple-darwin/release/bundle/**/*.dmg
+            src-tauri/target/universal-apple-darwin/release/bundle/**/*.tar.gz
+            src-tauri/target/universal-apple-darwin/release/bundle/**/*.sig

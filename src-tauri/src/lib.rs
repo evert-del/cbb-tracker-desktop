@@ -18,6 +18,8 @@ use tauri::{webview::WebviewWindowBuilder, AppHandle, Manager, Runtime, WebviewU
 use tauri_plugin_deep_link::DeepLinkExt;
 use tauri_plugin_opener::OpenerExt;
 
+mod offline;
+
 /// Hosted production tracker. The only remote content the WebView loads.
 const APP_ORIGIN: &str = "https://tracker.coolerboxbrothers.com";
 
@@ -41,7 +43,7 @@ const IN_APP_HOSTS: &[&str] = &[
 const DEEP_LINK_SEGMENTS: &[&str] = &["auth", "view", "quote", "invoice", "invite", "cb", "r"];
 
 /// True when the WebView itself may load `url`.
-fn webview_may_load(url: &url::Url) -> bool {
+pub(crate) fn webview_may_load(url: &url::Url) -> bool {
     if url.scheme() != "https" {
         return false;
     }
@@ -67,7 +69,16 @@ fn hosted_url_for_deep_link(url: &url::Url) -> Option<url::Url> {
 }
 
 /// Load an inbound deep link in the main window and bring it forward.
+/// `tracker://offline` opens the Saved-for-offline library instead.
 fn route_deep_link<R: Runtime>(app: &AppHandle<R>, url: &url::Url) {
+    if url.scheme() == "tracker" && url.host_str() == Some("offline") {
+        if let Some(library) = app.get_webview_window("library") {
+            let _ = library.show();
+            let _ = library.unminimize();
+            let _ = library.set_focus();
+        }
+        return;
+    }
     let Some(hosted) = hosted_url_for_deep_link(url) else {
         return;
     };
@@ -95,8 +106,17 @@ pub fn run() {
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
+        .manage(std::sync::Mutex::new(None::<offline::PendingCapture>))
+        .invoke_handler(tauri::generate_handler![
+            offline::offline_save_pdf,
+            offline::offline_list,
+            offline::offline_open,
+            offline::offline_delete,
+            offline::offline_storage_info
+        ])
         .setup(|app| {
             let opener_handle = app.handle().clone();
+            let download_handle = app.handle().clone();
             WebviewWindowBuilder::new(
                 app,
                 "main",
@@ -118,6 +138,19 @@ pub fn run() {
                     _ => {}
                 }
                 false
+            })
+            .on_download(move |_webview, event| {
+                use tauri::webview::DownloadEvent;
+                match event {
+                    DownloadEvent::Requested { url, destination } => {
+                        offline::handle_download(&download_handle, &url, destination)
+                    }
+                    DownloadEvent::Finished { url, success, .. } => {
+                        offline::finish_download(&download_handle, &url, success);
+                        true
+                    }
+                    _ => true,
+                }
             })
             .build()?;
 

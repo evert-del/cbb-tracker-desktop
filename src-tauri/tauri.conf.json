@@ -10,8 +10,18 @@
     "frontendDist": "../dist"
   },
   "app": {
-    "withGlobalTauri": true,
-    "windows": [],
+    "withGlobalTauri": false,
+    "windows": [
+      {
+        "label": "library",
+        "title": "Saved for offline",
+        "width": 480,
+        "height": 640,
+        "minWidth": 380,
+        "minHeight": 500,
+        "visible": false
+      }
+    ],
     "security": {
       "csp": null
     }

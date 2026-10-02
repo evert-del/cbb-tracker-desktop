@@ -1,0 +1,8 @@
+# App-defined permission: the offline PDF store commands.
+# Callable only from windows granted this permission (the local "library"
+# window — never the remote main window). See src-tauri/src/offline.rs.
+
+[[permission]]
+identifier = "allow-offline-store"
+description = "Enables the Saved-for-offline store commands (save/list/open/delete/storage-info)."
+commands.allow = ["offline_save_pdf", "offline_list", "offline_open", "offline_delete", "offline_storage_info"]

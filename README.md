@@ -14,10 +14,13 @@ main window loads the production web app as its URL.
   The shell talks to the already-deployed backend over HTTPS/WSS exactly
   like a browser. `SUPABASE_SERVICE_ROLE_KEY`, R2/GCS credentials and mail
   secrets must never appear in this repo.
-- **Online-only by default, offline as explicit opt-in (v1 plan):** only
-  call-sheet PDFs and task/schedule snapshots the user explicitly saves are
-  available offline, labelled with their saved-at time, read-only.
-  Revalidated on reconnect; stale saves are marked "re-save".
+- **Online-only by default, offline as explicit opt-in:** the "Saved for
+  offline" library window (`tracker://offline`) keeps only PDFs the user
+  explicitly saves — paste a call-sheet/quota/invoice Download link, and the
+  shell downloads it through the main window's own session into app-data
+  (25 MB per file, 500 MB total). Saved copies are read-only snapshots with
+  a saved-at time, opened in the system PDF viewer. Re-save to refresh;
+  nothing syncs back. No service worker, no local database.
 
 ## Prerequisites (per https://v2.tauri.app/start/prerequisites/)
 

@@ -1,16 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the main window",
-  "windows": [
-    "main"
-  ],
-  "permissions": [
-    "core:default",
-    "opener:default",
-    "notification:default",
-    "deep-link:default",
-    "store:default",
-    "dialog:default"
-  ]
+  "description": "Remote main window (hosted tracker): no frontend IPC of any kind. All behaviour is Rust-side (navigation policy, download hook, deep links).",
+  "windows": ["main"],
+  "permissions": []
 }

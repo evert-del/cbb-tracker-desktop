@@ -87,13 +87,23 @@ user, then verify the bundle's signature against the public key in
    `package.json` (must be higher than what is installed).
 2. `git tag desktop-vX.Y.Z && git push origin desktop-vX.Y.Z`; wait for the
    build, open the draft release.
-3. Download its assets and `latest.json`, then
-   `python3 scripts/selfhost-latest-json.py latest.json https://coolerboxbrothers.com/downloads/tracker/ > latest.json.new`
-   (rewrites the GitHub URLs to our site).
-4. Upload to `https://coolerboxbrothers.com/downloads/tracker/`: the new
-   `latest.json` **last**, after the installers/update bundles (`.dmg`,
-   `.app.tar.gz`, `.exe`, `.msi`, `.AppImage`, `.deb`, and every `.sig`) so
-   nobody is offered an update whose files are not there yet.
+3. Check the draft, then **Publish** it. `publish-downloads.yml` then copies
+   the installers and update files into the tracker's R2 bucket
+   (`platform/desktop/<version>/`), writes `latest.json` (its URLs rewritten
+   by `scripts/tracker-downloads.py` to
+   `https://tracker.coolerboxbrothers.com/download/desktop/v/<version>/…`)
+   and `current.json` **last**, so nobody is offered a file that is not
+   there yet. The tracker's download page
+   (https://tracker.coolerboxbrothers.com/download and "Get the desktop app"
+   in its sidebar) shows the new version straight away. It needs the
+   `CLOUDFLARE_API_TOKEN` (R2 edit on `cbb-tracker-media` only) and
+   `CLOUDFLARE_ACCOUNT_ID` repo secrets; re-run it by hand with the tag if
+   it fails.
+
+Installed apps check the tracker's `latest.json` first, then the old
+`coolerboxbrothers.com/downloads/tracker/` address (0.2.2 and earlier only
+know that one, so they never update by themselves; install 0.2.3 by hand).
+`scripts/selfhost-latest-json.py` is kept for that old address.
 
 The endpoint URL is baked into every installed app — changing it later strands
 installed copies on the old URL. Confirm it before the first real rollout.

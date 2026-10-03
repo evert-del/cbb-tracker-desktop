@@ -78,6 +78,16 @@ pub(crate) fn webview_may_load(url: &url::Url) -> bool {
     matches!(url.host_str(), Some(host) if IN_APP_HOSTS.contains(&host))
 }
 
+/// Schemes handed to the OS when the WebView may not load them itself.
+/// `webcal` is My Schedule's "Open in Apple Calendar or Outlook" feed link.
+/// Anything else (javascript:, file:, data:, …) is dropped.
+const EXTERNAL_SCHEMES: &[&str] = &["https", "http", "mailto", "tel", "webcal"];
+
+/// True when a link the WebView will not load should open in the OS instead.
+pub(crate) fn opens_externally(url: &url::Url) -> bool {
+    EXTERNAL_SCHEMES.contains(&url.scheme())
+}
+
 /// What to do with a page-requested new window (`target="_blank"`,
 /// `window.open`). The shell never opens extra windows: first-party links
 /// load in the main window (so the session cookie is sent and attachment
@@ -94,9 +104,10 @@ pub(crate) fn new_window_action(url: &url::Url) -> NewWindowAction {
     if webview_may_load(url) {
         return NewWindowAction::LoadInMain;
     }
-    match url.scheme() {
-        "https" | "http" | "mailto" | "tel" => NewWindowAction::OpenExternal,
-        _ => NewWindowAction::Ignore,
+    if opens_externally(url) {
+        NewWindowAction::OpenExternal
+    } else {
+        NewWindowAction::Ignore
     }
 }
 
@@ -186,7 +197,15 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_notification::init())
-        .plugin(tauri_plugin_opener::init())
+        // No injected click handler: it cancels every target="_blank" link
+        // and asks the page to invoke plugin:opener|open_url, which the
+        // remote window may not (no IPC), so those links did nothing. With
+        // it off they reach on_new_window / on_navigation, as intended.
+        .plugin(
+            tauri_plugin_opener::Builder::new()
+                .open_js_links_on_click(false)
+                .build(),
+        )
         .plugin(tauri_plugin_updater::Builder::new().build())
         // Closing the main window hides it; the app keeps running in the
         // tray/menu bar so notifications keep arriving. Quit is in the tray
@@ -226,11 +245,8 @@ pub fn run() {
                 }
                 // `tracker://` URLs are delivered to route_deep_link by the
                 // deep-link plugin; anything else foreign leaves the app.
-                match url.scheme() {
-                    "https" | "http" | "mailto" | "tel" => {
-                        let _ = opener_handle.opener().open_url(url.as_str(), None::<&str>);
-                    }
-                    _ => {}
+                if opens_externally(url) {
+                    let _ = opener_handle.opener().open_url(url.as_str(), None::<&str>);
                 }
                 false
             })
@@ -464,6 +480,10 @@ mod tests {
         );
         assert_eq!(
             new_window_action(&parsed("mailto:crew@example.com")),
+            NewWindowAction::OpenExternal
+        );
+        assert_eq!(
+            new_window_action(&parsed("webcal://tracker.coolerboxbrothers.com/api/calendar/abc.ics")),
             NewWindowAction::OpenExternal
         );
         assert_eq!(new_window_action(&parsed("javascript:alert(1)")), NewWindowAction::Ignore);

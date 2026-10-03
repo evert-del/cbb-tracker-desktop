@@ -399,14 +399,12 @@ pub(crate) fn offline_list<R: Runtime>(app: AppHandle<R>) -> Result<Vec<OfflineI
 
 #[tauri::command]
 pub(crate) fn offline_open<R: Runtime>(app: AppHandle<R>, id: String) -> Result<(), String> {
-    use tauri_plugin_opener::OpenerExt;
     let dir = pdf_dir(&app)?;
     let path = item_path(&dir, &id)?;
     if !path.is_file() {
         return Err("saved file not found — it may have been deleted".to_string());
     }
-    app.opener()
-        .open_path(path.to_string_lossy().into_owned(), None::<&str>)
+    crate::system_open::open_path(&app, &path.to_string_lossy())
         .map_err(|e| format!("cannot open PDF: {e}"))
 }
 

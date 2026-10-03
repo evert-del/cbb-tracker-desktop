@@ -22,6 +22,7 @@ use tauri::{
 };
 use tauri_plugin_deep_link::DeepLinkExt;
 
+mod desktop_entry;
 mod notify;
 mod offline;
 mod system_open;
@@ -227,6 +228,8 @@ pub fn run() {
             offline::offline_storage_info
         ])
         .setup(|app| {
+            #[cfg(target_os = "linux")]
+            desktop_entry::keep_installed();
             let opener_handle = app.handle().clone();
             let download_handle = app.handle().clone();
             WebviewWindowBuilder::new(

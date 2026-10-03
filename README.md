@@ -55,6 +55,14 @@ plus OS toasts on offline save/fail. Live message/approval toasts are
 parked: the shell cannot see page state, and screen-scraping the remote DOM
 is off the table without a web-side hook (out of scope for this repo).
 
+Linux AppImage: on every start the app keeps its own launcher in
+`~/.local/share/applications/cbb-tracker-desktop.desktop` (named after the
+window's id, so the dock shows the right icon), with its icons, pointing at
+wherever the AppImage now is, and makes it the `tracker://` handler
+(`src-tauri/src/desktop_entry.rs`). A launcher of that name it didn't write is
+left alone. Keep the AppImage somewhere the user can write (e.g.
+`~/Applications`), not `/opt`, or it cannot update itself.
+
 ## Release (free signing)
 
 - Tag `desktop-vX.Y.Z` → GitHub matrix builds macOS (universal, ad-hoc-signed
@@ -89,7 +97,7 @@ user, then verify the bundle's signature against the public key in
 
 The endpoint URL is baked into every installed app — changing it later strands
 installed copies on the old URL. Confirm it before the first real rollout.
-Linux `.deb` installs do not self-update (AppImage does).
+Linux `.deb` installs do not self-update (AppImage does, if it sits where the user can write).
 
 Signing key: private key + password are repo secrets
 (`TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`). If the

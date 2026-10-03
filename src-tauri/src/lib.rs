@@ -26,6 +26,7 @@ mod desktop_entry;
 mod notify;
 mod offline;
 mod system_open;
+mod title_buttons;
 mod updater;
 
 /// Tray icon id, so the poller can update its tooltip.
@@ -230,6 +231,8 @@ pub fn run() {
         .setup(|app| {
             #[cfg(target_os = "linux")]
             desktop_entry::keep_installed();
+            #[cfg(target_os = "linux")]
+            title_buttons::follow_host(app.handle());
             let opener_handle = app.handle().clone();
             let download_handle = app.handle().clone();
             WebviewWindowBuilder::new(

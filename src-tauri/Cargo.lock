@@ -436,6 +436,7 @@ dependencies = [
 name = "cbb-tracker-desktop"
 version = "0.2.2"
 dependencies = [
+ "gtk",
  "serde",
  "serde_json",
  "tauri",

@@ -21,10 +21,10 @@ use tauri::{
     AppHandle, Manager, Runtime, WebviewUrl,
 };
 use tauri_plugin_deep_link::DeepLinkExt;
-use tauri_plugin_opener::OpenerExt;
 
 mod notify;
 mod offline;
+mod system_open;
 mod updater;
 
 /// Tray icon id, so the poller can update its tooltip.
@@ -246,7 +246,7 @@ pub fn run() {
                 // `tracker://` URLs are delivered to route_deep_link by the
                 // deep-link plugin; anything else foreign leaves the app.
                 if opens_externally(url) {
-                    let _ = opener_handle.opener().open_url(url.as_str(), None::<&str>);
+                    system_open::open_url(&opener_handle, url.as_str());
                 }
                 false
             })
@@ -260,7 +260,7 @@ pub fn run() {
                             }
                         }
                         NewWindowAction::OpenExternal => {
-                            let _ = app.opener().open_url(url.as_str(), None::<&str>);
+                            system_open::open_url(&app, url.as_str());
                         }
                         NewWindowAction::Ignore => {}
                     }

@@ -57,7 +57,7 @@ pub(crate) fn host_env(
 }
 
 /// The AppImage's mount point, when running from one on Linux.
-fn appimage_dir() -> Option<String> {
+pub(crate) fn appimage_dir() -> Option<String> {
     if !cfg!(target_os = "linux") || std::env::var_os("APPIMAGE").is_none() {
         return None;
     }

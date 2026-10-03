@@ -37,6 +37,10 @@ opt-level = 3
 panic = "abort"
 strip = true
 
+# Same GTK as Tauri's, to set the AppImage's title-bar buttons (title_buttons.rs).
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18"
+
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-single-instance = "2"
 tauri-plugin-updater = "2"

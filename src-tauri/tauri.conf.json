@@ -37,6 +37,7 @@
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IENDRUE2MUJGM0U3ODY2NDMKUldSRFpuZyt2MkhxekY1Snp2aTJPb2hMdmh3UDNQanVIZkVYRis3eHBLdzdpeFU2QkdBdysreksK",
       "endpoints": [
+        "https://tracker.coolerboxbrothers.com/download/desktop/latest.json",
         "https://coolerboxbrothers.com/downloads/tracker/latest.json"
       ],
       "windows": {

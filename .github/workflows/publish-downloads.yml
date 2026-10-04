@@ -1,0 +1,75 @@
+# Puts a published release on the tracker's download page.
+#
+# When a release is published (or by hand for a tag), its installers and
+# update files are copied into the tracker's R2 bucket under
+# platform/desktop/<version>/, then latest.json (the updater file) and
+# current.json (the manifest the tracker reads) are written LAST, so nobody
+# is offered a file that isn't there yet. The tracker serves them at
+# https://tracker.coolerboxbrothers.com/download (tracker repo:
+# src/lib/desktop-app.ts, src/app/download/desktop/[...path]/route.ts).
+#
+# Needs two repo secrets: CLOUDFLARE_API_TOKEN (R2 edit on the
+# cbb-tracker-media bucket only) and CLOUDFLARE_ACCOUNT_ID.
+
+name: Publish to the tracker's download page
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag, e.g. desktop-v0.2.3"
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-downloads
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      BUCKET: cbb-tracker-media
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check the secrets are set
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "::error::Add the CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID repo secrets first."
+            exit 1
+          fi
+          case "$TAG" in desktop-v*) ;; *) echo "::error::$TAG is not a desktop-vX.Y.Z tag"; exit 1 ;; esac
+
+      - name: Download the release's files
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download "$TAG" --dir dist
+
+      - name: Prepare the manifest and updater file
+        run: python3 scripts/tracker-downloads.py dist "${TAG#desktop-v}" out
+
+      - name: Upload the files, then latest.json, then current.json
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#desktop-v}"
+          put() { npx --yes wrangler@4 r2 object put "$BUCKET/platform/desktop/$1" --file "$2" --content-type "$3" --remote; }
+          while read -r name; do
+            [ -n "$name" ] && put "$VERSION/$name" "dist/$name" application/octet-stream
+          done < out/uploads.txt
+          put latest.json out/latest.json application/json
+          put current.json out/current.json application/json
+
+      - name: Check the tracker serves it
+        run: |
+          set -euo pipefail
+          sleep 5
+          curl -fsS https://tracker.coolerboxbrothers.com/download/desktop/current.json | python3 -c 'import json,sys; m=json.load(sys.stdin); print("Live:", m["version"])'

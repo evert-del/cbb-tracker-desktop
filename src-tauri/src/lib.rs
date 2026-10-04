@@ -241,6 +241,12 @@ pub fn run() {
                 WebviewUrl::External(START_URL.parse().expect("START_URL is a valid URL")),
             )
             .title("CoolerBox Tracker")
+            // Lets the tracker know it is inside the app (it hides "Get the
+            // desktop app"). A plain value on the page, not IPC.
+            .initialization_script(&format!(
+                "window.cbbDesktopApp=Object.freeze({{version:{:?}}});",
+                env!("CARGO_PKG_VERSION")
+            ))
             .inner_size(1280.0, 800.0)
             .min_inner_size(1024.0, 640.0)
             .on_navigation(move |url| {

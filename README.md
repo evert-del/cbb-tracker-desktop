@@ -95,10 +95,11 @@ user, then verify the bundle's signature against the public key in
    and `current.json` **last**, so nobody is offered a file that is not
    there yet. The tracker's download page
    (https://tracker.coolerboxbrothers.com/download and "Get the desktop app"
-   in its sidebar) shows the new version straight away. It needs the
-   `CLOUDFLARE_API_TOKEN` (R2 edit on `cbb-tracker-media` only) and
-   `CLOUDFLARE_ACCOUNT_ID` repo secrets; re-run it by hand with the tag if
-   it fails.
+   in its sidebar) shows the new version straight away. It uploads through
+   R2's S3 API with an R2 Account API token limited to `cbb-tracker-media`
+   (Object Read & Write): repo secrets `R2_ACCESS_KEY_ID`,
+   `R2_SECRET_ACCESS_KEY` and `CLOUDFLARE_ACCOUNT_ID`. Re-run it by hand
+   with the tag if it fails.
 
 Installed apps check the tracker's `latest.json` first, then the old
 `coolerboxbrothers.com/downloads/tracker/` address (0.2.2 and earlier only

@@ -53,13 +53,19 @@ is the v1 fallback.
 Time sheet (`src-tauri/src/idle.rs`, unit-tested): the shell reads only how
 long the computer has had no keyboard or mouse input (Windows
 GetLastInputInfo, macOS CGEventSource, GNOME's idle monitor over D-Bus on
-Linux; a sleep counts too). When someone is back after 5 minutes or more it
+Linux, else KDE Plasma's org.freedesktop.ScreenSaver; a sleep counts too). When someone is back after 5 minutes or more it
 evals a `cbb:away` event ({from, to} in ms) into the tracker page, which asks
 them keep / break / wrapped only if they are called in. Nothing else is read,
 stored or sent. `window.cbbDesktopApp.idleSupported` says whether input idle
 can be read here.
 
-System tray (Show Tracker / Saved for offline / Quit; left-click focuses)
+System tray: the time sheet's clock first (`src-tauri/src/clock.rs`, unit-
+tested): "Time sheet: Called in since 08:02", then Call in / Break / Back from
+break / Wrap, enabled as they make sense. It asks the page to fetch and post
+the tracker's own `/api/time-sheet/clock` with its session (no IPC, like the
+notifications), and tells the page (`cbb:clock-changed`) so its clock catches
+up. Calling in before the notice is read opens the tracker's clock instead.
+Then Show Tracker / Saved for offline / Quit; left-click focuses
 plus OS toasts on offline save/fail. Live message/approval toasts are
 parked: the shell cannot see page state, and screen-scraping the remote DOM
 is off the table without a web-side hook (out of scope for this repo).

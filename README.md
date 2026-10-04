@@ -50,6 +50,15 @@ session lands in the app's own cookie jar; anything else opens in the
 Google may refuse embedded WebViews — password/magic-link in the same window
 is the v1 fallback.
 
+Time sheet (`src-tauri/src/idle.rs`, unit-tested): the shell reads only how
+long the computer has had no keyboard or mouse input (Windows
+GetLastInputInfo, macOS CGEventSource, GNOME's idle monitor over D-Bus on
+Linux; a sleep counts too). When someone is back after 5 minutes or more it
+evals a `cbb:away` event ({from, to} in ms) into the tracker page, which asks
+them keep / break / wrapped only if they are called in. Nothing else is read,
+stored or sent. `window.cbbDesktopApp.idleSupported` says whether input idle
+can be read here.
+
 System tray (Show Tracker / Saved for offline / Quit; left-click focuses)
 plus OS toasts on offline save/fail. Live message/approval toasts are
 parked: the shell cannot see page state, and screen-scraping the remote DOM

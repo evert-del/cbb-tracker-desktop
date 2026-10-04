@@ -15,9 +15,9 @@
 //! `window.cbbLastAway` for a page that was mid-navigation.
 //!
 //! Idle time comes from the OS: GetLastInputInfo on Windows,
-//! CGEventSourceSecondsSinceLastEventType on macOS, and GNOME's idle monitor
-//! over D-Bus on Linux. Everywhere, a gap between polls (the computer slept)
-//! counts as time away too.
+//! CGEventSourceSecondsSinceLastEventType on macOS, and on Linux GNOME's idle
+//! monitor over D-Bus, else KDE Plasma's org.freedesktop.ScreenSaver. Everywhere,
+//! a gap between polls (the computer slept) counts as time away too.
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -117,6 +117,15 @@ pub(crate) fn idle_seconds() -> Option<u64> {
 
 #[cfg(target_os = "linux")]
 pub(crate) fn idle_seconds() -> Option<u64> {
+    gnome_idle_seconds().or_else(|| {
+        // Only on KDE: other desktops' GetSessionIdleTime answer differently.
+        let desktop = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default();
+        is_kde(&desktop).then(kde_idle_seconds).flatten()
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn gnome_idle_seconds() -> Option<u64> {
     let output = std::process::Command::new("gdbus")
         .args([
             "call",
@@ -139,6 +148,50 @@ pub(crate) fn idle_seconds() -> Option<u64> {
 #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
 pub(crate) fn idle_seconds() -> Option<u64> {
     None
+}
+
+/// KDE Plasma's screen locker. Its GetSessionIdleTime hands back KIdleTime's
+/// value unchanged, which is milliseconds whatever the interface's argument
+/// is called (kscreenlocker interface.cpp).
+#[cfg(target_os = "linux")]
+fn kde_idle_seconds() -> Option<u64> {
+    let output = std::process::Command::new("gdbus")
+        .args([
+            "call",
+            "--session",
+            "--dest",
+            "org.freedesktop.ScreenSaver",
+            "--object-path",
+            "/org/freedesktop/ScreenSaver",
+            "--method",
+            "org.freedesktop.ScreenSaver.GetSessionIdleTime",
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    parse_kde_idle(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// "KDE" anywhere in XDG_CURRENT_DESKTOP ("KDE", "KDE:plasma").
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) fn is_kde(desktop: &str) -> bool {
+    desktop.split(':').any(|part| part.eq_ignore_ascii_case("kde"))
+}
+
+/// KDE answers "(uint32 125300,)", in milliseconds.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) fn parse_kde_idle(raw: &str) -> Option<u64> {
+    let digits: String = raw
+        .trim()
+        .trim_start_matches('(')
+        .trim_start_matches("uint32")
+        .trim()
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    digits.parse::<u64>().ok().map(|ms| ms / 1000)
 }
 
 /// GNOME answers "(uint64 12345,)" in milliseconds.
@@ -238,6 +291,16 @@ mod tests {
         assert!(script.contains("from:10000,to:20000"));
         assert!(script.contains("window.cbbLastAway=d"));
         assert!(script.contains("new CustomEvent('cbb:away',{detail:d})"));
+    }
+
+    #[test]
+    fn reads_kdes_answer_as_milliseconds() {
+        assert_eq!(parse_kde_idle("(uint32 125300,)\n"), Some(125));
+        assert_eq!(parse_kde_idle("Error: no such service"), None);
+        assert!(is_kde("KDE"));
+        assert!(is_kde("KDE:plasma"));
+        assert!(!is_kde("GNOME"));
+        assert!(!is_kde("ubuntu:GNOME"));
     }
 
     #[test]

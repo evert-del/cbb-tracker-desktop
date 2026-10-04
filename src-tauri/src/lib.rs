@@ -15,13 +15,14 @@
 //!   window. Unknown shapes are ignored, never navigated blindly.
 
 use tauri::{
-    menu::{Menu, MenuItem},
+    menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     webview::{DownloadEvent, PageLoadEvent, WebviewWindowBuilder},
     AppHandle, Manager, Runtime, WebviewUrl,
 };
 use tauri_plugin_deep_link::DeepLinkExt;
 
+mod clock;
 mod desktop_entry;
 mod idle;
 mod notify;
@@ -352,10 +353,25 @@ pub fn run() {
             let tray_offline =
                 MenuItem::with_id(app, "tray-offline", "Saved for offline", true, None::<&str>)?;
             let tray_quit = MenuItem::with_id(app, "tray-quit", "Quit", true, None::<&str>)?;
+            // The time sheet's clock (clock.rs): a line saying where you are,
+            // then the four taps, enabled as they make sense.
+            let clock_items = clock::Items {
+                status: MenuItem::with_id(app, "clock-status", "Time sheet: not in use", false, None::<&str>)?,
+                call_in: MenuItem::with_id(app, "clock-in", "Call in", false, None::<&str>)?,
+                take_break: MenuItem::with_id(app, "clock-break", "Break", false, None::<&str>)?,
+                back: MenuItem::with_id(app, "clock-back", "Back from break", false, None::<&str>)?,
+                wrap: MenuItem::with_id(app, "clock-wrap", "Wrap", false, None::<&str>)?,
+            };
+            let separator = PredefinedMenuItem::separator(app)?;
             let tray_menu = Menu::with_items(
                 app,
-                &[&tray_show, &tray_notifications, &tray_offline, &tray_quit],
+                &[
+                    &clock_items.status, &clock_items.call_in, &clock_items.take_break, &clock_items.back,
+                    &clock_items.wrap, &separator, &tray_show, &tray_notifications, &tray_offline, &tray_quit,
+                ],
             )?;
+            app.manage(clock_items);
+            app.manage(clock::Last::default());
             let _tray = TrayIconBuilder::with_id(TRAY_ID)
                 .icon(app.default_window_icon().cloned().unwrap_or_else(|| {
                     tauri::image::Image::from_bytes(include_bytes!("../icons/32x32.png"))
@@ -375,6 +391,10 @@ pub fn run() {
                         show_main(app);
                     }
                     "tray-offline" => show_library(app),
+                    "clock-in" => clock::act(app, "in"),
+                    "clock-break" => clock::act(app, "break"),
+                    "clock-back" => clock::act(app, "back"),
+                    "clock-wrap" => clock::act(app, "wrap"),
                     "tray-quit" => app.exit(0),
                     _ => {}
                 })
@@ -392,6 +412,7 @@ pub fn run() {
 
             notify::start(app.handle().clone());
             idle::start(app.handle().clone());
+            clock::start(app.handle().clone());
             updater::start(app.handle().clone());
             Ok(())
         })

@@ -23,6 +23,7 @@ use tauri::{
 use tauri_plugin_deep_link::DeepLinkExt;
 
 mod desktop_entry;
+mod idle;
 mod notify;
 mod offline;
 mod system_open;
@@ -234,6 +235,9 @@ pub fn run() {
             #[cfg(target_os = "linux")]
             title_buttons::follow_host(app.handle());
             let opener_handle = app.handle().clone();
+            // Whether time away can be read from input here (not only from
+            // sleep), so the tracker knows its "you were away" prompt is real.
+            let idle_supported = idle::supported();
             let download_handle = app.handle().clone();
             WebviewWindowBuilder::new(
                 app,
@@ -242,10 +246,12 @@ pub fn run() {
             )
             .title("CoolerBox Tracker")
             // Lets the tracker know it is inside the app (it hides "Get the
-            // desktop app"). A plain value on the page, not IPC.
+            // desktop app"), and whether the shell reports time away for the
+            // time sheet (idle.rs). Plain values on the page, not IPC.
             .initialization_script(&format!(
-                "window.cbbDesktopApp=Object.freeze({{version:{:?}}});",
-                env!("CARGO_PKG_VERSION")
+                "window.cbbDesktopApp=Object.freeze({{version:{:?},idleSupported:{}}});",
+                env!("CARGO_PKG_VERSION"),
+                idle_supported
             ))
             .inner_size(1280.0, 800.0)
             .min_inner_size(1024.0, 640.0)
@@ -385,6 +391,7 @@ pub fn run() {
                 .build(app)?;
 
             notify::start(app.handle().clone());
+            idle::start(app.handle().clone());
             updater::start(app.handle().clone());
             Ok(())
         })

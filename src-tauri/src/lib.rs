@@ -24,6 +24,7 @@ use tauri_plugin_deep_link::DeepLinkExt;
 
 mod clock;
 mod desktop_entry;
+mod diagnostics;
 mod download;
 mod idle;
 mod mini;
@@ -352,11 +353,6 @@ pub fn run() {
             // window's own session. No on-page buttons: the tracker page is
             // left exactly as the website made it.
             .initialization_script(include_str!("nav_bar.js"))
-            // Clock pill (clock_pill.js): the site only paints the trigger's
-            // light background on :hover, leaving the elapsed text invisible
-            // on the dark header. Force the hover look until the site fix
-            // lands. Desktop-shell only; harmless afterwards.
-            .initialization_script(include_str!("clock_pill.js"))
             .inner_size(1280.0, 800.0)
             .min_inner_size(1024.0, 640.0)
             .on_navigation(move |url| {
@@ -501,7 +497,8 @@ pub fn run() {
                 MenuItem::with_id(app, "tray-mini", "Mini bar", true, None::<&str>)?;
             let tray_update =
                 MenuItem::with_id(app, "tray-update", "Check for updates", true, None::<&str>)?;
-            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            let tray_diagnostics =
+                MenuItem::with_id(app, "tray-diagnostics", "Diagnostics", true, None::<&str>)?;            #[cfg(not(any(target_os = "android", target_os = "ios")))]
             let tray_autostart = {
                 MenuItem::with_id(
                     app,
@@ -528,7 +525,7 @@ pub fn run() {
                 &[
                     &clock_items.status, &clock_items.call_in, &clock_items.take_break, &clock_items.back,
                     &clock_items.wrap, &separator, &tray_show, &tray_notifications, &inbox_1, &inbox_2, &inbox_3,
-                    &separator2, &tray_offline, &tray_mini, &tray_update,
+                    &separator2, &tray_offline, &tray_mini, &tray_update, &tray_diagnostics,
                     #[cfg(not(any(target_os = "android", target_os = "ios")))]
                     &tray_autostart,
                     &tray_quit,
@@ -536,6 +533,7 @@ pub fn run() {
             )?;
             app.manage(clock_items);
             app.manage(clock::Last::default());
+            app.manage(clock::Net::default());
             app.manage(notify::Unread(std::sync::Mutex::new(0)));
             app.manage(notify::Snapshot::default());
             app.manage(notify::InboxItems {
@@ -566,10 +564,13 @@ pub fn run() {
                 let _ = app.global_shortcut().register(panel);
             }
             let _tray = TrayIconBuilder::with_id(TRAY_ID)
-                .icon(app.default_window_icon().cloned().unwrap_or_else(|| {
-                    tauri::image::Image::from_bytes(include_bytes!("../icons/32x32.png"))
-                        .expect("bundled tray icon parses")
-                }))
+                // Monochrome template icon (tray-icon.png): no backdrop, the
+                // OS tints it white/black for the user's light/dark menu bar.
+                .icon(
+                    tauri::image::Image::from_bytes(include_bytes!("../icons/tray-icon.png"))
+                        .expect("bundled tray icon parses"),
+                )
+                .icon_as_template(true)
                 .menu(&tray_menu)
                 .tooltip("CoolerBox Tracker")
                 .on_menu_event(|app, event| match event.id.as_ref() {
@@ -592,6 +593,7 @@ pub fn run() {
                     "clock-back" => clock::act(app, "back"),
                     "clock-wrap" => clock::act(app, "wrap"),
                     "tray-update" => updater::check_now(app.clone()),
+                    "tray-diagnostics" => diagnostics::show(app),
                     "tray-autostart" => {
                         #[cfg(not(any(target_os = "android", target_os = "ios")))]
                         {
@@ -741,6 +743,10 @@ mod tests {
         );
         assert_eq!(
             new_window_action(&parsed("https://tracker.coolerboxbrothers.com/api/media/k%2Fx.png")),
+            NewWindowAction::SaveFile
+        );
+        assert_eq!(
+            new_window_action(&parsed("https://tracker.coolerboxbrothers.com/api/attachments/xyz/download")),
             NewWindowAction::SaveFile
         );
         assert_eq!(

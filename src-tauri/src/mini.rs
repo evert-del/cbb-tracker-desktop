@@ -299,6 +299,7 @@ mod tests {
             state: state.into(),
             since: since.into(),
             since_iso: "2026-10-05T06:00:00.000Z".into(),
+            today: Vec::new(),
             notice: false,
         }
     }

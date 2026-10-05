@@ -96,7 +96,12 @@
     toastEl = box;
   };
 
-  var FILE_PREFIXES = ['/api/media/', '/api/coolerbox/'];
+  // Must mirror FILE_PREFIXES in download.rs: every /api/ route that serves
+  // bytes. Page and action routes stay out so they keep loading normally.
+  var FILE_PREFIXES = ['/api/media/', '/api/coolerbox/', '/api/attachments/',
+    '/api/call-sheets/', '/api/clients/', '/api/gear/', '/api/gazebo/',
+    '/api/limbo/item/', '/api/cb/asset/', '/api/agency/media/',
+    '/api/casting/media/', '/api/casting/selftape/'];
 
   function isFileUrl(u) {
     if (u.origin !== location.origin) return false;

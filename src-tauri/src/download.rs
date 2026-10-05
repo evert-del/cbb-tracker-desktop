@@ -36,8 +36,25 @@ const MAX_SAVED: usize = 50;
 /// How often the progress message is refreshed.
 const PROGRESS_EVERY: Duration = Duration::from_millis(250);
 
-/// First path segments of the app's file routes.
-const FILE_PREFIXES: &[&str] = &["/api/media/", "/api/coolerbox/"];
+/// First path segments of the app's file routes: every `/api/` route that
+/// serves bytes (attachments, call-sheet PDFs, brand docs, gear files,
+/// media, casting self-tapes). Page and action routes (`/projects/…`,
+/// `/api/walkie/…/send`, …) are deliberately absent: those keep loading in
+/// the window.
+const FILE_PREFIXES: &[&str] = &[
+    "/api/media/",
+    "/api/coolerbox/",
+    "/api/attachments/",
+    "/api/call-sheets/",
+    "/api/clients/",
+    "/api/gear/",
+    "/api/gazebo/",
+    "/api/limbo/item/",
+    "/api/cb/asset/",
+    "/api/agency/media/",
+    "/api/casting/media/",
+    "/api/casting/selftape/",
+];
 
 /// True for a first-party file URL the shell should save rather than show.
 pub(crate) fn is_file_url(url: &url::Url) -> bool {
@@ -297,12 +314,19 @@ mod tests {
         for raw in [
             "https://tracker.coolerboxbrothers.com/api/media/k%2Fx.png",
             "https://tracker.coolerboxbrothers.com/api/coolerbox/abc",
+            "https://tracker.coolerboxbrothers.com/api/attachments/xyz/download",
+            "https://tracker.coolerboxbrothers.com/api/call-sheets/1/pdf",
+            "https://tracker.coolerboxbrothers.com/api/clients/1/brand-documents/a/download",
+            "https://tracker.coolerboxbrothers.com/api/gear/2/file?kind=photo",
+            "https://tracker.coolerboxbrothers.com/api/casting/selftape/9",
         ] {
             assert!(is_file_url(&parsed(raw)), "{raw}");
         }
         for raw in [
             "https://tracker.coolerboxbrothers.com/projects/1",
             "https://tracker.coolerboxbrothers.com/api/walkie/1/send",
+            "https://tracker.coolerboxbrothers.com/api/time-sheet/clock",
+            "https://tracker.coolerboxbrothers.com/api/notifications/recent",
             "https://evil.example/api/media/x",
             "http://tracker.coolerboxbrothers.com/api/media/x",
         ] {

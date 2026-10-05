@@ -236,7 +236,7 @@ pub(crate) fn handle_download<R: Runtime>(
 }
 
 /// `dir/name`, or `dir/stem (1).ext`, `(2)`, … when that already exists.
-fn unique_path(dir: &Path, name: &str, exists: &dyn Fn(&Path) -> bool) -> PathBuf {
+pub(crate) fn unique_path(dir: &Path, name: &str, exists: &dyn Fn(&Path) -> bool) -> PathBuf {
     let first = dir.join(name);
     if !exists(&first) {
         return first;

@@ -1,5 +1,5 @@
 // Back / Download buttons for the desktop shell. Injected into the main
-// window only (plain DOM, no IPC). Back appears whenever there is history to
+// window and the viewer windows files open in (plain DOM, no IPC). Back appears whenever there is history to
 // go back to; Download appears on a file page (an attachment opened in the
 // app) and saves it through the same-origin download hook -> Downloads.
 (function () {
@@ -55,11 +55,21 @@
   }
 
   function place() {
-    // On the tracker's own pages keep clear of the sidebar; on a bare file
-    // page there is no layout, so sit in the corner.
+    // On a file page sit bottom-right: the PDF viewer's own toolbar runs
+    // along the top. On the tracker's own pages keep clear of the sidebar.
+    if (isFilePage()) {
+      bar.style.top = 'auto';
+      bar.style.left = 'auto';
+      bar.style.bottom = '16px';
+      bar.style.right = '16px';
+      return;
+    }
+    bar.style.top = '14px';
+    bar.style.bottom = 'auto';
+    bar.style.right = 'auto';
     var sidebar = document.querySelector('.gd-sidebar');
     var left = 12;
-    if (!isFilePage() && sidebar) {
+    if (sidebar) {
       var r = sidebar.getBoundingClientRect();
       if (r.width > 0) left = Math.round(r.right) + 14;
     }

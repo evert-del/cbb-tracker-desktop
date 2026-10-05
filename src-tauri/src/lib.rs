@@ -14,6 +14,10 @@
 //!   are translated to their hosted https equivalents and loaded in the main
 //!   window. Unknown shapes are ignored, never navigated blindly.
 
+use std::sync::{
+    atomic::{AtomicBool, AtomicUsize, Ordering},
+    Arc,
+};
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -93,25 +97,140 @@ pub(crate) fn opens_externally(url: &url::Url) -> bool {
 }
 
 /// What to do with a page-requested new window (`target="_blank"`,
-/// `window.open`). The shell never opens extra windows: first-party links
-/// load in the main window (so the session cookie is sent and attachment
-/// links like `/api/coolerbox/<id>` can redirect to their file), everything
-/// else goes to the system browser.
+/// `window.open`). First-party links open in a viewer window of our own
+/// (`open_viewer`), the app's stand-in for a browser tab: it shares the
+/// app's cookie jar, so attachment links like `/api/coolerbox/<id>` still
+/// redirect to their file, and closing it leaves the tracker where it was.
+/// Loading them in the main window instead replaced the tracker with the
+/// file and left no way back (a PDF from the Coolerbox, a referral QR's SVG).
+/// Everything else goes to the system browser.
 #[derive(Debug, PartialEq)]
 pub(crate) enum NewWindowAction {
-    LoadInMain,
+    OpenViewer,
     OpenExternal,
     Ignore,
 }
 
 pub(crate) fn new_window_action(url: &url::Url) -> NewWindowAction {
     if webview_may_load(url) {
-        return NewWindowAction::LoadInMain;
+        return NewWindowAction::OpenViewer;
     }
     if opens_externally(url) {
         NewWindowAction::OpenExternal
     } else {
         NewWindowAction::Ignore
+    }
+}
+
+/// Navigation policy shared by every window showing the hosted tracker.
+fn allow_navigation<R: Runtime>(app: &AppHandle<R>, url: &url::Url) -> bool {
+    // about:blank / about:srcdoc frames are created by widgets like
+    // Turnstile and carry no network content.
+    if url.scheme() == "about" || webview_may_load(url) {
+        return true;
+    }
+    // `tracker://` URLs are delivered to route_deep_link by the deep-link
+    // plugin; anything else foreign leaves the app.
+    if opens_externally(url) {
+        system_open::open_url(app, url.as_str());
+    }
+    false
+}
+
+/// Act on a page-requested new window from any of our windows.
+fn route_new_window<R: Runtime>(app: &AppHandle<R>, url: url::Url) {
+    match new_window_action(&url) {
+        NewWindowAction::OpenViewer => {
+            // Never build a window inside the WebView's own callback: on
+            // Windows that deadlocks. Hand it to another thread.
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move { open_viewer(&app, url) });
+        }
+        NewWindowAction::OpenExternal => system_open::open_url(app, url.as_str()),
+        NewWindowAction::Ignore => {}
+    }
+}
+
+/// Tell the user where a download landed, or finalize an offline capture.
+fn finish_any_download<R: Runtime>(
+    app: &AppHandle<R>,
+    url: &url::Url,
+    path: Option<std::path::PathBuf>,
+    success: bool,
+) {
+    if offline::is_capture_url(app, url) {
+        offline::finish_download(app, url, success);
+    } else {
+        offline::finish_regular_download(app, path, success);
+    }
+}
+
+/// Window label for the `n`th viewer.
+fn viewer_label(n: usize) -> String {
+    format!("viewer-{n}")
+}
+
+static NEXT_VIEWER: AtomicUsize = AtomicUsize::new(1);
+
+/// Open a first-party link in its own window, like a browser tab would.
+/// Same navigation policy and download hook as the main window, plus the
+/// Back / Download bar (nav_bar.js), but none of main's start-up work.
+fn open_viewer<R: Runtime>(app: &AppHandle<R>, url: url::Url) {
+    let label = viewer_label(NEXT_VIEWER.fetch_add(1, Ordering::Relaxed));
+    // A link served as an attachment (audio, video, an SVG from the
+    // Coolerbox) downloads instead of showing, which would leave this
+    // window blank. Whether anything had finished loading is read when the
+    // download is *requested*, because WebKitGTK reports the interrupted
+    // load as finished after that. The bar's own Download, on a shown file,
+    // leaves the window open.
+    let shown = Arc::new(AtomicBool::new(false));
+    let blank_download = Arc::new(AtomicBool::new(false));
+    let nav_app = app.clone();
+    let popup_app = app.clone();
+    let download_app = app.clone();
+    let shown_on_load = shown.clone();
+    let own_label = label.clone();
+    let built = WebviewWindowBuilder::new(app, label, WebviewUrl::External(url.clone()))
+        .title("CoolerBox Tracker")
+        .initialization_script(include_str!("nav_bar.js"))
+        .inner_size(1100.0, 800.0)
+        .min_inner_size(480.0, 360.0)
+        .focused(true)
+        .on_navigation(move |url| allow_navigation(&nav_app, url))
+        .on_new_window(move |url, _features| {
+            route_new_window(&popup_app, url);
+            tauri::webview::NewWindowResponse::Deny
+        })
+        .on_page_load(move |_window, payload| {
+            if matches!(payload.event(), PageLoadEvent::Finished) {
+                shown_on_load.store(true, Ordering::Relaxed);
+            }
+        })
+        .on_download(move |_webview, event| match event {
+            DownloadEvent::Requested { url, destination } => {
+                if !shown.load(Ordering::Relaxed) {
+                    blank_download.store(true, Ordering::Relaxed);
+                }
+                offline::handle_download(&download_app, &url, destination)
+            }
+            DownloadEvent::Finished { url, path, success } => {
+                finish_any_download(&download_app, &url, path, success);
+                if blank_download.load(Ordering::Relaxed) {
+                    if let Some(viewer) = download_app.get_webview_window(&own_label) {
+                        let _ = viewer.close();
+                    }
+                }
+                true
+            }
+            _ => true,
+        })
+        .build();
+    // If a window cannot be made, fall back to the old behaviour rather
+    // than dropping the click.
+    if built.is_err() {
+        if let Some(main) = app.get_webview_window("main") {
+            let _ = main.navigate(url);
+        }
     }
 }
 
@@ -235,7 +354,7 @@ pub fn run() {
             desktop_entry::keep_installed();
             #[cfg(target_os = "linux")]
             title_buttons::follow_host(app.handle());
-            let opener_handle = app.handle().clone();
+            let nav_handle = app.handle().clone();
             // Whether time away can be read from input here (not only from
             // sleep), so the tracker knows its "you were away" prompt is real.
             let idle_supported = idle::supported();
@@ -255,37 +374,16 @@ pub fn run() {
                 idle_supported
             ))
             // Back / Download buttons (nav_bar.js): the app has no browser
-            // chrome, so a file opened in the main window needs a way back.
+            // chrome. Files open in a viewer window now, but Back still
+            // helps on the tracker's own pages.
             .initialization_script(include_str!("nav_bar.js"))
             .inner_size(1280.0, 800.0)
             .min_inner_size(1024.0, 640.0)
-            .on_navigation(move |url| {
-                // about:blank / about:srcdoc frames are created by widgets
-                // like Turnstile and carry no network content.
-                if url.scheme() == "about" || webview_may_load(url) {
-                    return true;
-                }
-                // `tracker://` URLs are delivered to route_deep_link by the
-                // deep-link plugin; anything else foreign leaves the app.
-                if opens_externally(url) {
-                    system_open::open_url(&opener_handle, url.as_str());
-                }
-                false
-            })
+            .on_navigation(move |url| allow_navigation(&nav_handle, url))
             .on_new_window({
                 let app = app.handle().clone();
                 move |url, _features| {
-                    match new_window_action(&url) {
-                        NewWindowAction::LoadInMain => {
-                            if let Some(main) = app.get_webview_window("main") {
-                                let _ = main.navigate(url);
-                            }
-                        }
-                        NewWindowAction::OpenExternal => {
-                            system_open::open_url(&app, url.as_str());
-                        }
-                        NewWindowAction::Ignore => {}
-                    }
+                    route_new_window(&app, url);
                     tauri::webview::NewWindowResponse::Deny
                 }
             })
@@ -294,11 +392,7 @@ pub fn run() {
                     offline::handle_download(&download_handle, &url, destination)
                 }
                 DownloadEvent::Finished { url, path, success } => {
-                    if offline::is_capture_url(&download_handle, &url) {
-                        offline::finish_download(&download_handle, &url, success);
-                    } else {
-                        offline::finish_regular_download(&download_handle, path, success);
-                    }
+                    finish_any_download(&download_handle, &url, path, success);
                     true
                 }
                 _ => true,
@@ -515,18 +609,25 @@ mod tests {
     }
 
     #[test]
+    fn viewer_labels_are_distinct() {
+        assert_eq!(viewer_label(1), "viewer-1");
+        assert_ne!(viewer_label(1), viewer_label(2));
+        assert_ne!(viewer_label(1), "main");
+    }
+
+    #[test]
     fn new_windows_route_by_host() {
         assert_eq!(
             new_window_action(&parsed("https://tracker.coolerboxbrothers.com/api/coolerbox/abc")),
-            NewWindowAction::LoadInMain
+            NewWindowAction::OpenViewer
         );
         assert_eq!(
             new_window_action(&parsed("https://tracker.coolerboxbrothers.com/api/media/k%2Fx.png")),
-            NewWindowAction::LoadInMain
+            NewWindowAction::OpenViewer
         );
         assert_eq!(
             new_window_action(&parsed("https://tracker.coolerboxbrothers.com/projects/1")),
-            NewWindowAction::LoadInMain
+            NewWindowAction::OpenViewer
         );
         assert_eq!(
             new_window_action(&parsed("https://files.example.com/signed?x=1")),

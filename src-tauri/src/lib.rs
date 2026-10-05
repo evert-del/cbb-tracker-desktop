@@ -168,8 +168,11 @@ fn has_session_cookie(cookies: &str) -> bool {
     })
 }
 
-/// Bring the main window forward.
+/// Bring the main window forward. Restores the dock icon on macOS (see
+/// the close handler: a hidden app is a pure menu-bar app, like Toggl).
 pub(crate) fn show_main<R: Runtime>(app: &AppHandle<R>) {
+    #[cfg(target_os = "macos")]
+    app.set_activation_policy(tauri::ActivationPolicy::Regular);
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.unminimize();
@@ -179,6 +182,8 @@ pub(crate) fn show_main<R: Runtime>(app: &AppHandle<R>) {
 
 /// Bring the Saved-for-offline library forward.
 pub(crate) fn show_library<R: Runtime>(app: &AppHandle<R>) {
+    #[cfg(target_os = "macos")]
+    app.set_activation_policy(tauri::ActivationPolicy::Regular);
     if let Some(library) = app.get_webview_window("library") {
         let _ = library.show();
         let _ = library.unminimize();
@@ -264,14 +269,35 @@ pub fn run() {
                 })
                 .build(),
         )
-        // Closing the main window hides it; the app keeps running in the
-        // tray/menu bar so notifications keep arriving. Quit is in the tray
-        // menu (or Cmd+Q).
+        // Closing a window hides it; the app keeps running in the tray /
+        // menu bar so notifications keep arriving. On macOS the dock icon
+        // goes away with the last visible window (pure menu-bar app, like
+        // Toggl) and comes back in show_main/show_library — so there is
+        // never a dead dock icon. Quit is in the tray menu (or Cmd+Q).
         .on_window_event(|window, event| {
             if window.label() == "main" || window.label() == "mini" {
                 if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                     api.prevent_close();
                     let _ = window.hide();
+                    // With the last visible window gone the dock icon goes
+                    // too (pure menu-bar app). It returns in show_main /
+                    // show_library, so there is never a dead dock icon.
+                    #[cfg(target_os = "macos")]
+                    {
+                        let app = window.app_handle();
+                        let hidden = window.label().to_string();
+                        let any_other = ["main", "mini", "library"]
+                            .iter()
+                            .filter(|label| label.to_string() != hidden)
+                            .any(|label| {
+                                app.get_webview_window(label)
+                                    .and_then(|w| w.is_visible().ok())
+                                    .unwrap_or(false)
+                            });
+                        if !any_other {
+                            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+                        }
+                    }
                 }
             }
             // Panel behavior: the mini hides when it loses focus.
@@ -615,15 +641,8 @@ pub fn run() {
             updater::start(app.handle().clone());
             Ok(())
         })
-        .build(tauri::generate_context!())
-        .expect("error while building tauri application")
-        .run(|app, event| {
-            // Clicking the dock icon with every window hidden reopens the
-            // tracker (red X only hides to the tray — it never quits).
-            if matches!(event, tauri::RunEvent::Reopen { .. }) {
-                show_main(app);
-            }
-        });
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
 }
 
 #[cfg(test)]

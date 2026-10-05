@@ -123,6 +123,9 @@ pub(crate) fn show<R: Runtime>(app: &AppHandle<R>) {
     if let Some(main) = app.get_webview_window("main") {
         let _ = main.hide();
     }
+    // Panel-only means menu-bar-app: no dock icon until show_main.
+    #[cfg(target_os = "macos")]
+    app.set_activation_policy(tauri::ActivationPolicy::Accessory);
     if let Some(mini) = app.get_webview_window("mini") {
         // Tray positions only resolve once the tray icon has reported its
         // position; before that they error and the window would sit wherever

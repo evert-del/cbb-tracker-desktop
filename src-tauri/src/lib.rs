@@ -25,6 +25,7 @@ use tauri_plugin_deep_link::DeepLinkExt;
 mod clock;
 mod desktop_entry;
 mod idle;
+mod download;
 mod notify;
 mod offline;
 mod system_open;
@@ -99,12 +100,17 @@ pub(crate) fn opens_externally(url: &url::Url) -> bool {
 /// else goes to the system browser.
 #[derive(Debug, PartialEq)]
 pub(crate) enum NewWindowAction {
+    /// First-party file (attachment, Cooler Box item): save to Downloads.
+    SaveFile,
     LoadInMain,
     OpenExternal,
     Ignore,
 }
 
 pub(crate) fn new_window_action(url: &url::Url) -> NewWindowAction {
+    if download::is_file_url(url) {
+        return NewWindowAction::SaveFile;
+    }
     if webview_may_load(url) {
         return NewWindowAction::LoadInMain;
     }
@@ -211,6 +217,40 @@ pub fn run() {
                 .build(),
         )
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, shortcut, event| {
+                    use tauri_plugin_global_shortcut::{Code, Modifiers, ShortcutState};
+                    // Cmd+Shift+I (Ctrl+Shift+I on Windows/Linux): smart
+                    // clock toggle — in when out, wrap when in, back when
+                    // on a break. Notice-gating stays in `clock::act`.
+                    let toggle = tauri_plugin_global_shortcut::Shortcut::new(
+                        Some(Modifiers::SUPER | Modifiers::SHIFT),
+                        Code::KeyI,
+                    );
+                    if shortcut == &toggle
+                        && matches!(event.state(), ShortcutState::Pressed)
+                    {
+                        let action = app
+                            .try_state::<clock::Last>()
+                            .and_then(|last| {
+                                last.0.lock().ok().and_then(|slot| slot.clone())
+                            })
+                            .map(|c| match c.state.as_str() {
+                                "in" => "wrap",
+                                "break" => "back",
+                                _ => "in",
+                            })
+                            .unwrap_or("in");
+                        clock::act(app, action);
+                    }
+                })
+                .build(),
+        )
         // Closing the main window hides it; the app keeps running in the
         // tray/menu bar so notifications keep arriving. Quit is in the tray
         // menu (or Cmd+Q).
@@ -257,9 +297,37 @@ pub fn run() {
             // Back / Download buttons (nav_bar.js): the app has no browser
             // chrome, so a file opened in the main window needs a way back.
             .initialization_script(include_str!("nav_bar.js"))
+            // Clock pill (clock_pill.js): the site only paints the trigger's
+            // light background on :hover, leaving the elapsed text invisible
+            // on the dark header. Force the hover look until the site fix
+            // lands. Desktop-shell only; harmless afterwards.
+            .initialization_script(include_str!("clock_pill.js"))
             .inner_size(1280.0, 800.0)
             .min_inner_size(1024.0, 640.0)
             .on_navigation(move |url| {
+                // nav_bar.js hands a clicked file link over as
+                // cbb-download://go?u=<https url>: save it, stay on the page.
+                if url.scheme() == "cbb-download" {
+                    if let Some(target) = url
+                        .query_pairs()
+                        .find(|(key, _)| key == "u")
+                        .and_then(|(_, value)| value.parse::<url::Url>().ok())
+                    {
+                        download::start(&opener_handle, target);
+                    }
+                    return false;
+                }
+                // "Show in folder" button of the download message.
+                if url.scheme() == "cbb-reveal" {
+                    if let Some(path) = url
+                        .query_pairs()
+                        .find(|(key, _)| key == "p")
+                        .map(|(_, value)| value.into_owned())
+                    {
+                        download::reveal(&opener_handle, &path);
+                    }
+                    return false;
+                }
                 // about:blank / about:srcdoc frames are created by widgets
                 // like Turnstile and carry no network content.
                 if url.scheme() == "about" || webview_may_load(url) {
@@ -276,6 +344,7 @@ pub fn run() {
                 let app = app.handle().clone();
                 move |url, _features| {
                     match new_window_action(&url) {
+                        NewWindowAction::SaveFile => download::start(&app, url),
                         NewWindowAction::LoadInMain => {
                             if let Some(main) = app.get_webview_window("main") {
                                 let _ = main.navigate(url);
@@ -345,18 +414,31 @@ pub fn run() {
             });
 
             // System tray: quick access without a dock/taskbar window.
-            // Live message/approval toasts are deliberately not here: the
-            // shell cannot see page state without web-side cooperation, so
-            // screen-scraping the remote DOM is off the table. The tray menu
-            // and the offline save/fail toasts below are the v1 surface.
+            // The inbox rows below are the click path for notifications:
+            // banners themselves have no reliable click callback on macOS,
+            // so each poll refreshes these 3 rows (label + href) instead.
             let tray_show =
                 MenuItem::with_id(app, "tray-show", "Show Tracker", true, None::<&str>)?;
             let tray_notifications =
                 MenuItem::with_id(app, "tray-notifications", "Notifications", true, None::<&str>)?;
+            let inbox_1 =
+                MenuItem::with_id(app, "inbox-1", "No unread notifications", false, None::<&str>)?;
+            let inbox_2 = MenuItem::with_id(app, "inbox-2", "—", false, None::<&str>)?;
+            let inbox_3 = MenuItem::with_id(app, "inbox-3", "—", false, None::<&str>)?;
             let tray_offline =
                 MenuItem::with_id(app, "tray-offline", "Saved for offline", true, None::<&str>)?;
             let tray_update =
                 MenuItem::with_id(app, "tray-update", "Check for updates", true, None::<&str>)?;
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            let tray_autostart = {
+                MenuItem::with_id(
+                    app,
+                    "tray-autostart",
+                    "Launch at login",
+                    true,
+                    None::<&str>,
+                )?
+            };
             let tray_quit = MenuItem::with_id(app, "tray-quit", "Quit", true, None::<&str>)?;
             // The time sheet's clock (clock.rs): a line saying where you are,
             // then the four taps, enabled as they make sense.
@@ -368,15 +450,43 @@ pub fn run() {
                 wrap: MenuItem::with_id(app, "clock-wrap", "Wrap", false, None::<&str>)?,
             };
             let separator = PredefinedMenuItem::separator(app)?;
+            let separator2 = PredefinedMenuItem::separator(app)?;
             let tray_menu = Menu::with_items(
                 app,
                 &[
                     &clock_items.status, &clock_items.call_in, &clock_items.take_break, &clock_items.back,
-                    &clock_items.wrap, &separator, &tray_show, &tray_notifications, &tray_offline, &tray_update, &tray_quit,
+                    &clock_items.wrap, &separator, &tray_show, &tray_notifications, &inbox_1, &inbox_2, &inbox_3,
+                    &separator2, &tray_offline, &tray_update,
+                    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+                    &tray_autostart,
+                    &tray_quit,
                 ],
             )?;
             app.manage(clock_items);
             app.manage(clock::Last::default());
+            app.manage(notify::InboxItems {
+                rows: [inbox_1, inbox_2, inbox_3],
+                hrefs: std::sync::Mutex::new([None, None, None]),
+                ids: std::sync::Mutex::new([None, None, None]),
+            });
+            // Autostart checkbox reflects actual state at launch.
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            {
+                use tauri_plugin_autostart::ManagerExt;
+                if app.autolaunch().is_enabled().unwrap_or(false) {
+                    let _ = tray_autostart.set_text("✓ Launch at login");
+                }
+            }
+            // Cmd+Shift+I toggles the clock from anywhere. Best-effort:
+            // macOS may need Accessibility permission; failure just means
+            // no hotkey, the tray items keep working.
+            #[cfg(desktop)]
+            {
+                use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut};
+                let toggle =
+                    Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyI);
+                let _ = app.global_shortcut().register(toggle);
+            }
             let _tray = TrayIconBuilder::with_id(TRAY_ID)
                 .icon(app.default_window_icon().cloned().unwrap_or_else(|| {
                     tauri::image::Image::from_bytes(include_bytes!("../icons/32x32.png"))
@@ -395,12 +505,41 @@ pub fn run() {
                         }
                         show_main(app);
                     }
+                    "inbox-1" => notify::open_inbox(app, 0),
+                    "inbox-2" => notify::open_inbox(app, 1),
+                    "inbox-3" => notify::open_inbox(app, 2),
                     "tray-offline" => show_library(app),
                     "clock-in" => clock::act(app, "in"),
                     "clock-break" => clock::act(app, "break"),
                     "clock-back" => clock::act(app, "back"),
                     "clock-wrap" => clock::act(app, "wrap"),
                     "tray-update" => updater::check_now(app.clone()),
+                    "tray-autostart" => {
+                        #[cfg(not(any(target_os = "android", target_os = "ios")))]
+                        {
+                            use tauri_plugin_autostart::ManagerExt;
+                            use tauri_plugin_notification::NotificationExt;
+                            let manager = app.autolaunch();
+                            let enabled = manager.is_enabled().unwrap_or(false);
+                            if enabled {
+                                let _ = manager.disable();
+                                let _ = app
+                                    .notification()
+                                    .builder()
+                                    .title("CoolerBox Tracker")
+                                    .body("Launch at login turned off.")
+                                    .show();
+                            } else {
+                                let _ = manager.enable();
+                                let _ = app
+                                    .notification()
+                                    .builder()
+                                    .title("CoolerBox Tracker")
+                                    .body("Launch at login turned on.")
+                                    .show();
+                            }
+                        }
+                    }
                     "tray-quit" => app.exit(0),
                     _ => {}
                 })
@@ -518,11 +657,11 @@ mod tests {
     fn new_windows_route_by_host() {
         assert_eq!(
             new_window_action(&parsed("https://tracker.coolerboxbrothers.com/api/coolerbox/abc")),
-            NewWindowAction::LoadInMain
+            NewWindowAction::SaveFile
         );
         assert_eq!(
             new_window_action(&parsed("https://tracker.coolerboxbrothers.com/api/media/k%2Fx.png")),
-            NewWindowAction::LoadInMain
+            NewWindowAction::SaveFile
         );
         assert_eq!(
             new_window_action(&parsed("https://tracker.coolerboxbrothers.com/projects/1")),

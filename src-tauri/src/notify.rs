@@ -48,6 +48,8 @@ pub(crate) struct Item {
     unread: bool,
     #[serde(default)]
     label: String,
+    #[serde(default)]
+    href: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -61,12 +63,25 @@ pub(crate) struct Poll {
 pub(crate) struct State {
     seeded: bool,
     seen: HashSet<String>,
+    /// Latest unread items (max 3) for the tray inbox. Refreshed every poll,
+    /// even when no banner is warranted, so the tray is always current.
+    pub inbox: Vec<InboxEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct InboxEntry {
+    pub id: String,
+    pub title: String,
+    pub body: String,
+    pub href: Option<String>,
 }
 
 #[derive(Debug, PartialEq)]
 pub(crate) struct Banner {
     pub title: String,
     pub body: String,
+    pub href: Option<String>,
+    pub id: String,
 }
 
 /// Parse the page's answer. `None` for "", "null" and anything malformed.
@@ -75,6 +90,8 @@ pub(crate) fn parse(raw: &str) -> Option<Poll> {
 }
 
 /// Decide which banners a poll warrants and remember what was seen.
+/// Always refreshes `state.inbox` with the 3 newest unread items so the
+/// tray inbox stays current even when nothing new arrived.
 pub(crate) fn plan(state: &mut State, poll: &Poll) -> Vec<Banner> {
     let fresh: Vec<&Item> = poll
         .items
@@ -89,6 +106,25 @@ pub(crate) fn plan(state: &mut State, poll: &Poll) -> Vec<Banner> {
         state.seen.insert(item.id.to_string());
     }
 
+    // Tray inbox: newest unread first, cap 3. `href` comes straight from
+    // the web API (`linkFor` server-side), so no URL map is duplicated here.
+    state.inbox = poll
+        .items
+        .iter()
+        .filter(|item| item.unread)
+        .take(3)
+        .map(|item| InboxEntry {
+            id: item.id.to_string(),
+            title: if item.label.is_empty() {
+                "CoolerBox Tracker".into()
+            } else {
+                item.label.clone()
+            },
+            body: item.body.clone(),
+            href: item.href.clone().filter(|h| h.starts_with('/')),
+        })
+        .collect();
+
     if !state.seeded {
         state.seeded = true;
         return Vec::new();
@@ -97,6 +133,8 @@ pub(crate) fn plan(state: &mut State, poll: &Poll) -> Vec<Banner> {
         return vec![Banner {
             title: "CoolerBox Tracker".into(),
             body: format!("{} new notifications", fresh.len()),
+            href: None,
+            id: String::new(),
         }];
     }
     fresh
@@ -108,13 +146,35 @@ pub(crate) fn plan(state: &mut State, poll: &Poll) -> Vec<Banner> {
                 item.label.clone()
             },
             body: item.body.clone(),
+            href: item.href.clone().filter(|h| h.starts_with('/')),
+            id: item.id.to_string(),
         })
         .collect()
 }
 
+/// Marks one notification read through the page's own session, mirroring
+/// the bell (`POST /api/notifications/read {id}`). Fire-and-forget.
+const MARK_READ_JS: &str = r#"(function (id) {
+  try {
+    var num = Number(id); var payload = isNaN(num) ? id : num;
+    fetch('/api/notifications/read', { method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: payload }) })
+      .catch(function () {});
+  } catch (e) {}
+})"#;
+
+/// The tray inbox rows, kept so each poll can update them.
+pub(crate) struct InboxItems<R: Runtime> {
+    pub rows: [tauri::menu::MenuItem<R>; 3],
+    /// Hrefs parallel to `rows`, for click handling. `None` = disabled row.
+    pub hrefs: Mutex<[Option<String>; 3]>,
+    /// Notification ids parallel to `rows`, for mark-read on open.
+    pub ids: Mutex<[Option<String>; 3]>,
+}
+
 fn apply<R: Runtime>(app: &AppHandle<R>, state: &Mutex<State>, poll: &Poll) {
-    let banners = match state.lock() {
-        Ok(mut state) => plan(&mut state, poll),
+    let (banners, inbox) = match state.lock() {
+        Ok(mut state) => (plan(&mut state, poll), state.inbox.clone()),
         Err(_) => return,
     };
     for banner in banners {
@@ -124,6 +184,33 @@ fn apply<R: Runtime>(app: &AppHandle<R>, state: &Mutex<State>, poll: &Poll) {
             .title(banner.title)
             .body(banner.body)
             .show();
+        // NOTE: tauri-plugin-notification v2 has no reliable banner-click
+        // callback on macOS (notify-rust backend), so the click path is the
+        // tray inbox below, not the banner itself.
+    }
+
+    // Refresh the tray inbox rows (label truncated, href stored for click).
+    if let Some(items) = app.try_state::<InboxItems<R>>() {
+        for (i, row) in items.rows.iter().enumerate() {
+            if let Some(entry) = inbox.get(i) {
+                let mut text = format!("{} — {}", entry.title, entry.body);
+                // Tray rows get unwieldy past ~60 chars.
+                if text.chars().count() > 60 {
+                    text = format!("{}…", text.chars().take(59).collect::<String>());
+                }
+                let _ = row.set_text(text);
+                let _ = row.set_enabled(true);
+            } else {
+                let _ = row.set_text(if i == 0 { "No unread notifications".to_string() } else { "—".to_string() });
+                let _ = row.set_enabled(false);
+            }
+        }
+        if let (Ok(mut hrefs), Ok(mut ids)) = (items.hrefs.lock(), items.ids.lock()) {
+            for i in 0..3 {
+                hrefs[i] = inbox.get(i).and_then(|e| e.href.clone());
+                ids[i] = inbox.get(i).map(|e| e.id.clone());
+            }
+        }
     }
 
     let count = poll.unread_count;
@@ -137,6 +224,36 @@ fn apply<R: Runtime>(app: &AppHandle<R>, state: &Mutex<State>, poll: &Poll) {
         };
         let _ = tray.set_tooltip(Some(tooltip));
     }
+}
+
+/// A tray-inbox click: navigate the main window to the item's `href`
+/// (validated `https` + tracker host only), mark it read like the bell,
+///
+/// then bring the window forward. Unknown index or missing href falls
+/// back to `/notifications`.
+pub(crate) fn open_inbox<R: Runtime>(app: &AppHandle<R>, index: usize) {
+    use tauri::Manager;
+    let (href, id) = app
+        .try_state::<InboxItems<R>>()
+        .map(|items| {
+            let href = items.hrefs.lock().ok().and_then(|h| h[index].clone());
+            let id = items.ids.lock().ok().and_then(|v| v[index].clone());
+            (href, id)
+        })
+        .unwrap_or((None, None));
+    let path = href.filter(|h| h.starts_with('/')).unwrap_or_else(|| "/notifications".into());
+    if let Some(window) = app.get_webview_window("main") {
+        if let Ok(url) = format!("{}{}", crate::APP_ORIGIN, path).parse::<url::Url>() {
+            if crate::webview_may_load(&url) {
+                let _ = window.navigate(url);
+            }
+        }
+        if let Some(id) = id {
+            let script = format!("({MARK_READ_JS})({id:?})");
+            let _ = window.eval(script.as_str());
+        }
+    }
+    crate::show_main(app);
 }
 
 /// Start the background poller. Safe to leave running for the app's life; it
@@ -177,7 +294,7 @@ mod tests {
     }
 
     fn item(id: u32, unread: bool) -> String {
-        format!(r#"{{"id":"n{id}","body":"body {id}","unread":{unread},"label":"Approval"}}"#)
+        format!(r#"{{"id":"n{id}","body":"body {id}","unread":{unread},"label":"Approval","href":"/approvals"}}"#)
     }
 
     fn payload(items: &[String], unread_count: u32) -> String {
@@ -209,7 +326,9 @@ mod tests {
             banners,
             vec![Banner {
                 title: "Approval".into(),
-                body: "body 2".into()
+                body: "body 2".into(),
+                href: Some("/approvals".into()),
+                id: "\"n2\"".into(),
             }]
         );
     }
@@ -229,5 +348,24 @@ mod tests {
         let banners = plan(&mut state, &poll(&payload(&items, 5)));
         assert_eq!(banners.len(), 1);
         assert_eq!(banners[0].body, "5 new notifications");
+    }
+
+    #[test]
+    fn inbox_holds_three_newest_unread_with_hrefs() {
+        let mut state = State::default();
+        let items: Vec<String> = (1..=4).map(|i| item(i, true)).collect();
+        plan(&mut state, &poll(&payload(&items, 4)));
+        assert_eq!(state.inbox.len(), 3);
+        assert_eq!(state.inbox[0].href.as_deref(), Some("/approvals"));
+        assert_eq!(state.inbox[0].id, "\"n1\"");
+    }
+
+    #[test]
+    fn evil_href_never_reaches_the_tray() {
+        let mut state = State::default();
+        let evil = r#"{"id":"x","body":"pwn","unread":true,"label":"Approval","href":"https://evil.example/phish"}"#;
+        plan(&mut state, &poll(&payload(&[evil.to_string()], 1)));
+        assert_eq!(state.inbox.len(), 1);
+        assert_eq!(state.inbox[0].href, None);
     }
 }

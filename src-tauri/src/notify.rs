@@ -68,6 +68,23 @@ pub(crate) struct State {
     pub inbox: Vec<InboxEntry>,
 }
 
+/// Latest unread count, shared so the mini bar can show its pill.
+pub(crate) struct Unread(pub Mutex<u32>);
+
+/// Actionable snapshot for the mini panel: the newest unread items that
+/// link somewhere (tapping one opens its exact page), plus the total.
+/// Refreshed every poll alongside the tray inbox.
+pub(crate) struct Snapshot {
+    pub unread: Mutex<u32>,
+    pub needs: Mutex<Vec<InboxEntry>>,
+}
+
+impl Default for Snapshot {
+    fn default() -> Self {
+        Self { unread: Mutex::new(0), needs: Mutex::new(Vec::new()) }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct InboxEntry {
     pub id: String,
@@ -214,6 +231,35 @@ fn apply<R: Runtime>(app: &AppHandle<R>, state: &Mutex<State>, poll: &Poll) {
     }
 
     let count = poll.unread_count;
+    if let Some(unread) = app.try_state::<Unread>() {
+        if let Ok(mut slot) = unread.0.lock() {
+            *slot = count;
+        }
+    }
+    if let Some(snap) = app.try_state::<Snapshot>() {
+        if let (Ok(mut unread), Ok(mut needs)) = (snap.unread.lock(), snap.needs.lock()) {
+            *unread = count;
+            *needs = poll
+                .items
+                .iter()
+                .filter(|item| item.unread)
+                .filter_map(|item| {
+                    item.href.clone().filter(|h| h.starts_with('/')).map(|href| InboxEntry {
+                        id: item.id.to_string(),
+                        title: if item.label.is_empty() {
+                            "Update".into()
+                        } else {
+                            item.label.clone()
+                        },
+                        body: item.body.clone(),
+                        href: Some(href),
+                    })
+                })
+                .take(3)
+                .collect();
+        }
+    }
+    crate::mini::push(app);
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.set_badge_count(if count > 0 { Some(i64::from(count)) } else { None });
     }

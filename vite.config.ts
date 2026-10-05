@@ -1,6 +1,12 @@
 import { defineConfig } from "vite";
 // @ts-expect-error type error without @types/node package
 import process from "node:process";
+// @ts-expect-error type error without @types/node package
+import { resolve } from "node:path";
+// @ts-expect-error type error without @types/node package
+import { dirname } from "node:path";
+// @ts-expect-error type error without @types/node package
+import { fileURLToPath } from "node:url";
 const host = process.env.TAURI_DEV_HOST;
 
 // https://vite.dev/config/
@@ -25,6 +31,17 @@ export default defineConfig(() => ({
     watch: {
       // 3. tell Vite to ignore watching `src-tauri`
       ignored: ["**/src-tauri/**"],
+    },
+  },
+  build: {
+    // Two local windows: the Saved-for-offline library (index.html) and
+    // the mini bar (mini.html). The remote main window loads the hosted
+    // tracker and uses neither.
+    rollupOptions: {
+      input: {
+        main: resolve(dirname(fileURLToPath(import.meta.url)), "index.html"),
+        mini: resolve(dirname(fileURLToPath(import.meta.url)), "mini.html"),
+      },
     },
   },
 }));

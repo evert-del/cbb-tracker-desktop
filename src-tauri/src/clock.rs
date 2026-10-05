@@ -22,13 +22,15 @@ const POLL_EVERY: Duration = Duration::from_secs(30);
 /// Starts a fetch of the clock; the result lands in `window.__cbbClock`
 /// ("null" on any failure, e.g. signed out). The label is made in the page,
 /// in Johannesburg time, so the shell never formats a time zone itself.
+/// `sinceIso` (raw ISO timestamp, "" when off the clock) lets the mini panel
+/// tick the elapsed time live without polling.
 const START_JS: &str = r#"(function () {
   fetch('/api/time-sheet/clock', { credentials: 'same-origin', cache: 'no-store' })
     .then(function (r) { return r.ok ? r.json() : null; })
     .then(function (c) {
       if (!c) { window.__cbbClock = 'null'; return; }
       var t = c.since ? new Date(c.since).toLocaleTimeString('en-GB', { timeZone: 'Africa/Johannesburg', hour: '2-digit', minute: '2-digit' }) : '';
-      window.__cbbClock = JSON.stringify({ available: !!c.available, state: c.state || 'out', since: t, notice: !!c.notice });
+      window.__cbbClock = JSON.stringify({ available: !!c.available, state: c.state || 'out', since: t, sinceIso: c.since || '', notice: !!c.notice });
     })
     .catch(function () { window.__cbbClock = 'null'; });
 })()"#;
@@ -47,6 +49,9 @@ pub(crate) struct Clock {
     pub state: String,
     /// "08:02", or "" when off the clock.
     pub since: String,
+    /// Raw ISO timestamp of the same moment, or "" when off the clock.
+    #[serde(default)]
+    pub since_iso: String,
     /// The person has not read the current notice.
     pub notice: bool,
 }
@@ -142,6 +147,7 @@ fn apply<R: Runtime>(app: &AppHandle<R>, clock: Option<Clock>) {
             *slot = clock;
         }
     }
+    crate::mini::push(app);
 }
 
 fn refresh<R: Runtime>(app: &AppHandle<R>) {
@@ -204,7 +210,7 @@ mod tests {
     use super::*;
 
     fn clock(state: &str, since: &str) -> Clock {
-        Clock { available: true, state: state.into(), since: since.into(), notice: false }
+        Clock { available: true, state: state.into(), since: since.into(), since_iso: String::new(), notice: false }
     }
 
     #[test]

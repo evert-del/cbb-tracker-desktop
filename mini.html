@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Tracker Mini</title>
+    <script type="module" src="/src/mini.ts" defer></script>
+    <style>
+      html, body {
+        margin: 0; padding: 0; height: 100%; overflow: hidden;
+        background: transparent;
+        font-family: -apple-system, "Segoe UI", Ubuntu, sans-serif;
+        user-select: none; -webkit-user-select: none;
+      }
+      #mini-card {
+        display: flex; flex-direction: column; gap: 8px;
+        height: 100vh; box-sizing: border-box; padding: 12px;
+        background: #ffffff; color: #1c1c1e;
+        border-radius: 14px; border: 1px solid rgba(0, 0, 0, 0.12);
+      }
+      #mini-head { display: flex; align-items: center; gap: 8px; }
+      #mini-dot { width: 10px; height: 10px; border-radius: 999px; background: #a3a3ad; flex: none; }
+      #mini-status { flex: 1; font-size: 12.5px; color: #555; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      #mini-elapsed { font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.1; }
+      #mini-elapsed:empty { display: none; }
+      #mini-action {
+        font: inherit; font-size: 14px; font-weight: 600; color: #fff;
+        background: #dd347c; border: 0; border-radius: 10px;
+        min-height: 40px; cursor: pointer;
+      }
+      #mini-action:disabled { opacity: 0.45; cursor: default; }
+      #mini-needs-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: #888; }
+      #mini-needs { display: flex; flex-direction: column; gap: 4px; overflow: hidden; }
+      .need {
+        display: flex; align-items: center; gap: 8px; width: 100%; box-sizing: border-box;
+        font: inherit; text-align: left; background: #f4f4f6; color: #1c1c1e;
+        border: 0; border-radius: 10px; padding: 0 10px; min-height: 44px; cursor: pointer;
+      }
+      .need .pill {
+        flex: none; font-size: 10.5px; font-weight: 700; color: #fff;
+        background: #dd347c; border-radius: 999px; padding: 3px 8px;
+      }
+      .need .txt { flex: 1; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .need .go { color: #aaa; flex: none; }
+      #mini-empty { font-size: 12.5px; color: #888; }
+      #mini-foot { display: flex; align-items: center; gap: 8px; margin-top: auto; }
+      #mini-more { flex: 1; font-size: 12px; color: #888; }
+      #mini-expand {
+        font: inherit; font-size: 12.5px; font-weight: 600; color: #dd347c;
+        background: transparent; border: 0; cursor: pointer; padding: 6px 4px;
+      }
+      button.ghost-top { background: transparent; border: 0; color: #aaa; font-size: 15px; cursor: pointer; padding: 2px 6px; }
+    </style>
+  </head>
+  <body>
+    <div id="mini-card" data-tauri-drag-region="deep">
+      <div id="mini-head">
+        <span id="mini-dot"></span>
+        <span id="mini-status">Loading…</span>
+        <button id="mini-close" class="ghost-top" title="Hide panel">×</button>
+      </div>
+      <div id="mini-elapsed"></div>
+      <button id="mini-action" disabled>Call in</button>
+      <div id="mini-needs-label">Needs you</div>
+      <div id="mini-needs"><div id="mini-empty">Nothing waiting on you.</div></div>
+      <div id="mini-foot">
+        <span id="mini-more"></span>
+        <button id="mini-expand">Open tracker ›</button>
+      </div>
+    </div>
+  </body>
+</html>

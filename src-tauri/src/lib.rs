@@ -14,10 +14,6 @@
 //!   are translated to their hosted https equivalents and loaded in the main
 //!   window. Unknown shapes are ignored, never navigated blindly.
 
-use std::sync::{
-    atomic::{AtomicBool, AtomicUsize, Ordering},
-    Arc,
-};
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -28,7 +24,9 @@ use tauri_plugin_deep_link::DeepLinkExt;
 
 mod clock;
 mod desktop_entry;
+mod download;
 mod idle;
+mod mini;
 mod notify;
 mod offline;
 mod system_open;
@@ -97,140 +95,31 @@ pub(crate) fn opens_externally(url: &url::Url) -> bool {
 }
 
 /// What to do with a page-requested new window (`target="_blank"`,
-/// `window.open`). First-party links open in a viewer window of our own
-/// (`open_viewer`), the app's stand-in for a browser tab: it shares the
-/// app's cookie jar, so attachment links like `/api/coolerbox/<id>` still
-/// redirect to their file, and closing it leaves the tracker where it was.
-/// Loading them in the main window instead replaced the tracker with the
-/// file and left no way back (a PDF from the Coolerbox, a referral QR's SVG).
-/// Everything else goes to the system browser.
+/// `window.open`). First-party files (attachments, Cooler Box items) are
+/// saved to Downloads through the shell, with the window's own session
+/// cookies — the tracker page itself never navigates away. Other
+/// first-party links load in the main window (so the session cookie is
+/// sent); everything else goes to the system browser.
 #[derive(Debug, PartialEq)]
 pub(crate) enum NewWindowAction {
-    OpenViewer,
+    /// First-party file (attachment, Cooler Box item): save to Downloads.
+    SaveFile,
+    LoadInMain,
     OpenExternal,
     Ignore,
 }
 
 pub(crate) fn new_window_action(url: &url::Url) -> NewWindowAction {
+    if download::is_file_url(url) {
+        return NewWindowAction::SaveFile;
+    }
     if webview_may_load(url) {
-        return NewWindowAction::OpenViewer;
+        return NewWindowAction::LoadInMain;
     }
     if opens_externally(url) {
         NewWindowAction::OpenExternal
     } else {
         NewWindowAction::Ignore
-    }
-}
-
-/// Navigation policy shared by every window showing the hosted tracker.
-fn allow_navigation<R: Runtime>(app: &AppHandle<R>, url: &url::Url) -> bool {
-    // about:blank / about:srcdoc frames are created by widgets like
-    // Turnstile and carry no network content.
-    if url.scheme() == "about" || webview_may_load(url) {
-        return true;
-    }
-    // `tracker://` URLs are delivered to route_deep_link by the deep-link
-    // plugin; anything else foreign leaves the app.
-    if opens_externally(url) {
-        system_open::open_url(app, url.as_str());
-    }
-    false
-}
-
-/// Act on a page-requested new window from any of our windows.
-fn route_new_window<R: Runtime>(app: &AppHandle<R>, url: url::Url) {
-    match new_window_action(&url) {
-        NewWindowAction::OpenViewer => {
-            // Never build a window inside the WebView's own callback: on
-            // Windows that deadlocks. Hand it to another thread.
-            let app = app.clone();
-            tauri::async_runtime::spawn(async move { open_viewer(&app, url) });
-        }
-        NewWindowAction::OpenExternal => system_open::open_url(app, url.as_str()),
-        NewWindowAction::Ignore => {}
-    }
-}
-
-/// Tell the user where a download landed, or finalize an offline capture.
-fn finish_any_download<R: Runtime>(
-    app: &AppHandle<R>,
-    url: &url::Url,
-    path: Option<std::path::PathBuf>,
-    success: bool,
-) {
-    if offline::is_capture_url(app, url) {
-        offline::finish_download(app, url, success);
-    } else {
-        offline::finish_regular_download(app, path, success);
-    }
-}
-
-/// Window label for the `n`th viewer.
-fn viewer_label(n: usize) -> String {
-    format!("viewer-{n}")
-}
-
-static NEXT_VIEWER: AtomicUsize = AtomicUsize::new(1);
-
-/// Open a first-party link in its own window, like a browser tab would.
-/// Same navigation policy and download hook as the main window, plus the
-/// Back / Download bar (nav_bar.js), but none of main's start-up work.
-fn open_viewer<R: Runtime>(app: &AppHandle<R>, url: url::Url) {
-    let label = viewer_label(NEXT_VIEWER.fetch_add(1, Ordering::Relaxed));
-    // A link served as an attachment (audio, video, an SVG from the
-    // Coolerbox) downloads instead of showing, which would leave this
-    // window blank. Whether anything had finished loading is read when the
-    // download is *requested*, because WebKitGTK reports the interrupted
-    // load as finished after that. The bar's own Download, on a shown file,
-    // leaves the window open.
-    let shown = Arc::new(AtomicBool::new(false));
-    let blank_download = Arc::new(AtomicBool::new(false));
-    let nav_app = app.clone();
-    let popup_app = app.clone();
-    let download_app = app.clone();
-    let shown_on_load = shown.clone();
-    let own_label = label.clone();
-    let built = WebviewWindowBuilder::new(app, label, WebviewUrl::External(url.clone()))
-        .title("CoolerBox Tracker")
-        .initialization_script(include_str!("nav_bar.js"))
-        .inner_size(1100.0, 800.0)
-        .min_inner_size(480.0, 360.0)
-        .focused(true)
-        .on_navigation(move |url| allow_navigation(&nav_app, url))
-        .on_new_window(move |url, _features| {
-            route_new_window(&popup_app, url);
-            tauri::webview::NewWindowResponse::Deny
-        })
-        .on_page_load(move |_window, payload| {
-            if matches!(payload.event(), PageLoadEvent::Finished) {
-                shown_on_load.store(true, Ordering::Relaxed);
-            }
-        })
-        .on_download(move |_webview, event| match event {
-            DownloadEvent::Requested { url, destination } => {
-                if !shown.load(Ordering::Relaxed) {
-                    blank_download.store(true, Ordering::Relaxed);
-                }
-                offline::handle_download(&download_app, &url, destination)
-            }
-            DownloadEvent::Finished { url, path, success } => {
-                finish_any_download(&download_app, &url, path, success);
-                if blank_download.load(Ordering::Relaxed) {
-                    if let Some(viewer) = download_app.get_webview_window(&own_label) {
-                        let _ = viewer.close();
-                    }
-                }
-                true
-            }
-            _ => true,
-        })
-        .build();
-    // If a window cannot be made, fall back to the old behaviour rather
-    // than dropping the click.
-    if built.is_err() {
-        if let Some(main) = app.get_webview_window("main") {
-            let _ = main.navigate(url);
-        }
     }
 }
 
@@ -330,6 +219,7 @@ pub fn run() {
                 .build(),
         )
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_positioner::init())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
@@ -338,6 +228,9 @@ pub fn run() {
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, shortcut, event| {
                     use tauri_plugin_global_shortcut::{Code, Modifiers, ShortcutState};
+                    if !matches!(event.state(), ShortcutState::Pressed) {
+                        return;
+                    }
                     // Cmd+Shift+I (Ctrl+Shift+I on Windows/Linux): smart
                     // clock toggle — in when out, wrap when in, back when
                     // on a break. Notice-gating stays in `clock::act`.
@@ -345,9 +238,7 @@ pub fn run() {
                         Some(Modifiers::SUPER | Modifiers::SHIFT),
                         Code::KeyI,
                     );
-                    if shortcut == &toggle
-                        && matches!(event.state(), ShortcutState::Pressed)
-                    {
+                    if shortcut == &toggle {
                         let action = app
                             .try_state::<clock::Last>()
                             .and_then(|last| {
@@ -360,6 +251,15 @@ pub fn run() {
                             })
                             .unwrap_or("in");
                         clock::act(app, action);
+                        return;
+                    }
+                    // Cmd+Shift+M: toggle the mini panel.
+                    let panel = tauri_plugin_global_shortcut::Shortcut::new(
+                        Some(Modifiers::SUPER | Modifiers::SHIFT),
+                        Code::KeyM,
+                    );
+                    if shortcut == &panel {
+                        mini::toggle(app);
                     }
                 })
                 .build(),
@@ -368,9 +268,15 @@ pub fn run() {
         // tray/menu bar so notifications keep arriving. Quit is in the tray
         // menu (or Cmd+Q).
         .on_window_event(|window, event| {
-            if window.label() == "main" {
+            if window.label() == "main" || window.label() == "mini" {
                 if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                     api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
+            // Panel behavior: the mini hides when it loses focus.
+            if window.label() == "mini" {
+                if matches!(event, tauri::WindowEvent::Focused(false)) {
                     let _ = window.hide();
                 }
             }
@@ -381,14 +287,22 @@ pub fn run() {
             offline::offline_list,
             offline::offline_open,
             offline::offline_delete,
-            offline::offline_storage_info
+            offline::offline_storage_info,
+            mini::mini_action,
+            mini::mini_expand,
+            mini::mini_expand_notifications,
+            mini::mini_hide,
+            mini::mini_open,
+            mini::mini_drag_start,
+            mini::mini_drag_move,
+            mini::mini_drag_end
         ])
         .setup(|app| {
             #[cfg(target_os = "linux")]
             desktop_entry::keep_installed();
             #[cfg(target_os = "linux")]
             title_buttons::follow_host(app.handle());
-            let nav_handle = app.handle().clone();
+            let opener_handle = app.handle().clone();
             // Whether time away can be read from input here (not only from
             // sleep), so the tracker knows its "you were away" prompt is real.
             let idle_supported = idle::supported();
@@ -407,9 +321,10 @@ pub fn run() {
                 env!("CARGO_PKG_VERSION"),
                 idle_supported
             ))
-            // Back / Download buttons (nav_bar.js): the app has no browser
-            // chrome. Files open in a viewer window now, but Back still
-            // helps on the tracker's own pages.
+            // Download helpers (nav_bar.js): file links are intercepted in
+            // the page and handed to the shell, which saves them with the
+            // window's own session. No on-page buttons: the tracker page is
+            // left exactly as the website made it.
             .initialization_script(include_str!("nav_bar.js"))
             // Clock pill (clock_pill.js): the site only paints the trigger's
             // light background on :hover, leaving the elapsed text invisible
@@ -418,11 +333,57 @@ pub fn run() {
             .initialization_script(include_str!("clock_pill.js"))
             .inner_size(1280.0, 800.0)
             .min_inner_size(1024.0, 640.0)
-            .on_navigation(move |url| allow_navigation(&nav_handle, url))
+            .on_navigation(move |url| {
+                // nav_bar.js hands a clicked file link over as
+                // cbb-download://go?u=<https url>: save it, stay on the page.
+                if url.scheme() == "cbb-download" {
+                    if let Some(target) = url
+                        .query_pairs()
+                        .find(|(key, _)| key == "u")
+                        .and_then(|(_, value)| value.parse::<url::Url>().ok())
+                    {
+                        download::start(&opener_handle, target);
+                    }
+                    return false;
+                }
+                // "Show in folder" button of the download message.
+                if url.scheme() == "cbb-reveal" {
+                    if let Some(path) = url
+                        .query_pairs()
+                        .find(|(key, _)| key == "p")
+                        .map(|(_, value)| value.into_owned())
+                    {
+                        download::reveal(&opener_handle, &path);
+                    }
+                    return false;
+                }
+                // about:blank / about:srcdoc frames are created by widgets
+                // like Turnstile and carry no network content.
+                if url.scheme() == "about" || webview_may_load(url) {
+                    return true;
+                }
+                // `tracker://` URLs are delivered to route_deep_link by the
+                // deep-link plugin; anything else foreign leaves the app.
+                if opens_externally(url) {
+                    system_open::open_url(&opener_handle, url.as_str());
+                }
+                false
+            })
             .on_new_window({
                 let app = app.handle().clone();
                 move |url, _features| {
-                    route_new_window(&app, url);
+                    match new_window_action(&url) {
+                        NewWindowAction::SaveFile => download::start(&app, url),
+                        NewWindowAction::LoadInMain => {
+                            if let Some(main) = app.get_webview_window("main") {
+                                let _ = main.navigate(url);
+                            }
+                        }
+                        NewWindowAction::OpenExternal => {
+                            system_open::open_url(&app, url.as_str());
+                        }
+                        NewWindowAction::Ignore => {}
+                    }
                     tauri::webview::NewWindowResponse::Deny
                 }
             })
@@ -431,7 +392,11 @@ pub fn run() {
                     offline::handle_download(&download_handle, &url, destination)
                 }
                 DownloadEvent::Finished { url, path, success } => {
-                    finish_any_download(&download_handle, &url, path, success);
+                    if offline::is_capture_url(&download_handle, &url) {
+                        offline::finish_download(&download_handle, &url, success);
+                    } else {
+                        offline::finish_regular_download(&download_handle, path, success);
+                    }
                     true
                 }
                 _ => true,
@@ -463,6 +428,21 @@ pub fn run() {
             })
             .build()?;
 
+            // Mini bar (mini.rs + mini.html): hidden until the tray toggle.
+            // Frameless, transparent, always on top, out of Alt-Tab.
+            WebviewWindowBuilder::new(app, "mini", WebviewUrl::App("mini.html".into()))
+                .title("Tracker Mini")
+                .inner_size(340.0, 320.0)
+                .min_inner_size(300.0, 240.0)
+                .resizable(false)
+                .decorations(false)
+                .transparent(true)
+                .always_on_top(true)
+                .skip_taskbar(true)
+                .visible(false)
+                .focused(false)
+                .build()?;
+
             // Cold start through a tracker:// URL.
             if let Ok(Some(urls)) = app.deep_link().get_current() {
                 for url in urls {
@@ -491,6 +471,8 @@ pub fn run() {
             let inbox_3 = MenuItem::with_id(app, "inbox-3", "—", false, None::<&str>)?;
             let tray_offline =
                 MenuItem::with_id(app, "tray-offline", "Saved for offline", true, None::<&str>)?;
+            let tray_mini =
+                MenuItem::with_id(app, "tray-mini", "Mini bar", true, None::<&str>)?;
             let tray_update =
                 MenuItem::with_id(app, "tray-update", "Check for updates", true, None::<&str>)?;
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -520,7 +502,7 @@ pub fn run() {
                 &[
                     &clock_items.status, &clock_items.call_in, &clock_items.take_break, &clock_items.back,
                     &clock_items.wrap, &separator, &tray_show, &tray_notifications, &inbox_1, &inbox_2, &inbox_3,
-                    &separator2, &tray_offline, &tray_update,
+                    &separator2, &tray_offline, &tray_mini, &tray_update,
                     #[cfg(not(any(target_os = "android", target_os = "ios")))]
                     &tray_autostart,
                     &tray_quit,
@@ -528,6 +510,8 @@ pub fn run() {
             )?;
             app.manage(clock_items);
             app.manage(clock::Last::default());
+            app.manage(notify::Unread(std::sync::Mutex::new(0)));
+            app.manage(notify::Snapshot::default());
             app.manage(notify::InboxItems {
                 rows: [inbox_1, inbox_2, inbox_3],
                 hrefs: std::sync::Mutex::new([None, None, None]),
@@ -541,15 +525,19 @@ pub fn run() {
                     let _ = tray_autostart.set_text("✓ Launch at login");
                 }
             }
-            // Cmd+Shift+I toggles the clock from anywhere. Best-effort:
-            // macOS may need Accessibility permission; failure just means
-            // no hotkey, the tray items keep working.
+            // Cmd+Shift+I toggles the clock from anywhere, Cmd+Shift+M the
+            // mini panel. Best-effort: macOS may need Accessibility
+            // permission; failure just means no hotkey, the tray items keep
+            // working.
             #[cfg(desktop)]
             {
                 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut};
                 let toggle =
                     Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyI);
                 let _ = app.global_shortcut().register(toggle);
+                let panel =
+                    Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyM);
+                let _ = app.global_shortcut().register(panel);
             }
             let _tray = TrayIconBuilder::with_id(TRAY_ID)
                 .icon(app.default_window_icon().cloned().unwrap_or_else(|| {
@@ -573,7 +561,7 @@ pub fn run() {
                     "inbox-2" => notify::open_inbox(app, 1),
                     "inbox-3" => notify::open_inbox(app, 2),
                     "tray-offline" => show_library(app),
-                    "clock-in" => clock::act(app, "in"),
+                    "tray-mini" => mini::toggle(app),                    "clock-in" => clock::act(app, "in"),
                     "clock-break" => clock::act(app, "break"),
                     "clock-back" => clock::act(app, "back"),
                     "clock-wrap" => clock::act(app, "wrap"),
@@ -608,13 +596,15 @@ pub fn run() {
                     _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {
+                    // Menu-bar-app feel: left-click toggles the mini panel.
+                    // The full menu (with Show Tracker) is on right-click.
                     if let TrayIconEvent::Click {
                         button: MouseButton::Left,
                         button_state: MouseButtonState::Up,
                         ..
                     } = event
                     {
-                        show_main(tray.app_handle());
+                        mini::toggle(tray.app_handle());
                     }
                 })
                 .build(app)?;
@@ -625,8 +615,15 @@ pub fn run() {
             updater::start(app.handle().clone());
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            // Clicking the dock icon with every window hidden reopens the
+            // tracker (red X only hides to the tray — it never quits).
+            if matches!(event, tauri::RunEvent::Reopen { .. }) {
+                show_main(app);
+            }
+        });
 }
 
 #[cfg(test)]
@@ -718,25 +715,18 @@ mod tests {
     }
 
     #[test]
-    fn viewer_labels_are_distinct() {
-        assert_eq!(viewer_label(1), "viewer-1");
-        assert_ne!(viewer_label(1), viewer_label(2));
-        assert_ne!(viewer_label(1), "main");
-    }
-
-    #[test]
     fn new_windows_route_by_host() {
         assert_eq!(
             new_window_action(&parsed("https://tracker.coolerboxbrothers.com/api/coolerbox/abc")),
-            NewWindowAction::OpenViewer
+            NewWindowAction::SaveFile
         );
         assert_eq!(
             new_window_action(&parsed("https://tracker.coolerboxbrothers.com/api/media/k%2Fx.png")),
-            NewWindowAction::OpenViewer
+            NewWindowAction::SaveFile
         );
         assert_eq!(
             new_window_action(&parsed("https://tracker.coolerboxbrothers.com/projects/1")),
-            NewWindowAction::OpenViewer
+            NewWindowAction::LoadInMain
         );
         assert_eq!(
             new_window_action(&parsed("https://files.example.com/signed?x=1")),

@@ -99,19 +99,12 @@ pub(crate) fn opens_externally(url: &url::Url) -> bool {
 /// else goes to the system browser.
 #[derive(Debug, PartialEq)]
 pub(crate) enum NewWindowAction {
-    /// First-party file route (`/api/...`, e.g. chat attachments): download
-    /// it, so it lands in Downloads instead of replacing the current page.
-    Download,
     LoadInMain,
     OpenExternal,
     Ignore,
 }
 
 pub(crate) fn new_window_action(url: &url::Url) -> NewWindowAction {
-    if url.host_str() == Some(APP_HOST) && url.scheme() == "https" && url.path().starts_with("/api/")
-    {
-        return NewWindowAction::Download;
-    }
     if webview_may_load(url) {
         return NewWindowAction::LoadInMain;
     }
@@ -261,6 +254,9 @@ pub fn run() {
                 env!("CARGO_PKG_VERSION"),
                 idle_supported
             ))
+            // Back / Download buttons (nav_bar.js): the app has no browser
+            // chrome, so a file opened in the main window needs a way back.
+            .initialization_script(include_str!("nav_bar.js"))
             .inner_size(1280.0, 800.0)
             .min_inner_size(1024.0, 640.0)
             .on_navigation(move |url| {
@@ -280,19 +276,6 @@ pub fn run() {
                 let app = app.handle().clone();
                 move |url, _features| {
                     match new_window_action(&url) {
-                        NewWindowAction::Download => {
-                            // A synthetic same-origin `<a download>` click: the
-                            // session cookie is sent and WebKit/WebView2 route
-                            // it through the on_download hook (-> Downloads).
-                            if let (Some(main), Ok(href)) = (
-                                app.get_webview_window("main"),
-                                serde_json::to_string(url.as_str()),
-                            ) {
-                                let _ = main.eval(format!(
-                                    "(function(){{var a=document.createElement('a');a.href={href};a.download='';a.style.display='none';document.body.appendChild(a);a.click();a.remove();}})()"
-                                ));
-                            }
-                        }
                         NewWindowAction::LoadInMain => {
                             if let Some(main) = app.get_webview_window("main") {
                                 let _ = main.navigate(url);
@@ -372,6 +355,8 @@ pub fn run() {
                 MenuItem::with_id(app, "tray-notifications", "Notifications", true, None::<&str>)?;
             let tray_offline =
                 MenuItem::with_id(app, "tray-offline", "Saved for offline", true, None::<&str>)?;
+            let tray_update =
+                MenuItem::with_id(app, "tray-update", "Check for updates", true, None::<&str>)?;
             let tray_quit = MenuItem::with_id(app, "tray-quit", "Quit", true, None::<&str>)?;
             // The time sheet's clock (clock.rs): a line saying where you are,
             // then the four taps, enabled as they make sense.
@@ -387,7 +372,7 @@ pub fn run() {
                 app,
                 &[
                     &clock_items.status, &clock_items.call_in, &clock_items.take_break, &clock_items.back,
-                    &clock_items.wrap, &separator, &tray_show, &tray_notifications, &tray_offline, &tray_quit,
+                    &clock_items.wrap, &separator, &tray_show, &tray_notifications, &tray_offline, &tray_update, &tray_quit,
                 ],
             )?;
             app.manage(clock_items);
@@ -415,6 +400,7 @@ pub fn run() {
                     "clock-break" => clock::act(app, "break"),
                     "clock-back" => clock::act(app, "back"),
                     "clock-wrap" => clock::act(app, "wrap"),
+                    "tray-update" => updater::check_now(app.clone()),
                     "tray-quit" => app.exit(0),
                     _ => {}
                 })
@@ -532,11 +518,11 @@ mod tests {
     fn new_windows_route_by_host() {
         assert_eq!(
             new_window_action(&parsed("https://tracker.coolerboxbrothers.com/api/coolerbox/abc")),
-            NewWindowAction::Download
+            NewWindowAction::LoadInMain
         );
         assert_eq!(
             new_window_action(&parsed("https://tracker.coolerboxbrothers.com/api/media/k%2Fx.png")),
-            NewWindowAction::Download
+            NewWindowAction::LoadInMain
         );
         assert_eq!(
             new_window_action(&parsed("https://tracker.coolerboxbrothers.com/projects/1")),

@@ -1,6 +1,6 @@
 [package]
 name = "cbb-tracker-desktop"
-version = "0.2.5"
+version = "0.2.6"
 description = "CoolerBox Production Tracker — desktop shell (Tauri v2)"
 authors = ["CoolerBox Brothers"]
 edition = "2021"

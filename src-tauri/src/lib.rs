@@ -99,12 +99,19 @@ pub(crate) fn opens_externally(url: &url::Url) -> bool {
 /// else goes to the system browser.
 #[derive(Debug, PartialEq)]
 pub(crate) enum NewWindowAction {
+    /// First-party file route (`/api/...`, e.g. chat attachments): download
+    /// it, so it lands in Downloads instead of replacing the current page.
+    Download,
     LoadInMain,
     OpenExternal,
     Ignore,
 }
 
 pub(crate) fn new_window_action(url: &url::Url) -> NewWindowAction {
+    if url.host_str() == Some(APP_HOST) && url.scheme() == "https" && url.path().starts_with("/api/")
+    {
+        return NewWindowAction::Download;
+    }
     if webview_may_load(url) {
         return NewWindowAction::LoadInMain;
     }
@@ -273,6 +280,19 @@ pub fn run() {
                 let app = app.handle().clone();
                 move |url, _features| {
                     match new_window_action(&url) {
+                        NewWindowAction::Download => {
+                            // A synthetic same-origin `<a download>` click: the
+                            // session cookie is sent and WebKit/WebView2 route
+                            // it through the on_download hook (-> Downloads).
+                            if let (Some(main), Ok(href)) = (
+                                app.get_webview_window("main"),
+                                serde_json::to_string(url.as_str()),
+                            ) {
+                                let _ = main.eval(format!(
+                                    "(function(){{var a=document.createElement('a');a.href={href};a.download='';a.style.display='none';document.body.appendChild(a);a.click();a.remove();}})()"
+                                ));
+                            }
+                        }
                         NewWindowAction::LoadInMain => {
                             if let Some(main) = app.get_webview_window("main") {
                                 let _ = main.navigate(url);
@@ -512,6 +532,14 @@ mod tests {
     fn new_windows_route_by_host() {
         assert_eq!(
             new_window_action(&parsed("https://tracker.coolerboxbrothers.com/api/coolerbox/abc")),
+            NewWindowAction::Download
+        );
+        assert_eq!(
+            new_window_action(&parsed("https://tracker.coolerboxbrothers.com/api/media/k%2Fx.png")),
+            NewWindowAction::Download
+        );
+        assert_eq!(
+            new_window_action(&parsed("https://tracker.coolerboxbrothers.com/projects/1")),
             NewWindowAction::LoadInMain
         );
         assert_eq!(

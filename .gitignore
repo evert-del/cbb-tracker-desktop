@@ -27,3 +27,4 @@ src-tauri/gen
 *.sln
 *.sw?
 installers
+tester-package

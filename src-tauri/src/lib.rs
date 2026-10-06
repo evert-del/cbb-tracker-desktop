@@ -143,7 +143,7 @@ pub(crate) fn opens_externally(url: &url::Url) -> bool {
 /// sent); everything else goes to the system browser.
 #[derive(Debug, PartialEq)]
 pub(crate) enum NewWindowAction {
-    /// First-party file (attachment, Cooler Box item): save to Downloads.
+    /// First-party file (attachment, Cooler Box item): open it from Downloads.
     SaveFile,
     LoadInMain,
     OpenExternal,
@@ -398,14 +398,16 @@ pub fn run() {
             .min_inner_size(1024.0, 640.0)
             .on_navigation(move |url| {
                 // nav_bar.js hands a clicked file link over as
-                // cbb-download://go?u=<https url>: save it, stay on the page.
+                // cbb-download://go?u=<https url>[&save=1]: open it (or, for
+                // a `download` link, save it), staying on the page.
                 if url.scheme() == "cbb-download" {
+                    let save_as = url.query_pairs().any(|(key, value)| key == "save" && value == "1");
                     if let Some(target) = url
                         .query_pairs()
                         .find(|(key, _)| key == "u")
                         .and_then(|(_, value)| value.parse::<url::Url>().ok())
                     {
-                        download::start(&opener_handle, target);
+                        download::start(&opener_handle, target, save_as);
                     }
                     return false;
                 }
@@ -443,7 +445,7 @@ pub fn run() {
                 let app = app.handle().clone();
                 move |url, _features| {
                     match new_window_action(&url) {
-                        NewWindowAction::SaveFile => download::start(&app, url),
+                        NewWindowAction::SaveFile => download::start(&app, url, false),
                         NewWindowAction::LoadInMain => {
                             if let Some(main) = app.get_webview_window("main") {
                                 let _ = main.navigate(url);

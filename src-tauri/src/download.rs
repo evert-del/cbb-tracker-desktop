@@ -1,14 +1,22 @@
-//! Saving first-party files (chat attachments, Cooler Box items) to the
-//! user's Downloads folder.
+//! Opening and saving first-party files (attachments, scripts, call sheets,
+//! Cooler Box items).
 //!
-//! These links are `target="_blank"` anchors to `/api/media/…` or
-//! `/api/coolerbox/…`. Left alone, the WebView loads the file as a bare page
-//! (images, PDFs) with no way back and no way to save it. Instead the shell
-//! fetches the file itself with the window's own session cookies — nothing is
-//! stored in Rust — asks where to save it (a native Save dialog, pre-filled
-//! with the real file name), streams it to disk and tells the user at every
-//! step with an in-app message (`window.__cbbToast`, nav_bar.js): preparing,
-//! downloading with progress, saved with a "Show in folder" button, or failed.
+//! These links are `target="_blank"` anchors to `/api/media/…`,
+//! `/api/attachments/…` and the like. Left alone, the WebView loads the file
+//! as a bare page (images, PDFs) with no way back and no way to save it.
+//! Instead the shell fetches the file itself with the window's own session
+//! cookies — nothing is stored in Rust — and tells the user at every step
+//! with an in-app message (`window.__cbbToast`, nav_bar.js).
+//!
+//! An "Open …" link opens: the file is saved into Downloads (no dialog) and
+//! handed to the user's own app for it (Word, the PDF reader), as a browser
+//! does. Until 0.2.12 every click asked where to save instead and opened
+//! nothing; on Windows that Save dialog could sit behind the window, so the
+//! click seemed to do nothing at all (found live, 2026-10-06). Only a link
+//! the page marks `download` asks where to save, with the dialog parented to
+//! the window. A document that is really a link (Google Drive, Dropbox: the
+//! tracker redirects to it) answers with a web page, and opens in the
+//! browser instead of being saved as a "file".
 //!
 //! Entry points: a click handler in `nav_bar.js` (hands the URL over through
 //! a `cbb-download://` navigation, which `on_navigation` intercepts) and
@@ -17,17 +25,17 @@
 
 use std::{
     io::Write,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::Mutex,
     time::{Duration, Instant},
 };
 
-use reqwest::header::{CONTENT_DISPOSITION, COOKIE};
+use reqwest::header::{CONTENT_DISPOSITION, CONTENT_TYPE, COOKIE};
 use tauri::{AppHandle, Manager, Runtime};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
 
-use crate::{offline, APP_HOST};
+use crate::{offline, system_open, APP_HOST};
 
 /// Files saved here, so "Show in folder" can only ever reveal those.
 static SAVED: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
@@ -72,9 +80,60 @@ fn toast<R: Runtime>(app: &AppHandle<R>, message: serde_json::Value) {
     }
 }
 
-/// Download `url`, asking where to save it. Anything that is not a
-/// first-party file URL is ignored.
-pub(crate) fn start<R: Runtime>(app: &AppHandle<R>, url: url::Url) {
+/// What a fetch ended in.
+enum Fetched {
+    /// Written to this path.
+    Saved(PathBuf),
+    /// The user closed the Save dialog.
+    Cancelled,
+    /// Not a file but a web page (a document that is a Drive/Dropbox link):
+    /// open this, the address it ended at, in the browser.
+    Page(url::Url),
+}
+
+/// True when a response is a web page rather than a file: such a page is
+/// opened in the browser, never saved as the file.
+fn is_web_page(content_type: Option<&str>) -> bool {
+    content_type.is_some_and(|value| {
+        value
+            .split(';')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .eq_ignore_ascii_case("text/html")
+    })
+}
+
+/// `name` inside `dir`, or `name (1)`, `name (2)`, … when taken, the way a
+/// browser numbers a second download of the same file.
+fn unique_path(dir: &Path, name: &str, taken: impl Fn(&Path) -> bool) -> PathBuf {
+    let first = dir.join(name);
+    if !taken(&first) {
+        return first;
+    }
+    let (stem, ext) = match name.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() => (stem, format!(".{ext}")),
+        _ => (name, String::new()),
+    };
+    (1..)
+        .map(|n| dir.join(format!("{stem} ({n}){ext}")))
+        .find(|candidate| !taken(candidate))
+        .expect("an unused name exists")
+}
+
+fn remember(path: &Path) {
+    if let Ok(mut saved) = SAVED.lock() {
+        saved.retain(|p| p != path);
+        saved.push(path.to_path_buf());
+        if saved.len() > MAX_SAVED {
+            saved.remove(0);
+        }
+    }
+}
+
+/// Open `url` (or, with `save_as`, ask where to save it). Anything that is
+/// not a first-party file URL is ignored.
+pub(crate) fn start<R: Runtime>(app: &AppHandle<R>, url: url::Url, save_as: bool) {
     if !is_file_url(&url) {
         return;
     }
@@ -82,37 +141,61 @@ pub(crate) fn start<R: Runtime>(app: &AppHandle<R>, url: url::Url) {
     // Own thread: cookie access, the dialog and the transfer must not run on
     // the UI thread.
     std::thread::spawn(move || {
-        toast(
-            &app,
-            serde_json::json!({ "kind": "busy", "title": "Preparing your download…" }),
-        );
-        match tauri::async_runtime::block_on(fetch(&app, &url)) {
-            Ok(Some(path)) => {
+        let title = if save_as { "Preparing your download…" } else { "Opening…" };
+        toast(&app, serde_json::json!({ "kind": "busy", "title": title }));
+        match tauri::async_runtime::block_on(fetch(&app, &url, save_as)) {
+            Ok(Fetched::Saved(path)) => {
                 let name = path
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_default();
                 let shown = path.display().to_string();
-                if let Ok(mut saved) = SAVED.lock() {
-                    saved.retain(|p| p != &path);
-                    saved.push(path.clone());
-                    if saved.len() > MAX_SAVED {
-                        saved.remove(0);
-                    }
+                remember(&path);
+                if save_as {
+                    toast(
+                        &app,
+                        serde_json::json!({
+                            "kind": "ok",
+                            "title": "Download complete",
+                            "detail": format!("{name}\nSaved to {shown}"),
+                            "action": { "label": "Show in folder", "path": shown },
+                        }),
+                    );
+                    offline::finish_regular_download(&app, Some(path), true);
+                } else if system_open::open_path(&app, &shown).is_ok() {
+                    toast(
+                        &app,
+                        serde_json::json!({
+                            "kind": "ok",
+                            "title": format!("Opened {name}"),
+                            "detail": format!("A copy is in {shown}"),
+                            "action": { "label": "Show in folder", "path": shown },
+                        }),
+                    );
+                } else {
+                    toast(
+                        &app,
+                        serde_json::json!({
+                            "kind": "ok",
+                            "title": "Saved to your Downloads",
+                            "detail": format!("{name} could not be opened here. Open it from {shown}"),
+                            "action": { "label": "Show in folder", "path": shown },
+                        }),
+                    );
                 }
+            }
+            Ok(Fetched::Cancelled) => toast(&app, serde_json::json!({ "kind": "hide" })),
+            Ok(Fetched::Page(page)) => {
+                system_open::open_url(&app, page.as_str());
                 toast(
                     &app,
                     serde_json::json!({
                         "kind": "ok",
-                        "title": "Download complete",
-                        "detail": format!("{name}\nSaved to {shown}"),
-                        "action": { "label": "Show in folder", "path": shown },
+                        "title": "Opened in your browser",
+                        "detail": "This document is a link, so it opens where it lives.",
                     }),
                 );
-                offline::finish_regular_download(&app, Some(path), true);
             }
-            // The user closed the Save dialog.
-            Ok(None) => toast(&app, serde_json::json!({ "kind": "hide" })),
             Err(_) => {
                 toast(
                     &app,
@@ -146,11 +229,11 @@ fn percent(done: u64, total: Option<u64>) -> Option<u8> {
     Some(((done.min(total) * 100) / total) as u8)
 }
 
-/// `Ok(None)` when the user cancels the Save dialog.
 async fn fetch<R: Runtime>(
     app: &AppHandle<R>,
     url: &url::Url,
-) -> Result<Option<PathBuf>, String> {
+    save_as: bool,
+) -> Result<Fetched, String> {
     let window = app.get_webview_window("main").ok_or("main window unavailable")?;
     let cookies = window
         .cookies_for_url(url.clone())
@@ -170,6 +253,16 @@ async fn fetch<R: Runtime>(
     if !response.status().is_success() {
         return Err(format!("HTTP {}", response.status()));
     }
+    // Redirects are followed (reqwest drops the cookies on leaving the
+    // tracker), so a link-type document ends on the other site's page.
+    if is_web_page(
+        response
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok()),
+    ) {
+        return Ok(Fetched::Page(response.url().clone()));
+    }
     let total = response.content_length();
 
     let name = file_name(
@@ -177,37 +270,53 @@ async fn fetch<R: Runtime>(
             .headers()
             .get(CONTENT_DISPOSITION)
             .and_then(|v| v.to_str().ok()),
-        url,
+        // Where the redirects ended (/api/media/<key>), not the request
+        // (/api/attachments/<id>/download): the name needs its extension
+        // for the right app to open it.
+        response.url(),
     );
 
-    // Ask where to put it (native Save dialog, name pre-filled, Downloads
-    // first). The transfer is already started, so this is quick after "Save".
-    toast(
-        app,
-        serde_json::json!({
-            "kind": "busy",
-            "title": "Choose where to save the file",
-            "detail": name,
-        }),
-    );
-    let mut dialog = app.dialog().file().set_file_name(name.clone());
-    if let Ok(dir) = app.path().download_dir() {
-        dialog = dialog.set_directory(dir);
-    }
-    let chosen = tauri::async_runtime::spawn_blocking(move || dialog.blocking_save_file())
-        .await
-        .map_err(|e| e.to_string())?;
-    let Some(chosen) = chosen else {
-        return Ok(None);
+    let downloads = app.path().download_dir().ok();
+    let dest = if save_as {
+        // Ask where to put it (native Save dialog, name pre-filled, Downloads
+        // first), in front of the window: unparented, Windows could put it
+        // behind. The transfer is already started, so this is quick after
+        // "Save".
+        toast(
+            app,
+            serde_json::json!({
+                "kind": "busy",
+                "title": "Choose where to save the file",
+                "detail": name,
+            }),
+        );
+        let mut dialog = app
+            .dialog()
+            .file()
+            .set_parent(&window)
+            .set_file_name(name.clone());
+        if let Some(dir) = downloads {
+            dialog = dialog.set_directory(dir);
+        }
+        let chosen = tauri::async_runtime::spawn_blocking(move || dialog.blocking_save_file())
+            .await
+            .map_err(|e| e.to_string())?;
+        let Some(chosen) = chosen else {
+            return Ok(Fetched::Cancelled);
+        };
+        chosen.into_path().map_err(|e| e.to_string())?
+    } else {
+        let dir = downloads.ok_or("no Downloads folder")?;
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        unique_path(&dir, &name, |p| p.exists())
     };
-    let dest = chosen.into_path().map_err(|e| e.to_string())?;
     let part = PathBuf::from(format!("{}.cbb-part", dest.display()));
 
     toast(
         app,
         serde_json::json!({
             "kind": "busy",
-            "title": "Downloading…",
+            "title": if save_as { "Downloading…" } else { "Opening…" },
             "detail": name,
             "progress": 0,
         }),
@@ -226,7 +335,7 @@ async fn fetch<R: Runtime>(
                     app,
                     serde_json::json!({
                         "kind": "busy",
-                        "title": "Downloading…",
+                        "title": if save_as { "Downloading…" } else { "Opening…" },
                         "detail": name,
                         "progress": percent(done, total),
                     }),
@@ -241,7 +350,7 @@ async fn fetch<R: Runtime>(
     if result.is_err() {
         let _ = std::fs::remove_file(&part);
     }
-    result.map(|()| Some(dest))
+    result.map(|()| Fetched::Saved(dest))
 }
 
 fn decode(raw: &str) -> String {
@@ -363,6 +472,35 @@ mod tests {
         assert_eq!(percent(500, Some(200)), Some(100));
         assert_eq!(percent(10, None), None);
         assert_eq!(percent(10, Some(0)), None);
+    }
+
+    #[test]
+    fn a_second_copy_gets_a_number() {
+        let dir = Path::new("/dl");
+        let taken = |names: &'static [&'static str]| {
+            move |p: &Path| names.iter().any(|n| dir.join(n) == p)
+        };
+        assert_eq!(unique_path(dir, "a.pdf", taken(&[])), dir.join("a.pdf"));
+        assert_eq!(unique_path(dir, "a.pdf", taken(&["a.pdf"])), dir.join("a (1).pdf"));
+        assert_eq!(
+            unique_path(dir, "a.pdf", taken(&["a.pdf", "a (1).pdf"])),
+            dir.join("a (2).pdf")
+        );
+        assert_eq!(unique_path(dir, "notes", taken(&["notes"])), dir.join("notes (1)"));
+        assert_eq!(unique_path(dir, ".env", taken(&[".env"])), dir.join(".env (1)"));
+    }
+
+    #[test]
+    fn a_web_page_is_not_a_file() {
+        assert!(is_web_page(Some("text/html")));
+        assert!(is_web_page(Some("text/html; charset=utf-8")));
+        assert!(is_web_page(Some("TEXT/HTML")));
+        assert!(!is_web_page(Some("application/pdf")));
+        assert!(!is_web_page(Some(
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        )));
+        assert!(!is_web_page(Some("text/plain")));
+        assert!(!is_web_page(None));
     }
 
     #[test]

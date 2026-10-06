@@ -1,9 +1,11 @@
 // Desktop-shell page helpers, injected into the main window (plain DOM, no
 // IPC):
-//  1. File links (chat attachments, Cooler Box items: same-origin
-//     /api/media/ and /api/coolerbox/ anchors) are saved to Downloads instead
-//     of opening as a bare page. The click is handed to the shell through a
-//     cbb-download:// navigation, which the shell intercepts (download.rs).
+//  1. File links (attachments, scripts, call sheets, Cooler Box items:
+//     same-origin /api/ file routes) are opened in the user's own app (saved
+//     to Downloads first) instead of loading as a bare page; a link marked
+//     `download` asks where to save instead. The click is handed to the shell
+//     through a cbb-download:// navigation, which the shell intercepts
+//     (download.rs).
 //     No on-page buttons: the tracker page is left exactly as the website
 //     made it.
 //  2. window.__cbbToast(): the in-app message the shell uses to show the
@@ -122,9 +124,13 @@
       if (!isFileUrl(u)) return;
       e.preventDefault();
       e.stopPropagation();
+      var saveAs = a.hasAttribute('download');
       // Instant feedback; the shell replaces this as soon as it knows more.
-      window.__cbbToast({ kind: 'busy', title: 'Preparing your download\u2026' });
-      location.href = 'cbb-download://go?u=' + encodeURIComponent(u.href);
+      window.__cbbToast({
+        kind: 'busy',
+        title: saveAs ? 'Preparing your download\u2026' : 'Opening\u2026'
+      });
+      location.href = 'cbb-download://go?u=' + encodeURIComponent(u.href) + (saveAs ? '&save=1' : '');
     },
     true
   );

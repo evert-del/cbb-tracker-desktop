@@ -448,7 +448,7 @@ dependencies = [
 
 [[package]]
 name = "cbb-tracker-desktop"
-version = "0.2.10"
+version = "0.2.11"
 dependencies = [
  "gtk",
  "percent-encoding",

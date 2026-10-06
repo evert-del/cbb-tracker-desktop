@@ -69,6 +69,9 @@ const IN_APP_HOSTS: &[&str] = &[
     "accounts.google.com",
     "login.xero.com",
     "auth.services.adobe.com",
+    // Adobe's sign-in page POSTs here (`/ims/fromSusi`); handed to the
+    // system browser it becomes a GET, which Adobe refuses.
+    "adobeid-na1.services.adobe.com",
     "ims-na1.adobelogin.com",
     "checkout.paystack.com",
 ];
@@ -668,6 +671,9 @@ mod tests {
             "https://wlwdhorybvelwbmhtftw.supabase.co/auth/v1/authorize",
             "https://accounts.google.com/o/oauth2/v2/auth",
             "https://checkout.paystack.com/",
+            "https://ims-na1.adobelogin.com/ims/authorize/v2",
+            "https://auth.services.adobe.com/en_US/index.html",
+            "https://adobeid-na1.services.adobe.com/ims/fromSusi",
             "https://challenges.cloudflare.com/turnstile/v0/api.js",
             "https://challenges.cloudflare.com/cdn-cgi/challenge-platform/h/b/turnstile/f/av0/rch/ifstq/sitekey/light/fbE/new/flexible?lang=auto",
         ] {

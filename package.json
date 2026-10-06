@@ -2,7 +2,7 @@
   "name": "cbb-tracker-desktop",
   "description": "CoolerBox Production Tracker — desktop shell (Tauri v2) for Windows, macOS and Linux",
   "private": true,
-  "version": "0.2.11",
+  "version": "0.2.12",
   "type": "module",
   "scripts": {
     "dev": "vite",

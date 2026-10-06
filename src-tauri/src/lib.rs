@@ -88,6 +88,43 @@ pub(crate) fn webview_may_load(url: &url::Url) -> bool {
     matches!(url.host_str(), Some(host) if IN_APP_HOSTS.contains(&host))
 }
 
+/// Sign-in and payment providers that send the window on through hosts of
+/// their own: Adobe hops through its other sites to set its session
+/// (adobeid-na1.services.adobe.com, sso.behance.net, ...), Google through
+/// accounts.youtube.com, a card's 3-D Secure through the bank. Those hops
+/// carry the provider's session, so a browser opened on one gets an error
+/// ("Bad cdscKey", "unsupported method GET"). Once the window reaches one of
+/// these hosts it follows any https page until it is back on the tracker,
+/// rather than chasing each provider's hops in `IN_APP_HOSTS`.
+const HAND_OFF_HOSTS: &[&str] = &[
+    "accounts.google.com",
+    "login.xero.com",
+    "auth.services.adobe.com",
+    "ims-na1.adobelogin.com",
+    "checkout.paystack.com",
+];
+
+/// Whether the main window may load `url`, tracking in `handed_off` whether
+/// it is out at a provider (see `HAND_OFF_HOSTS`). Back on the tracker ends
+/// the hand-off. The tracker embeds no page from these hosts, so a hand-off
+/// only starts when the window itself goes there.
+pub(crate) fn main_window_may_load(url: &url::Url, handed_off: &mut bool) -> bool {
+    if url.scheme() != "https" {
+        return false;
+    }
+    match url.host_str() {
+        Some(APP_HOST) => {
+            *handed_off = false;
+            true
+        }
+        Some(host) if HAND_OFF_HOSTS.contains(&host) => {
+            *handed_off = true;
+            true
+        }
+        _ => *handed_off || webview_may_load(url),
+    }
+}
+
 /// Schemes handed to the OS when the WebView may not load them itself.
 /// `webcal` is My Schedule's "Open in Apple Calendar or Outlook" feed link.
 /// Anything else (javascript:, file:, data:, …) is dropped.
@@ -337,6 +374,7 @@ pub fn run() {
             // sleep), so the tracker knows its "you were away" prompt is real.
             let idle_supported = idle::supported();
             let download_handle = app.handle().clone();
+            let handed_off = std::sync::Mutex::new(false);
             WebviewWindowBuilder::new(
                 app,
                 "main",
@@ -384,7 +422,14 @@ pub fn run() {
                 }
                 // about:blank / about:srcdoc frames are created by widgets
                 // like Turnstile and carry no network content.
-                if url.scheme() == "about" || webview_may_load(url) {
+                if url.scheme() == "about" {
+                    return true;
+                }
+                let allowed = match handed_off.lock() {
+                    Ok(mut state) => main_window_may_load(url, &mut state),
+                    Err(_) => webview_may_load(url),
+                };
+                if allowed {
                     return true;
                 }
                 // `tracker://` URLs are delivered to route_deep_link by the
@@ -679,6 +724,43 @@ mod tests {
         ] {
             assert!(webview_may_load(&parsed(raw)), "{raw}");
         }
+    }
+
+    #[test]
+    fn a_sign_in_follows_the_provider_until_back_on_the_tracker() {
+        let mut handed_off = false;
+        // Ruan's Frame.io link, 2026-10-06: both hops were thrown out to the
+        // browser, which cannot finish them.
+        for raw in [
+            "https://tracker.coolerboxbrothers.com/settings/frameio",
+            "https://ims-na1.adobelogin.com/ims/authorize/v2?client_id=x",
+            "https://auth.services.adobe.com/en_US/index.html",
+            "https://adobeid-na1.services.adobe.com/ims/fromSusi",
+            "https://sso.behance.net/ims/cdsc_redirect/abc",
+            "https://tracker.coolerboxbrothers.com/api/integrations/frameio/callback?code=c",
+        ] {
+            assert!(main_window_may_load(&parsed(raw), &mut handed_off), "{raw}");
+        }
+        assert!(!handed_off, "back on the tracker ends the hand-off");
+        assert!(!main_window_may_load(&parsed("https://sso.behance.net/x"), &mut handed_off));
+    }
+
+    #[test]
+    fn foreign_pages_leave_the_app_when_not_handed_off() {
+        let mut handed_off = false;
+        for raw in [
+            "https://tracker.coolerboxbrothers.com/projects",
+            "https://evil.example/phish",
+            "http://accounts.google.com/",
+        ] {
+            main_window_may_load(&parsed(raw), &mut handed_off);
+        }
+        assert!(!handed_off);
+        assert!(!main_window_may_load(&parsed("https://evil.example/phish"), &mut handed_off));
+        // Even mid-sign-in, nothing but https.
+        main_window_may_load(&parsed("https://accounts.google.com/o/oauth2/v2/auth"), &mut handed_off);
+        assert!(!main_window_may_load(&parsed("http://example.com/"), &mut handed_off));
+        assert!(main_window_may_load(&parsed("https://accounts.youtube.com/accounts/SetSID"), &mut handed_off));
     }
 
     #[test]

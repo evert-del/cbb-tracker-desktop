@@ -72,7 +72,7 @@ pub(crate) fn is_file_url(url: &url::Url) -> bool {
 }
 
 /// Show a message in the main window (see `__cbbToast` in nav_bar.js).
-fn toast<R: Runtime>(app: &AppHandle<R>, message: serde_json::Value) {
+pub(crate) fn toast<R: Runtime>(app: &AppHandle<R>, message: serde_json::Value) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.eval(format!(
             "window.__cbbToast&&window.__cbbToast({message})"

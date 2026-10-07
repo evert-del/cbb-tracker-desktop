@@ -27,6 +27,7 @@ mod desktop_entry;
 mod diagnostics;
 mod download;
 mod idle;
+mod location;
 mod mini;
 mod notify;
 mod offline;
@@ -375,7 +376,7 @@ pub fn run() {
             let idle_supported = idle::supported();
             let download_handle = app.handle().clone();
             let handed_off = std::sync::Mutex::new(false);
-            WebviewWindowBuilder::new(
+            let main_window = WebviewWindowBuilder::new(
                 app,
                 "main",
                 WebviewUrl::External(START_URL.parse().expect("START_URL is a valid URL")),
@@ -394,6 +395,11 @@ pub fn run() {
             // window's own session. No on-page buttons: the tracker page is
             // left exactly as the website made it.
             .initialization_script(include_str!("nav_bar.js"))
+            // Location for the time sheet: the tracker's own pages only
+            // (location.rs; macOS is wired up after the window is built).
+            .on_permission_request(|webview, kind| {
+                location::decide(webview.url().ok().as_ref(), kind)
+            })
             .inner_size(1280.0, 800.0)
             .min_inner_size(1024.0, 640.0)
             .on_navigation(move |url| {
@@ -499,6 +505,10 @@ pub fn run() {
                 });
             })
             .build()?;
+            #[cfg(target_os = "macos")]
+            location::enable(&main_window);
+            #[cfg(not(target_os = "macos"))]
+            let _ = main_window;
 
             // Mini bar (mini.rs + mini.html): hidden until the tray toggle.
             // Frameless, transparent, always on top, out of Alt-Tab.

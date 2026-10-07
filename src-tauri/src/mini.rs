@@ -31,6 +31,8 @@ pub(crate) struct View {
     pub summary: Vec<crate::notify::LabelCount>,
     pub version: String,
     pub autostart: bool,
+    /// Closing the main window quits the app (close.rs) instead of hiding it.
+    pub close_quits: bool,
     pub pinned: bool,
     /// Shrunk to the mini timer (only while pinned).
     pub compact: bool,
@@ -98,6 +100,7 @@ pub(crate) fn plan(
         summary: Vec::new(),
         version: env!("CARGO_PKG_VERSION").into(),
         autostart: false,
+        close_quits: false,
         pinned: false,
         compact: false,
         platform: std::env::consts::OS.into(),
@@ -122,6 +125,7 @@ pub(crate) fn push<R: Runtime>(app: &AppHandle<R>) {
         .unwrap_or((0, Vec::new(), Vec::new()));
     let mut view = plan(clock.as_ref(), unread, needs, crate::clock::unix_now());
     view.autostart = crate::autostart_enabled(app);
+    view.close_quits = crate::close::quits(app);
     view.pinned = is_pinned();
     view.compact = is_compact();
     view.summary = summary;
@@ -328,7 +332,10 @@ pub(crate) fn mini_compact<R: Runtime>(app: AppHandle<R>, compact: bool) -> Resu
 }
 
 fn is_menu_item(item: &str) -> bool {
-    matches!(item, "offline" | "update" | "diagnostics" | "autostart" | "quit")
+    matches!(
+        item,
+        "offline" | "update" | "diagnostics" | "autostart" | "close-keep" | "close-quit" | "quit"
+    )
 }
 
 /// The panel's shortcuts and settings: the same actions as the tray menu.
@@ -352,6 +359,10 @@ pub(crate) fn mini_menu<R: Runtime>(app: AppHandle<R>, item: String) -> Result<(
         }
         "autostart" => {
             crate::toggle_autostart(&app);
+            push(&app);
+        }
+        "close-keep" | "close-quit" => {
+            crate::close::set_quits(&app, item == "close-quit");
             push(&app);
         }
         "quit" => app.exit(0),
@@ -469,7 +480,7 @@ mod tests {
 
     #[test]
     fn only_known_menu_items_pass() {
-        for item in ["offline", "update", "diagnostics", "autostart", "quit"] {
+        for item in ["offline", "update", "diagnostics", "autostart", "close-keep", "close-quit", "quit"] {
             assert!(is_menu_item(item), "{item}");
         }
         for item in ["", "show", "quit;", "eval"] {

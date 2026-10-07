@@ -23,6 +23,7 @@ use tauri::{
 use tauri_plugin_deep_link::DeepLinkExt;
 
 mod clock;
+mod close;
 mod desktop_entry;
 mod diagnostics;
 mod download;
@@ -263,6 +264,29 @@ pub(crate) fn toggle_autostart<R: Runtime>(app: &AppHandle<R>) {
     }
 }
 
+/// Hide a window; the app keeps running in the menu bar / tray. With the
+/// last visible window gone the dock icon goes too (pure menu-bar app). It
+/// returns in show_main / show_library, so there is never a dead dock icon.
+pub(crate) fn hide_to_tray<R: Runtime>(window: &tauri::Window<R>) {
+    let _ = window.hide();
+    #[cfg(target_os = "macos")]
+    {
+        let app = window.app_handle();
+        let hidden = window.label().to_string();
+        let any_other = ["main", "mini", "library"]
+            .iter()
+            .filter(|label| label.to_string() != hidden)
+            .any(|label| {
+                app.get_webview_window(label)
+                    .and_then(|w| w.is_visible().ok())
+                    .unwrap_or(false)
+            });
+        if !any_other {
+            let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+        }
+    }
+}
+
 /// Bring the Saved-for-offline library forward.
 pub(crate) fn show_library<R: Runtime>(app: &AppHandle<R>) {
     #[cfg(target_os = "macos")]
@@ -372,29 +396,18 @@ pub fn run() {
         // Toggl) and comes back in show_main/show_library — so there is
         // never a dead dock icon. Quit is in the tray menu (or Cmd+Q).
         .on_window_event(|window, event| {
-            if window.label() == "main" || window.label() == "mini" {
-                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                    api.prevent_close();
-                    let _ = window.hide();
-                    // With the last visible window gone the dock icon goes
-                    // too (pure menu-bar app). It returns in show_main /
-                    // show_library, so there is never a dead dock icon.
-                    #[cfg(target_os = "macos")]
-                    {
-                        let app = window.app_handle();
-                        let hidden = window.label().to_string();
-                        let any_other = ["main", "mini", "library"]
-                            .iter()
-                            .filter(|label| label.to_string() != hidden)
-                            .any(|label| {
-                                app.get_webview_window(label)
-                                    .and_then(|w| w.is_visible().ok())
-                                    .unwrap_or(false)
-                            });
-                        if !any_other {
-                            let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
-                        }
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                match window.label() {
+                    // Hide to the menu bar / tray, or quit (close.rs).
+                    "main" => {
+                        api.prevent_close();
+                        close::main_window_closed(window);
                     }
+                    "mini" => {
+                        api.prevent_close();
+                        hide_to_tray(window);
+                    }
+                    _ => {}
                 }
             }
             // Drop-down behaviour: the quick panel hides when it loses focus,

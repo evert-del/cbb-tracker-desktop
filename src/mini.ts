@@ -20,6 +20,7 @@ type View = {
   summary: LabelCount[];
   version: string;
   autostart: boolean;
+  close_quits: boolean;
   pinned: boolean;
   compact: boolean;
   platform: string;
@@ -240,6 +241,13 @@ window.__cbbMiniShow = (view) => {
   const on = String(view.autostart);
   el("autostart-row").setAttribute("aria-checked", on);
   el("autostart-switch").setAttribute("aria-checked", on);
+  el("close-keep").setAttribute("aria-checked", String(!view.close_quits));
+  el("close-quit").setAttribute("aria-checked", String(view.close_quits));
+  el("close-quit").textContent = `${quit} the app`;
+  const place = view.platform === "macos" ? "menu bar" : "system tray";
+  el("close-hint").textContent = view.close_quits
+    ? "Closing stops your timer, reminders and notifications until you reopen it."
+    : `Stays in the ${place} so your timer, reminders and notifications keep going.`;
   renderPin(view.pinned);
   renderActions(view);
   renderNeeds(view);
@@ -280,6 +288,8 @@ window.addEventListener("DOMContentLoaded", () => {
   click("update-row", () => menu("update"));
   click("diagnostics-row", () => menu("diagnostics"));
   click("autostart-row", () => menu("autostart"));
+  click("close-keep", () => menu("close-keep"));
+  click("close-quit", () => menu("close-quit"));
   click("quit", () => menu("quit"));
   click("quit-row", () => menu("quit"));
   click("open-settings", () => showSettings(true));

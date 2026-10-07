@@ -213,7 +213,7 @@ fn has_session_cookie(cookies: &str) -> bool {
 /// the close handler: a hidden app is a pure menu-bar app, like Toggl).
 pub(crate) fn show_main<R: Runtime>(app: &AppHandle<R>) {
     #[cfg(target_os = "macos")]
-    app.set_activation_policy(tauri::ActivationPolicy::Regular);
+    let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.unminimize();
@@ -224,7 +224,7 @@ pub(crate) fn show_main<R: Runtime>(app: &AppHandle<R>) {
 /// Bring the Saved-for-offline library forward.
 pub(crate) fn show_library<R: Runtime>(app: &AppHandle<R>) {
     #[cfg(target_os = "macos")]
-    app.set_activation_policy(tauri::ActivationPolicy::Regular);
+    let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
     if let Some(library) = app.get_webview_window("library") {
         let _ = library.show();
         let _ = library.unminimize();
@@ -336,7 +336,7 @@ pub fn run() {
                                     .unwrap_or(false)
                             });
                         if !any_other {
-                            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+                            let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
                         }
                     }
                 }

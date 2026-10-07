@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Merged into the app's Info.plist by Tauri. macOS shows this when the
+       tracker's time sheet first asks where you are (location.rs). -->
+  <key>NSLocationUsageDescription</key>
+  <string>The tracker's time sheet checks where you call in and wrap, and lets you register your home for working from home.</string>
+  <key>NSLocationWhenInUseUsageDescription</key>
+  <string>The tracker's time sheet checks where you call in and wrap, and lets you register your home for working from home.</string>
+</dict>
+</plist>

@@ -29,6 +29,7 @@ mod diagnostics;
 mod download;
 mod google_sign_in;
 mod idle;
+mod location;
 mod mini;
 mod notify;
 mod offline;
@@ -498,6 +499,14 @@ pub fn run() {
             // window's own session. No on-page buttons: the tracker page is
             // left exactly as the website made it.
             .initialization_script(include_str!("nav_bar.js"))
+            // macOS: navigator.geolocation for the tracker's pages, answered
+            // by Core Location through cbb-geo:// hand-overs (location.rs).
+            .initialization_script(if cfg!(target_os = "macos") { include_str!("geo_bridge.js") } else { "" })
+            // Location for the time sheet: the tracker's own pages only
+            // (location.rs). Windows and Linux; macOS uses geo_bridge.js.
+            .on_permission_request(|webview, kind| {
+                location::decide(webview.url().ok().as_ref(), kind)
+            })
             .inner_size(1280.0, 800.0)
             .min_inner_size(1024.0, 640.0)
             .on_navigation(move |url| {
@@ -512,6 +521,21 @@ pub fn run() {
                         .and_then(|(_, value)| value.parse::<url::Url>().ok())
                     {
                         download::start(&opener_handle, target, save_as);
+                    }
+                    return false;
+                }
+                // geo_bridge.js (macOS) asks for the location as
+                // cbb-geo://get?id=N; answered only on the tracker's pages.
+                if url.scheme() == "cbb-geo" {
+                    #[cfg(target_os = "macos")]
+                    if let Some(id) = location::request_id(url) {
+                        let on_tracker = opener_handle
+                            .get_webview_window("main")
+                            .and_then(|main| main.url().ok())
+                            .is_some_and(|page| location::page_may_locate(&page));
+                        if on_tracker {
+                            location::request(&opener_handle, id);
+                        }
                     }
                     return false;
                 }

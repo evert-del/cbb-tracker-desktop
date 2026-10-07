@@ -46,6 +46,11 @@ strip = true
 gtk = "0.18"
 
 # Seconds since the last input, for the time sheet's "you were away" (idle.rs).
+# Core Location for the time sheet's location on macOS (location.rs). The
+# same version wry already uses.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_SystemInformation", "Win32_UI_Input_KeyboardAndMouse"] }
 

@@ -7,16 +7,19 @@
 //! The sign-in still *starts* in the app: the tracker's own "Continue with
 //! Google" sends the window to Supabase's `/auth/v1/authorize`, having left
 //! its PKCE verifier in the app's cookie jar. The shell stops that one
-//! navigation, swaps its `redirect_to` for `tracker://signed-in` and opens it
-//! in the browser. Google → Supabase → `tracker://signed-in?code=…` brings it
-//! back, and the main window loads the tracker's original callback with that
-//! code, where the verifier is, as if it had never left. The shell holds no
+//! navigation, swaps its `redirect_to` for the tracker's desktop return page
+//! (`/desktop/signed-in`) and opens it in the browser. Google → Supabase →
+//! that page, which tells the person they're signed in (so the tab isn't
+//! left spinning) and forwards the query unchanged to
+//! `tracker://signed-in?code=…`, without using the code itself. The main
+//! window then loads the tracker's original callback with that code, where
+//! the verifier is, as if it had never left. The shell holds no
 //! tokens: the code is useless without the verifier in the app's jar.
 //!
 //! Only a return the shell is waiting for is followed (one, for a short
 //! while), and only to the callback address the tracker itself asked for.
-//! Supabase must list `tracker://signed-in` under Auth → URL Configuration →
-//! Redirect URLs, or it sends the browser to the Site URL instead.
+//! The return page is covered by `https://tracker.coolerboxbrothers.com/**`
+//! in Supabase's Auth Redirect URLs; `tracker://signed-in` stays listed too.
 
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -25,9 +28,9 @@ use tauri::{AppHandle, Runtime};
 
 use crate::{APP_HOST, SUPABASE_HOST};
 
-/// Where Supabase sends the browser back to. Must match the Supabase
-/// redirect allow-list exactly.
-const RETURN_TO: &str = "tracker://signed-in";
+/// Where Supabase sends the browser back to: the tracker's public return
+/// page, which hands the query on to `tracker://signed-in`.
+const RETURN_TO: &str = "https://tracker.coolerboxbrothers.com/desktop/signed-in";
 
 /// How long a sign-in started in the browser may take to come back.
 const WAIT_FOR: Duration = Duration::from_secs(15 * 60);
@@ -129,7 +132,10 @@ mod tests {
         let (browser, callback) = hand_off(&parsed(AUTHORIZE)).expect("handed off");
         let pairs: Vec<(String, String)> = browser.query_pairs().into_owned().collect();
         assert_eq!(browser.host_str(), Some(SUPABASE_HOST));
-        assert!(pairs.contains(&("redirect_to".into(), "tracker://signed-in".into())));
+        assert!(pairs.contains(&(
+            "redirect_to".into(),
+            "https://tracker.coolerboxbrothers.com/desktop/signed-in".into()
+        )));
         assert!(pairs.contains(&("code_challenge".into(), "abc".into())));
         assert!(pairs.contains(&("provider".into(), "google".into())));
         assert_eq!(

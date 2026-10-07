@@ -450,7 +450,6 @@ dependencies = [
 name = "cbb-tracker-desktop"
 version = "0.2.12"
 dependencies = [
- "block2",
  "gtk",
  "objc2",
  "percent-encoding",

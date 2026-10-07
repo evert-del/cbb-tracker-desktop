@@ -376,7 +376,7 @@ pub fn run() {
             let idle_supported = idle::supported();
             let download_handle = app.handle().clone();
             let handed_off = std::sync::Mutex::new(false);
-            let main_window = WebviewWindowBuilder::new(
+            WebviewWindowBuilder::new(
                 app,
                 "main",
                 WebviewUrl::External(START_URL.parse().expect("START_URL is a valid URL")),
@@ -395,8 +395,11 @@ pub fn run() {
             // window's own session. No on-page buttons: the tracker page is
             // left exactly as the website made it.
             .initialization_script(include_str!("nav_bar.js"))
+            // macOS: navigator.geolocation for the tracker's pages, answered
+            // by Core Location through cbb-geo:// hand-overs (location.rs).
+            .initialization_script(if cfg!(target_os = "macos") { include_str!("geo_bridge.js") } else { "" })
             // Location for the time sheet: the tracker's own pages only
-            // (location.rs; macOS is wired up after the window is built).
+            // (location.rs). Windows and Linux; macOS uses geo_bridge.js.
             .on_permission_request(|webview, kind| {
                 location::decide(webview.url().ok().as_ref(), kind)
             })
@@ -414,6 +417,21 @@ pub fn run() {
                         .and_then(|(_, value)| value.parse::<url::Url>().ok())
                     {
                         download::start(&opener_handle, target, save_as);
+                    }
+                    return false;
+                }
+                // geo_bridge.js (macOS) asks for the location as
+                // cbb-geo://get?id=N; answered only on the tracker's pages.
+                if url.scheme() == "cbb-geo" {
+                    #[cfg(target_os = "macos")]
+                    if let Some(id) = location::request_id(url) {
+                        let on_tracker = opener_handle
+                            .get_webview_window("main")
+                            .and_then(|main| main.url().ok())
+                            .is_some_and(|page| location::page_may_locate(&page));
+                        if on_tracker {
+                            location::request(&opener_handle, id);
+                        }
                     }
                     return false;
                 }
@@ -505,10 +523,6 @@ pub fn run() {
                 });
             })
             .build()?;
-            #[cfg(target_os = "macos")]
-            location::enable(&main_window);
-            #[cfg(not(target_os = "macos"))]
-            let _ = main_window;
 
             // Mini bar (mini.rs + mini.html): hidden until the tray toggle.
             // Frameless, transparent, always on top, out of Alt-Tab.

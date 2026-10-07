@@ -29,6 +29,7 @@ pub(crate) struct View {
     pub needs: Vec<NeedRow>,
     pub version: String,
     pub autostart: bool,
+    pub pinned: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -89,6 +90,7 @@ pub(crate) fn plan(
             .collect(),
         version: env!("CARGO_PKG_VERSION").into(),
         autostart: false,
+        pinned: false,
     }
 }
 
@@ -109,6 +111,7 @@ pub(crate) fn push<R: Runtime>(app: &AppHandle<R>) {
         .unwrap_or((0, Vec::new()));
     let mut view = plan(clock.as_ref(), unread, needs, crate::clock::unix_now());
     view.autostart = crate::autostart_enabled(app);
+    view.pinned = is_pinned();
     let Ok(payload) = serde_json::to_string(&view) else { return };
     if let Some(mini) = app.get_webview_window("mini") {
         let script = format!("window.__cbbMiniShow && window.__cbbMiniShow({payload})");
@@ -116,38 +119,53 @@ pub(crate) fn push<R: Runtime>(app: &AppHandle<R>) {
     }
 }
 
+/// Pinned: the panel floats on top wherever it was dragged and stays open
+/// when it loses focus (a floating timer). Unpinned it is a drop-down under
+/// the tray icon. For this run of the app only.
+static PINNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub(crate) fn is_pinned() -> bool {
+    PINNED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// When the panel last hid itself. Clicking the tray icon while the panel
 /// is open first blurs it (it hides), then delivers the click: without this
 /// the click would open it straight back up.
 static LAST_HIDDEN: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
 
-/// Show the panel under the tray icon with fresh state, focused so its
-/// buttons work on the first click. It hides again when it loses focus.
+/// Show the panel with fresh state, focused so its buttons work on the
+/// first click: under the tray icon, or where it was dragged when pinned.
+/// Unpinned, it hides again when it loses focus.
 /// The main window is left as it is: the panel is a drop-down, not a swap.
 pub(crate) fn show<R: Runtime>(app: &AppHandle<R>) {
-    use tauri_plugin_positioner::{Position, WindowExt};
     if let Some(mini) = app.get_webview_window("mini") {
-        // Tray positions only resolve once the tray icon has reported its
-        // position; before that they error and the window would sit wherever
-        // it was created. Fall back to the screen corner instead of leaving
-        // it stranded mid-screen.
-        // macOS: the menu bar is at the top, so the panel drops down from
-        // the icon. Windows: the taskbar is usually at the bottom, so it
-        // rises above the icon. Linux reports no tray position (or clicks:
-        // there the panel opens from the tray menu or the shortcut), so it
-        // sits in the top-right corner, where most panels keep the tray.
-        let at = if cfg!(target_os = "macos") {
-            Position::TrayBottomCenter
-        } else {
-            Position::TrayCenter
-        };
-        if mini.move_window(at).is_err() {
-            let fallback = if cfg!(target_os = "windows") { Position::BottomRight } else { Position::TopRight };
-            let _ = mini.move_window(fallback);
+        // A pinned panel reopens where it was dragged to.
+        if !is_pinned() {
+            place_under_tray(&mini);
         }
         let _ = mini.show();
         let _ = mini.set_focus();
         push(app);
+    }
+}
+
+/// Drop the panel down from the tray icon.
+fn place_under_tray<R: Runtime>(mini: &tauri::WebviewWindow<R>) {
+    use tauri_plugin_positioner::{Position, WindowExt};
+    // macOS: the menu bar is at the top, so the panel drops down from the
+    // icon. Windows: the taskbar is usually at the bottom, so it rises above
+    // the icon. Linux reports no tray position (or clicks: there the panel
+    // opens from the tray menu or the shortcut), so it sits in the top-right
+    // corner, where most panels keep the tray. Tray positions also fail until
+    // the icon has reported where it is; the corner covers that too.
+    let at = if cfg!(target_os = "macos") {
+        Position::TrayBottomCenter
+    } else {
+        Position::TrayCenter
+    };
+    if mini.move_window(at).is_err() {
+        let fallback = if cfg!(target_os = "windows") { Position::BottomRight } else { Position::TopRight };
+        let _ = mini.move_window(fallback);
     }
 }
 
@@ -246,6 +264,20 @@ pub(crate) fn mini_open<R: Runtime>(app: AppHandle<R>, href: String) -> Result<(
 #[tauri::command]
 pub(crate) fn mini_hide<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     hide(&app);
+    Ok(())
+}
+
+/// Pin the panel as a floating timer, or unpin it back into a drop-down
+/// under the tray icon (it then closes on the next click elsewhere).
+#[tauri::command]
+pub(crate) fn mini_pin<R: Runtime>(app: AppHandle<R>, pinned: bool) -> Result<(), String> {
+    PINNED.store(pinned, std::sync::atomic::Ordering::Relaxed);
+    if !pinned {
+        if let Some(mini) = app.get_webview_window("mini") {
+            place_under_tray(&mini);
+        }
+    }
+    push(&app);
     Ok(())
 }
 

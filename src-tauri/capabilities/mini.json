@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "mini",
-  "description": "Mini bar window (local UI only): the four mini commands. Nothing else.",
+  "description": "Quick panel window (local UI only): the mini commands, plus dragging the window by its header while pinned. Nothing else.",
   "windows": ["mini"],
-  "permissions": ["allow-mini"]
+  "permissions": ["allow-mini", "core:window:allow-start-dragging"]
 }

@@ -397,11 +397,13 @@ pub fn run() {
                     }
                 }
             }
-            // Panel behavior: the mini hides when it loses focus.
-            if window.label() == "mini" {
-                if matches!(event, tauri::WindowEvent::Focused(false)) {
-                    let _ = window.hide();
-                }
+            // Drop-down behaviour: the quick panel hides when it loses focus,
+            // unless it is pinned as a floating timer.
+            if window.label() == "mini"
+                && matches!(event, tauri::WindowEvent::Focused(false))
+                && !mini::is_pinned()
+            {
+                mini::hide(window.app_handle());
             }
         })
         .manage(std::sync::Mutex::new(None::<offline::PendingCapture>))
@@ -416,7 +418,8 @@ pub fn run() {
             mini::mini_expand_notifications,
             mini::mini_hide,
             mini::mini_open,
-            mini::mini_menu
+            mini::mini_menu,
+            mini::mini_pin
         ])
         .setup(|app| {
             #[cfg(target_os = "linux")]

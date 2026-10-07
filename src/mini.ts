@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 // Quick panel: all state is pushed from Rust via eval (window.__cbbMiniShow).
 // Clicks go back through the narrow mini commands (see mini.json capability).
@@ -17,6 +18,7 @@ type View = {
   needs: Need[];
   version: string;
   autostart: boolean;
+  pinned: boolean;
 };
 
 declare global {
@@ -167,10 +169,21 @@ window.__cbbMiniShow = (view) => {
   const on = String(view.autostart);
   el("autostart-row").setAttribute("aria-checked", on);
   el("autostart-switch").setAttribute("aria-checked", on);
+  renderPin(view.pinned);
   renderActions(view);
   renderNeeds(view);
   tick();
 };
+
+function renderPin(pinned: boolean) {
+  const pin = el("pin");
+  pin.setAttribute("aria-pressed", String(pinned));
+  const label = pinned ? "Unpin" : "Pin as a floating timer";
+  pin.setAttribute("aria-label", label);
+  pin.title = label;
+  el("head").classList.toggle("pinned", pinned);
+  el("pin-hint").hidden = !pinned;
+}
 
 function showSettings(open: boolean) {
   el("main-view").hidden = open;
@@ -196,6 +209,17 @@ window.addEventListener("DOMContentLoaded", () => {
   click("quit-row", () => menu("quit"));
   click("open-settings", () => showSettings(true));
   click("close-settings", () => showSettings(false));
+  click("pin", () => {
+    const pinned = el("pin").getAttribute("aria-pressed") !== "true";
+    renderPin(pinned);
+    void invoke("mini_pin", { pinned });
+  });
+  // Pinned, the header drags the window (not from its buttons).
+  el("head").addEventListener("mousedown", (e) => {
+    if (e.button !== 0 || !el("head").classList.contains("pinned")) return;
+    if ((e.target as HTMLElement).closest("button")) return;
+    void getCurrentWindow().startDragging();
+  });
   window.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;
     if (!el("settings").hidden) showSettings(false);

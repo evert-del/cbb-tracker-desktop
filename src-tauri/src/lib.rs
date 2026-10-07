@@ -26,6 +26,7 @@ mod clock;
 mod desktop_entry;
 mod diagnostics;
 mod download;
+mod google_sign_in;
 mod idle;
 mod mini;
 mod notify;
@@ -42,6 +43,9 @@ const APP_ORIGIN: &str = "https://tracker.coolerboxbrothers.com";
 
 /// Bare host of the tracker, for exact-match comparisons.
 const APP_HOST: &str = "tracker.coolerboxbrothers.com";
+
+/// Supabase Auth (project-ref host of the public anon URL, not a secret).
+const SUPABASE_HOST: &str = "wlwdhorybvelwbmhtftw.supabase.co";
 
 /// First screen on launch: the sign-in form, never the marketing homepage.
 /// A persisted session signs straight through from here; anyone signed out
@@ -60,8 +64,7 @@ const START_URL: &str = "https://tracker.coolerboxbrothers.com/sign-in";
 /// while the challenge URL keeps popping open externally.
 const IN_APP_HOSTS: &[&str] = &[
     APP_HOST,
-    // Supabase Auth (project-ref host of the public anon URL, not a secret).
-    "wlwdhorybvelwbmhtftw.supabase.co",
+    SUPABASE_HOST,
     // Turnstile bot-check widget + challenge frames (sign-in, password
     // reset, invitation ask, sign-up email step).
     "challenges.cloudflare.com",
@@ -189,6 +192,11 @@ fn route_deep_link<R: Runtime>(app: &AppHandle<R>, url: &url::Url) {
         show_library(app);
         return;
     }
+    // Google sign-in coming back from the browser (google_sign_in.rs).
+    if url.scheme() == "tracker" && url.host_str() == Some("signed-in") {
+        google_sign_in::finish(app, url);
+        return;
+    }
     let Some(hosted) = hosted_url_for_deep_link(url) else {
         return;
     };
@@ -266,6 +274,20 @@ pub fn run() {
         )
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_positioner::init())
+        // The main and Saved-for-offline windows reopen where they were left,
+        // at the size they were left (a position off every screen is not
+        // restored). Showing or hiding stays the app's call; the mini bar
+        // always opens under the tray icon.
+        .plugin(
+            tauri_plugin_window_state::Builder::new()
+                .with_state_flags(
+                    tauri_plugin_window_state::StateFlags::SIZE
+                        | tauri_plugin_window_state::StateFlags::POSITION
+                        | tauri_plugin_window_state::StateFlags::MAXIMIZED,
+                )
+                .with_denylist(&["mini"])
+                .build(),
+        )
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
@@ -426,6 +448,11 @@ pub fn run() {
                 // like Turnstile and carry no network content.
                 if url.scheme() == "about" {
                     return true;
+                }
+                // Google refuses embedded sign-in: that step finishes in the
+                // system browser and returns via tracker://signed-in.
+                if google_sign_in::start(&opener_handle, url) {
+                    return false;
                 }
                 let allowed = match handed_off.lock() {
                     Ok(mut state) => main_window_may_load(url, &mut state),

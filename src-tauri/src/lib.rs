@@ -88,6 +88,14 @@ pub(crate) fn webview_may_load(url: &url::Url) -> bool {
     matches!(url.host_str(), Some(host) if IN_APP_HOSTS.contains(&host))
 }
 
+/// Hosts the tracker embeds in an iframe: Frame.io's review player (the
+/// tracker's own `frame-src` lists exactly these two; f.io short links are
+/// resolved to them server-side first). They may load in the main window so
+/// the embedded player plays, but a link that opens one in a new window
+/// (the tracker's "Comment in Frame.io ↗") still goes to the system
+/// browser: Frame.io's sign-in, needed to comment, fails when embedded.
+const EMBED_HOSTS: &[&str] = &["app.frame.io", "next.frame.io"];
+
 /// Sign-in and payment providers that send the window on through hosts of
 /// their own: Adobe hops through its other sites to set its session
 /// (adobeid-na1.services.adobe.com, sso.behance.net, ...), Google through
@@ -121,6 +129,7 @@ pub(crate) fn main_window_may_load(url: &url::Url, handed_off: &mut bool) -> boo
             *handed_off = true;
             true
         }
+        Some(host) if EMBED_HOSTS.contains(&host) => true,
         _ => *handed_off || webview_may_load(url),
     }
 }
@@ -857,5 +866,40 @@ mod tests {
         );
         assert_eq!(new_window_action(&parsed("javascript:alert(1)")), NewWindowAction::Ignore);
         assert_eq!(new_window_action(&parsed("file:///etc/passwd")), NewWindowAction::Ignore);
+    }
+
+    #[test]
+    fn frame_io_player_loads_in_the_main_window() {
+        for raw in [
+            "https://next.frame.io/share/abc/view/def",
+            "https://app.frame.io/reviews/abc123",
+        ] {
+            let mut handed_off = false;
+            assert!(main_window_may_load(&parsed(raw), &mut handed_off), "{raw}");
+            assert!(!handed_off, "{raw}");
+        }
+    }
+
+    #[test]
+    fn frame_io_in_a_new_window_opens_in_the_browser() {
+        for raw in [
+            "https://next.frame.io/share/abc/view/def",
+            "https://app.frame.io/reviews/abc123",
+            "https://f.io/aBc12345",
+        ] {
+            assert_eq!(new_window_action(&parsed(raw)), NewWindowAction::OpenExternal, "{raw}");
+        }
+    }
+
+    #[test]
+    fn frame_io_lookalikes_stay_out() {
+        let mut handed_off = false;
+        for raw in [
+            "https://app.frame.io.attacker.example/x",
+            "https://frame.io.evil.example/x",
+            "http://next.frame.io/share/abc",
+        ] {
+            assert!(!main_window_may_load(&parsed(raw), &mut handed_off), "{raw}");
+        }
     }
 }

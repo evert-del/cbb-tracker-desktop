@@ -132,5 +132,5 @@ in a password manager.
 
 ## Verified against
 
-Web commit: `d30a6043` (tracker `ui/design-system-wip` branch, 2026-10-02).
+Web commit: `fc63a3c0` (tracker `main`, 2026-10-07; includes `/desktop/signed-in`).
 One-line note per desktop release; not automation, not a sync.

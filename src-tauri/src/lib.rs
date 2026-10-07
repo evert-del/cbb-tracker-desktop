@@ -274,10 +274,12 @@ pub fn run() {
         )
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_positioner::init())
-        // The main and Saved-for-offline windows reopen where they were left,
-        // at the size they were left (a position off every screen is not
-        // restored). Showing or hiding stays the app's call; the mini bar
-        // always opens under the tray icon.
+        // The main window reopens where it was left, at the size it was left
+        // (a position off every screen is not restored). Showing or hiding
+        // stays the app's call; the mini bar always opens under the tray
+        // icon. The Saved-for-offline window is left out: it is created
+        // hidden from tauri.conf.json, and on a Retina screen its restored
+        // size doubled on every launch (480 → 960 → 1920 …, found live).
         .plugin(
             tauri_plugin_window_state::Builder::new()
                 .with_state_flags(
@@ -285,7 +287,7 @@ pub fn run() {
                         | tauri_plugin_window_state::StateFlags::POSITION
                         | tauri_plugin_window_state::StateFlags::MAXIMIZED,
                 )
-                .with_denylist(&["mini"])
+                .with_denylist(&["mini", "library"])
                 .build(),
         )
         .plugin(tauri_plugin_autostart::init(

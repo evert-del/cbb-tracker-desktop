@@ -1,8 +1,8 @@
-# App-defined permission: the mini bar commands.
+# App-defined permission: the quick panel commands.
 # Callable only from the local "mini" window — never the remote main window.
 # See src-tauri/src/mini.rs.
 
 [[permission]]
 identifier = "allow-mini"
-description = "Enables the mini bar commands (clock tap, expand, hide)."
-commands.allow = ["mini_action", "mini_expand", "mini_expand_notifications", "mini_hide", "mini_open", "mini_drag_start", "mini_drag_move", "mini_drag_end"]
+description = "Enables the quick panel commands (clock taps, open, hide, tray-menu items)."
+commands.allow = ["mini_action", "mini_expand", "mini_expand_notifications", "mini_hide", "mini_open", "mini_menu"]

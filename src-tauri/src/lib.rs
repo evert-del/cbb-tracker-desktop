@@ -419,7 +419,8 @@ pub fn run() {
             mini::mini_hide,
             mini::mini_open,
             mini::mini_menu,
-            mini::mini_pin
+            mini::mini_pin,
+            mini::mini_compact
         ])
         .setup(|app| {
             #[cfg(target_os = "linux")]
@@ -563,7 +564,7 @@ pub fn run() {
             // its own rounded card and shadow inside the transparent window.
             WebviewWindowBuilder::new(app, "mini", WebviewUrl::App("mini.html".into()))
                 .title("CoolerBox Tracker")
-                .inner_size(372.0, 504.0)
+                .inner_size(372.0, 576.0) // mini::FULL_SIZE
                 .resizable(false)
                 .shadow(false)
                 .decorations(false)
@@ -617,7 +618,9 @@ pub fn run() {
                     None::<&str>,
                 )?
             };
-            let tray_quit = MenuItem::with_id(app, "tray-quit", "Quit", true, None::<&str>)?;
+            // Windows says "Exit" in tray menus, macOS and Linux "Quit".
+            let quit_label = if cfg!(target_os = "windows") { "Exit" } else { "Quit" };
+            let tray_quit = MenuItem::with_id(app, "tray-quit", quit_label, true, None::<&str>)?;
             // The time sheet's clock (clock.rs): a line saying where you are,
             // then the four taps, enabled as they make sense.
             let clock_items = clock::Items {

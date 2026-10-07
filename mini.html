@@ -23,8 +23,16 @@
         --head-in: #dd347c;
         --head-break: #c77d0a;
         --head-out: #3a3644;
+        /* Geometry and type per system (data-platform, set from Rust):
+           macOS menus/popovers, Windows 11 Fluent flyouts (8px containers,
+           4px controls, Segoe UI Variable), GNOME/Adwaita (12px, Adwaita Sans). */
+        --r-card: 12px;
+        --r-ctl: 7px;
+        --font: -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI", "Adwaita Sans", Cantarell, Ubuntu, "Noto Sans", sans-serif;
         color-scheme: light;
       }
+      :root[data-platform="windows"] { --r-card: 8px; --r-ctl: 4px; --font: "Segoe UI Variable Text", "Segoe UI", sans-serif; }
+      :root[data-platform="linux"] { --r-card: 12px; --r-ctl: 6px; --font: "Adwaita Sans", Cantarell, Inter, Ubuntu, "Noto Sans", sans-serif; }
       @media (prefers-color-scheme: dark) {
         :root {
           --pink-ink: #f27aae;
@@ -43,19 +51,19 @@
       }
       html, body {
         margin: 0; height: 100%; overflow: hidden; background: transparent;
-        font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI Variable", "Segoe UI", Ubuntu, Cantarell, "Noto Sans", sans-serif;
+        font: 13px/1.4 var(--font);
         color: var(--fg);
         user-select: none; -webkit-user-select: none; cursor: default;
       }
       body { padding: 6px 16px 22px; box-sizing: border-box; }
       #card {
         height: 100%; display: flex; flex-direction: column; overflow: hidden;
-        background: var(--card); border-radius: 14px;
+        background: var(--card); border-radius: var(--r-card);
         border: 0.5px solid var(--rule);
         box-shadow: 0 12px 32px rgba(0, 0, 0, 0.22), 0 2px 6px rgba(0, 0, 0, 0.12);
       }
       button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
-      button:focus-visible { outline: 2px solid var(--pink); outline-offset: 2px; border-radius: 8px; }
+      button:focus-visible { outline: 2px solid var(--pink); outline-offset: 2px; border-radius: var(--r-ctl); }
       svg { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
       [hidden] { display: none !important; }
 
@@ -68,7 +76,7 @@
       #head[data-state="in"] #dot { background: #8ff0be; }
       #head[data-state="break"] #dot { background: #ffe08a; }
       #status { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; opacity: 0.95; }
-      .head-btn { color: #fff; opacity: 0.8; display: grid; place-items: center; width: 26px; height: 26px; border-radius: 7px; }
+      .head-btn { color: #fff; opacity: 0.8; display: grid; place-items: center; width: 26px; height: 26px; border-radius: var(--r-ctl); }
       .head-btn:hover { opacity: 1; background: rgba(255, 255, 255, 0.16); }
       #pin[aria-pressed="true"] { opacity: 1; background: rgba(255, 255, 255, 0.24); }
       #pin[aria-pressed="true"] svg { fill: currentColor; }
@@ -82,7 +90,7 @@
       #actions { display: flex; gap: 8px; padding: 12px 14px; }
       .act {
         flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px;
-        min-height: 36px; border-radius: 9px; font-weight: 600; font-size: 12.5px;
+        min-height: 36px; border-radius: var(--r-ctl); font-weight: 600; font-size: 12.5px;
         background: var(--tile); transition: background 0.15s;
       }
       .act:hover { background: var(--tile-hover); }
@@ -100,18 +108,20 @@
       .need .body { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
       .need .label { font-size: 11.5px; color: var(--faint); }
       .need svg { color: var(--faint); }
+      #summary { display: flex; flex-wrap: wrap; gap: 6px; padding: 2px 16px 8px; }
+      .chip { font-size: 11.5px; font-weight: 600; padding: 3px 8px; border-radius: 99px; font-variant-numeric: tabular-nums; }
       #empty { padding: 10px 16px 14px; color: var(--muted); font-size: 12.5px; }
       #see-all { display: flex; align-items: center; gap: 6px; padding: 9px 16px; color: var(--pink-ink); font-weight: 600; border-top: 0.5px solid var(--rule); }
       #see-all:hover { background: var(--tile); }
 
       #shortcuts { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 10px 14px; border-top: 0.5px solid var(--rule); margin-top: auto; }
-      .tile { display: flex; align-items: center; gap: 8px; padding: 9px 10px; border-radius: 9px; background: var(--tile); font-weight: 500; }
+      .tile { display: flex; align-items: center; gap: 8px; padding: 9px 10px; border-radius: var(--r-ctl); background: var(--tile); font-weight: 500; }
       .tile:hover { background: var(--tile-hover); }
       .tile svg { color: var(--muted); }
 
       #foot { display: flex; align-items: center; gap: 4px; padding: 8px 10px 8px 16px; border-top: 0.5px solid var(--rule); color: var(--faint); font-size: 12px; }
       #version { flex: 1; }
-      .icon-btn { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 7px; color: var(--muted); }
+      .icon-btn { display: grid; place-items: center; width: 28px; height: 28px; border-radius: var(--r-ctl); color: var(--muted); }
       .icon-btn:hover { background: var(--tile); color: var(--fg); }
 
       /* Settings view (gear), in place of the main view. */
@@ -127,6 +137,24 @@
       .switch[aria-checked="true"] { background: var(--pink); }
       .switch[aria-checked="true"]::after { transform: translateX(14px); }
       #quit-row { color: var(--danger-fg); }
+      /* Mini timer: the pinned panel shrunk to one strip, coloured by state. */
+      #compact-view { flex: 1; display: flex; flex-direction: column; gap: 6px; padding: 10px 12px 10px 14px; color: #fff; background: var(--head-out); cursor: grab; }
+      #compact-view:active { cursor: grabbing; }
+      #compact-view[data-state="in"] { background: var(--head-in); }
+      #compact-view[data-state="break"] { background: var(--head-break); }
+      #c-top { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+      #c-status { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; opacity: 0.95; }
+      #compact-view[data-state="in"] #c-dot { background: #8ff0be; }
+      #compact-view[data-state="break"] #c-dot { background: #ffe08a; }
+      #c-dot { width: 8px; height: 8px; border-radius: 50%; background: #c9c4d1; flex: none; }
+      #c-mid { display: flex; align-items: center; gap: 8px; }
+      #c-timer { flex: 1; font-size: 24px; font-weight: 600; line-height: 1.1; font-variant-numeric: tabular-nums; }
+      #c-action { min-height: 28px; padding: 0 12px; border-radius: var(--r-ctl); background: rgba(255,255,255,0.22); color: #fff; font-weight: 600; font-size: 12px; }
+      #c-action:hover { background: rgba(255,255,255,0.32); }
+      #c-bell { position: relative; display: grid; place-items: center; width: 30px; height: 28px; border-radius: var(--r-ctl); background: rgba(255,255,255,0.14); color: #fff; }
+      #c-bell:hover { background: rgba(255,255,255,0.26); }
+      #c-count { position: absolute; top: -5px; right: -6px; min-width: 16px; height: 16px; padding: 0 4px; box-sizing: border-box; border-radius: 99px; background: #fff; color: var(--pink-ink); font-size: 10.5px; font-weight: 700; display: grid; place-items: center; }
+      #c-summary { font-size: 11.5px; opacity: 0.9; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
       @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
     </style>
   </head>
@@ -137,6 +165,9 @@
           <div id="head-top">
             <span id="dot"></span>
             <span id="status">Loading…</span>
+            <button id="shrink" class="head-btn" type="button" hidden aria-label="Shrink to mini timer" title="Shrink to mini timer">
+              <svg viewBox="0 0 24 24"><path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7"/></svg>
+            </button>
             <button id="pin" class="head-btn" type="button" aria-pressed="false" aria-label="Pin as a floating timer" title="Pin as a floating timer">
               <svg viewBox="0 0 24 24"><path d="M9 4h6l-1 6 4 4H6l4-4zM12 14v7"/></svg>
             </button>
@@ -152,6 +183,7 @@
         <div id="no-sheet" hidden>The time sheet isn't switched on for you.</div>
 
         <div class="section" id="needs-label">Needs you</div>
+        <div id="summary"></div>
         <div id="needs"></div>
         <div id="empty" hidden>You're all caught up.</div>
         <button id="see-all" type="button">
@@ -183,6 +215,28 @@
         </div>
       </div>
 
+      <div id="compact-view" hidden data-state="none">
+        <div id="c-top">
+          <span id="c-dot"></span>
+          <span id="c-status"></span>
+          <button id="grow" class="head-btn" type="button" aria-label="Show the full panel" title="Show the full panel">
+            <svg viewBox="0 0 24 24"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg>
+          </button>
+          <button id="c-unpin" class="head-btn" type="button" aria-label="Unpin" title="Unpin">
+            <svg viewBox="0 0 24 24" style="fill:currentColor"><path d="M9 4h6l-1 6 4 4H6l4-4zM12 14v7"/></svg>
+          </button>
+        </div>
+        <div id="c-mid">
+          <span id="c-timer">0:00</span>
+          <button id="c-action" type="button" hidden></button>
+          <button id="c-bell" type="button" aria-label="Notifications" title="Notifications">
+            <svg viewBox="0 0 24 24"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9M10.3 21a1.9 1.9 0 0 0 3.4 0"/></svg>
+            <span id="c-count" hidden></span>
+          </button>
+        </div>
+        <div id="c-summary"></div>
+      </div>
+
       <div id="settings" hidden>
         <div id="settings-head">
           <button class="icon-btn" id="close-settings" type="button" aria-label="Back" title="Back">
@@ -201,7 +255,7 @@
           <span class="txt">Diagnostics<span class="hint" style="display:block">Versions and connection details for support.</span></span>
         </button>
         <button class="set-row" id="quit-row" type="button">
-          <span class="txt">Quit CoolerBox Tracker</span>
+          <span class="txt" id="quit-text">Quit CoolerBox Tracker</span>
         </button>
       </div>
     </div>

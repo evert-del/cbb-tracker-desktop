@@ -27,9 +27,16 @@ pub(crate) struct View {
     pub unread: u32,
     /// Newest actionable unread items (each links to its exact page).
     pub needs: Vec<NeedRow>,
+    /// Unread notifications by kind, most first ("3 Approval · 2 Phase").
+    pub summary: Vec<crate::notify::LabelCount>,
     pub version: String,
     pub autostart: bool,
     pub pinned: bool,
+    /// Shrunk to the mini timer (only while pinned).
+    pub compact: bool,
+    /// "macos", "windows" or "linux": the panel follows each system's own
+    /// look (corner radii, typeface, wording).
+    pub platform: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -88,9 +95,12 @@ pub(crate) fn plan(
                 entry.href.map(|href| NeedRow { label: entry.title, body: entry.body, href })
             })
             .collect(),
+        summary: Vec::new(),
         version: env!("CARGO_PKG_VERSION").into(),
         autostart: false,
         pinned: false,
+        compact: false,
+        platform: std::env::consts::OS.into(),
     }
 }
 
@@ -101,17 +111,20 @@ pub(crate) fn push<R: Runtime>(app: &AppHandle<R>) {
     let clock = app
         .try_state::<crate::clock::Last>()
         .and_then(|last| last.0.lock().ok().and_then(|slot| slot.clone()));
-    let (unread, needs) = app
+    let (unread, needs, summary) = app
         .try_state::<crate::notify::Snapshot>()
         .map(|snap| {
             let unread = snap.unread.lock().ok().map(|slot| *slot).unwrap_or(0);
             let needs = snap.needs.lock().ok().map(|rows| rows.clone()).unwrap_or_default();
-            (unread, needs)
+            let summary = snap.summary.lock().ok().map(|rows| rows.clone()).unwrap_or_default();
+            (unread, needs, summary)
         })
-        .unwrap_or((0, Vec::new()));
+        .unwrap_or((0, Vec::new(), Vec::new()));
     let mut view = plan(clock.as_ref(), unread, needs, crate::clock::unix_now());
     view.autostart = crate::autostart_enabled(app);
     view.pinned = is_pinned();
+    view.compact = is_compact();
+    view.summary = summary;
     let Ok(payload) = serde_json::to_string(&view) else { return };
     if let Some(mini) = app.get_webview_window("mini") {
         let script = format!("window.__cbbMiniShow && window.__cbbMiniShow({payload})");
@@ -126,6 +139,26 @@ static PINNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::ne
 
 pub(crate) fn is_pinned() -> bool {
     PINNED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Pinned and shrunk to the mini timer: status, timer, the main clock tap
+/// and the notification summary in one small strip.
+static COMPACT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn is_compact() -> bool {
+    COMPACT.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Window sizes (logical px, including the margin the card's shadow needs).
+const FULL_SIZE: (f64, f64) = (372.0, 576.0);
+const COMPACT_SIZE: (f64, f64) = (372.0, 140.0);
+
+fn set_compact<R: Runtime>(app: &AppHandle<R>, compact: bool) {
+    COMPACT.store(compact, std::sync::atomic::Ordering::Relaxed);
+    let (w, h) = if compact { COMPACT_SIZE } else { FULL_SIZE };
+    if let Some(mini) = app.get_webview_window("mini") {
+        let _ = mini.set_size(tauri::LogicalSize::new(w, h));
+    }
 }
 
 /// When the panel last hid itself. Clicking the tray icon while the panel
@@ -273,10 +306,23 @@ pub(crate) fn mini_hide<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
 pub(crate) fn mini_pin<R: Runtime>(app: AppHandle<R>, pinned: bool) -> Result<(), String> {
     PINNED.store(pinned, std::sync::atomic::Ordering::Relaxed);
     if !pinned {
+        // The drop-down is always the full panel.
+        set_compact(&app, false);
         if let Some(mini) = app.get_webview_window("mini") {
             place_under_tray(&mini);
         }
     }
+    push(&app);
+    Ok(())
+}
+
+/// Shrink the pinned panel to the mini timer, or grow it back.
+#[tauri::command]
+pub(crate) fn mini_compact<R: Runtime>(app: AppHandle<R>, compact: bool) -> Result<(), String> {
+    if compact && !is_pinned() {
+        return Err("Pin the panel first.".into());
+    }
+    set_compact(&app, compact);
     push(&app);
     Ok(())
 }

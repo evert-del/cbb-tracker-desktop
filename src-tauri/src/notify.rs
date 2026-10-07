@@ -77,12 +77,38 @@ pub(crate) struct Unread(pub Mutex<u32>);
 pub(crate) struct Snapshot {
     pub unread: Mutex<u32>,
     pub needs: Mutex<Vec<InboxEntry>>,
+    /// Unread items by kind ("Phase", "Approval", …), most first.
+    pub summary: Mutex<Vec<LabelCount>>,
 }
 
 impl Default for Snapshot {
     fn default() -> Self {
-        Self { unread: Mutex::new(0), needs: Mutex::new(Vec::new()) }
+        Self { unread: Mutex::new(0), needs: Mutex::new(Vec::new()), summary: Mutex::new(Vec::new()) }
     }
+}
+
+/// How many unread items of one kind the latest poll held.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub(crate) struct LabelCount {
+    pub label: String,
+    pub count: u32,
+}
+
+/// Unread items of the poll counted by label, most first (ties keep the
+/// order they first appear in, newest first). Unlabelled items count as
+/// "Update", as in the panel's rows. Covers only the items the poll
+/// returned, so the panel shows any rest of `unread_count` as "more".
+pub(crate) fn summarize(poll: &Poll) -> Vec<LabelCount> {
+    let mut counts: Vec<LabelCount> = Vec::new();
+    for item in poll.items.iter().filter(|item| item.unread) {
+        let label = if item.label.is_empty() { "Update" } else { item.label.as_str() };
+        match counts.iter_mut().find(|c| c.label == label) {
+            Some(c) => c.count += 1,
+            None => counts.push(LabelCount { label: label.into(), count: 1 }),
+        }
+    }
+    counts.sort_by(|a, b| b.count.cmp(&a.count));
+    counts
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -104,6 +130,23 @@ pub(crate) struct Banner {
 /// Parse the page's answer. `None` for "", "null" and anything malformed.
 pub(crate) fn parse(raw: &str) -> Option<Poll> {
     serde_json::from_str(raw).ok()
+}
+
+/// The tray icon's hover text: the unread count with its summary by kind
+/// ("CoolerBox Tracker — 5 unread: Approval 3, Phase 2"). Windows' tray
+/// guidance puts this summary in the tooltip; the quick panel shows the
+/// same. At most three kinds, so it stays one short line.
+pub(crate) fn tooltip_text(count: u32, summary: &[LabelCount]) -> String {
+    if count == 0 {
+        return "CoolerBox Tracker".into();
+    }
+    let kinds: Vec<String> =
+        summary.iter().take(3).map(|c| format!("{} {}", c.label, c.count)).collect();
+    if kinds.is_empty() {
+        format!("CoolerBox Tracker — {count} unread")
+    } else {
+        format!("CoolerBox Tracker — {count} unread: {}", kinds.join(", "))
+    }
 }
 
 /// Decide which banners a poll warrants and remember what was seen.
@@ -237,6 +280,9 @@ fn apply<R: Runtime>(app: &AppHandle<R>, state: &Mutex<State>, poll: &Poll) {
         }
     }
     if let Some(snap) = app.try_state::<Snapshot>() {
+        if let Ok(mut summary) = snap.summary.lock() {
+            *summary = summarize(&poll);
+        }
         if let (Ok(mut unread), Ok(mut needs)) = (snap.unread.lock(), snap.needs.lock()) {
             *unread = count;
             *needs = poll
@@ -264,11 +310,7 @@ fn apply<R: Runtime>(app: &AppHandle<R>, state: &Mutex<State>, poll: &Poll) {
         let _ = window.set_badge_count(if count > 0 { Some(i64::from(count)) } else { None });
     }
     if let Some(tray) = app.tray_by_id(crate::TRAY_ID) {
-        let tooltip = match count {
-            0 => "CoolerBox Tracker".to_string(),
-            n => format!("CoolerBox Tracker — {n} unread"),
-        };
-        let _ = tray.set_tooltip(Some(tooltip));
+        let _ = tray.set_tooltip(Some(tooltip_text(count, &summarize(&poll))));
     }
 }
 
@@ -413,5 +455,36 @@ mod tests {
         plan(&mut state, &poll(&payload(&[evil.to_string()], 1)));
         assert_eq!(state.inbox.len(), 1);
         assert_eq!(state.inbox[0].href, None);
+    }
+
+    #[test]
+    fn summary_counts_unread_by_label_most_first() {
+        let raw = r#"{"unreadCount":6,"items":[
+            {"id":1,"body":"a","unread":true,"label":"Phase","href":"/a"},
+            {"id":2,"body":"b","unread":true,"label":"Approval","href":"/b"},
+            {"id":3,"body":"c","unread":true,"label":"Approval","href":"/c"},
+            {"id":4,"body":"d","unread":false,"label":"Phase","href":"/d"},
+            {"id":5,"body":"e","unread":true,"label":"","href":null},
+            {"id":6,"body":"f","unread":true,"label":"Phase","href":"/f"},
+            {"id":7,"body":"g","unread":true,"label":"Approval","href":"/g"}
+        ]}"#;
+        let poll = parse(raw).expect("poll parses");
+        let summary: Vec<(String, u32)> =
+            summarize(&poll).into_iter().map(|c| (c.label, c.count)).collect();
+        assert_eq!(
+            summary,
+            [("Approval".to_string(), 3), ("Phase".to_string(), 2), ("Update".to_string(), 1)]
+        );
+    }
+
+    #[test]
+    fn tooltip_names_up_to_three_kinds() {
+        let kind = |label: &str, count| LabelCount { label: label.into(), count };
+        assert_eq!(tooltip_text(0, &[kind("Phase", 1)]), "CoolerBox Tracker");
+        assert_eq!(tooltip_text(4, &[]), "CoolerBox Tracker — 4 unread");
+        assert_eq!(
+            tooltip_text(9, &[kind("Approval", 3), kind("Phase", 2), kind("Quote", 1), kind("Update", 1)]),
+            "CoolerBox Tracker — 9 unread: Approval 3, Phase 2, Quote 1"
+        );
     }
 }

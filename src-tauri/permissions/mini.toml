@@ -5,4 +5,4 @@
 [[permission]]
 identifier = "allow-mini"
 description = "Enables the quick panel commands (clock taps, open, hide, pin, tray-menu items)."
-commands.allow = ["mini_action", "mini_expand", "mini_expand_notifications", "mini_hide", "mini_open", "mini_menu", "mini_pin"]
+commands.allow = ["mini_action", "mini_expand", "mini_expand_notifications", "mini_hide", "mini_open", "mini_menu", "mini_pin", "mini_compact"]

@@ -7,6 +7,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 
 type Need = { label: string; body: string; href: string };
 type ClockAction = { id: string; label: string };
+type LabelCount = { label: string; count: number };
 type View = {
   state: string;
   status: string;
@@ -16,9 +17,12 @@ type View = {
   break_min: number;
   unread: number;
   needs: Need[];
+  summary: LabelCount[];
   version: string;
   autostart: boolean;
   pinned: boolean;
+  compact: boolean;
+  platform: string;
 };
 
 declare global {
@@ -76,6 +80,8 @@ const BADGES: Array<[string, string]> = [
   ["#e9e7fd", "#3c3489"],
   ["#dff4ec", "#0f5c47"],
   ["#fdf0d9", "#7a4a06"],
+  ["#e3eefb", "#0c447c"],
+  ["#fbe9e3", "#7a2e14"],
 ];
 function badgeFor(label: string): [string, string] {
   let h = 0;
@@ -88,7 +94,9 @@ function tick() {
   if (!view) return;
   const onClock = view.state === "in" || view.state === "break";
   const since = Date.parse(view.since_iso);
-  el("timer").textContent = !onClock ? "0:00" : Number.isNaN(since) ? "—" : fmtTimer(Date.now() - since);
+  const timer = !onClock ? "0:00" : Number.isNaN(since) ? "—" : fmtTimer(Date.now() - since);
+  el("timer").textContent = timer;
+  el("c-timer").textContent = timer;
   // Today's totals were worked out at the last push; the open stretch keeps
   // growing until the next one.
   const grown = (Date.now() - pushedAt) / 60000;
@@ -159,9 +167,72 @@ function renderNeeds(view: View) {
       : "See all notifications";
 }
 
+/** "Approval 3 · Phase 2" (plus any unread the poll didn't list). */
+function summaryText(view: View): string {
+  if (view.unread === 0) return "No notifications waiting";
+  const listed = view.summary.reduce((n, c) => n + c.count, 0);
+  const parts = view.summary.slice(0, 3).map((c) => `${c.label} ${c.count}`);
+  const rest = view.unread - view.summary.slice(0, 3).reduce((n, c) => n + c.count, 0);
+  if (parts.length === 0 || listed === 0) return `${view.unread} unread`;
+  if (rest > 0) parts.push(`${rest} more`);
+  return parts.join(" · ");
+}
+
+function renderSummary(view: View) {
+  const box = el("summary");
+  box.replaceChildren();
+  box.hidden = view.unread === 0 || view.summary.length === 0;
+  for (const kind of view.summary.slice(0, 4)) {
+    const chip = document.createElement("span");
+    chip.className = "chip";
+    const [bg, fg] = badgeFor(kind.label);
+    chip.style.background = bg;
+    chip.style.color = fg;
+    chip.textContent = `${kind.label} ${kind.count}`;
+    box.appendChild(chip);
+  }
+  el("c-summary").textContent = summaryText(view);
+  const count = el("c-count");
+  count.hidden = view.unread === 0;
+  count.textContent = view.unread > 99 ? "99+" : String(view.unread);
+  el("c-bell").title = view.unread > 0 ? `${view.unread} unread notifications` : "Notifications";
+}
+
+/** The mini timer's one clock tap: call in or come back first, else wrap. */
+function renderCompactAction(view: View) {
+  const btn = el<HTMLButtonElement>("c-action");
+  const action =
+    view.actions.find((a) => a.id === "in" || a.id === "back") ??
+    view.actions.find((a) => a.id === "wrap");
+  btn.hidden = !action;
+  if (action) {
+    btn.textContent = action.label;
+    btn.dataset.action = action.id;
+  }
+}
+
+function renderMode(view: View) {
+  const compact = view.compact && view.pinned;
+  el("compact-view").hidden = !compact;
+  if (compact) {
+    el("main-view").hidden = true;
+    el("settings").hidden = true;
+  } else if (el("settings").hidden) {
+    el("main-view").hidden = false;
+  }
+  el("shrink").hidden = !view.pinned;
+}
+
 window.__cbbMiniShow = (view) => {
   current = view;
   pushedAt = Date.now();
+  document.documentElement.dataset.platform = view.platform;
+  const quit = view.platform === "windows" ? "Exit" : "Quit";
+  el("quit-text").textContent = `${quit} CoolerBox Tracker`;
+  el("quit").title = quit;
+  el("quit").setAttribute("aria-label", `${quit} CoolerBox Tracker`);
+  el("compact-view").dataset.state = view.state;
+  el("c-status").textContent = view.status;
   el("head").dataset.state = view.state;
   el("status").textContent = view.status;
   el("version").textContent = `CoolerBox Tracker ${view.version}`;
@@ -172,6 +243,9 @@ window.__cbbMiniShow = (view) => {
   renderPin(view.pinned);
   renderActions(view);
   renderNeeds(view);
+  renderSummary(view);
+  renderCompactAction(view);
+  renderMode(view);
   tick();
 };
 
@@ -186,6 +260,7 @@ function renderPin(pinned: boolean) {
 }
 
 function showSettings(open: boolean) {
+  if (!el("compact-view").hidden) return;
   el("main-view").hidden = open;
   el("settings").hidden = !open;
 }
@@ -213,6 +288,19 @@ window.addEventListener("DOMContentLoaded", () => {
     const pinned = el("pin").getAttribute("aria-pressed") !== "true";
     renderPin(pinned);
     void invoke("mini_pin", { pinned });
+  });
+  click("shrink", () => void invoke("mini_compact", { compact: true }));
+  click("grow", () => void invoke("mini_compact", { compact: false }));
+  click("c-unpin", () => void invoke("mini_pin", { pinned: false }));
+  click("c-bell", () => void invoke("mini_expand_notifications"));
+  click("c-action", () => {
+    const action = el("c-action").dataset.action;
+    if (action) void invoke("mini_action", { action });
+  });
+  // The mini timer drags from anywhere but its buttons.
+  el("compact-view").addEventListener("mousedown", (e) => {
+    if (e.button !== 0 || (e.target as HTMLElement).closest("button")) return;
+    void getCurrentWindow().startDragging();
   });
   // Pinned, the header drags the window (not from its buttons).
   el("head").addEventListener("mousedown", (e) => {

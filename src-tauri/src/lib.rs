@@ -23,6 +23,7 @@ use tauri::{
 use tauri_plugin_deep_link::DeepLinkExt;
 
 mod clock;
+mod close;
 mod desktop_entry;
 mod diagnostics;
 mod download;
@@ -221,7 +222,7 @@ fn has_session_cookie(cookies: &str) -> bool {
 /// the close handler: a hidden app is a pure menu-bar app, like Toggl).
 pub(crate) fn show_main<R: Runtime>(app: &AppHandle<R>) {
     #[cfg(target_os = "macos")]
-    app.set_activation_policy(tauri::ActivationPolicy::Regular);
+    let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.unminimize();
@@ -229,14 +230,93 @@ pub(crate) fn show_main<R: Runtime>(app: &AppHandle<R>) {
     }
 }
 
+/// The tray's "Launch at login" row, kept so its tick follows the setting
+/// when it is changed from the quick panel too.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+struct AutostartItem(MenuItem<tauri::Wry>);
+
+/// Whether the app starts at login.
+pub(crate) fn autostart_enabled<R: Runtime>(app: &AppHandle<R>) -> bool {
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        use tauri_plugin_autostart::ManagerExt;
+        app.autolaunch().is_enabled().unwrap_or(false)
+    }
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        let _ = app;
+        false
+    }
+}
+
+/// Turn launch at login on or off (tray menu or quick panel), tick the tray
+/// row to match and confirm with a banner.
+pub(crate) fn toggle_autostart<R: Runtime>(app: &AppHandle<R>) {
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        use tauri_plugin_autostart::ManagerExt;
+        use tauri_plugin_notification::NotificationExt;
+        let manager = app.autolaunch();
+        let turn_on = !manager.is_enabled().unwrap_or(false);
+        let _ = if turn_on { manager.enable() } else { manager.disable() };
+        let on = manager.is_enabled().unwrap_or(false);
+        if let Some(item) = app.try_state::<AutostartItem>() {
+            let _ = item.0.set_text(if on { "✓ Launch at login" } else { "Launch at login" });
+        }
+        let _ = app
+            .notification()
+            .builder()
+            .title("CoolerBox Tracker")
+            .body(if on { "Launch at login turned on." } else { "Launch at login turned off." })
+            .show();
+    }
+}
+
+/// Hide a window; the app keeps running in the menu bar / tray. With the
+/// last visible window gone the dock icon goes too (pure menu-bar app). It
+/// returns in show_main / show_library, so there is never a dead dock icon.
+pub(crate) fn hide_to_tray<R: Runtime>(window: &tauri::Window<R>) {
+    let _ = window.hide();
+    #[cfg(target_os = "macos")]
+    {
+        let app = window.app_handle();
+        let hidden = window.label().to_string();
+        let any_other = ["main", "mini", "library"]
+            .iter()
+            .filter(|label| label.to_string() != hidden)
+            .any(|label| {
+                app.get_webview_window(label)
+                    .and_then(|w| w.is_visible().ok())
+                    .unwrap_or(false)
+            });
+        if !any_other {
+            let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+        }
+    }
+}
+
 /// Bring the Saved-for-offline library forward.
 pub(crate) fn show_library<R: Runtime>(app: &AppHandle<R>) {
     #[cfg(target_os = "macos")]
-    app.set_activation_policy(tauri::ActivationPolicy::Regular);
+    let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
     if let Some(library) = app.get_webview_window("library") {
         let _ = library.show();
         let _ = library.unminimize();
         let _ = library.set_focus();
+    }
+}
+
+/// Modifiers of the two global shortcuts (I: clock, M: quick panel).
+/// Cmd+Shift on macOS. Ctrl+Alt on Windows and Linux: Win+Shift+M is
+/// Windows' own "restore minimised windows", and Ctrl+Shift+I would take
+/// the browsers' developer tools from every other app.
+#[cfg(desktop)]
+fn shortcut_modifiers() -> tauri_plugin_global_shortcut::Modifiers {
+    use tauri_plugin_global_shortcut::Modifiers;
+    if cfg!(target_os = "macos") {
+        Modifiers::SUPER | Modifiers::SHIFT
+    } else {
+        Modifiers::CONTROL | Modifiers::ALT
     }
 }
 
@@ -297,15 +377,15 @@ pub fn run() {
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, shortcut, event| {
-                    use tauri_plugin_global_shortcut::{Code, Modifiers, ShortcutState};
+                    use tauri_plugin_global_shortcut::{Code, ShortcutState};
                     if !matches!(event.state(), ShortcutState::Pressed) {
                         return;
                     }
-                    // Cmd+Shift+I (Ctrl+Shift+I on Windows/Linux): smart
+                    // Cmd+Shift+I (Ctrl+Alt+I on Windows/Linux): smart
                     // clock toggle — in when out, wrap when in, back when
                     // on a break. Notice-gating stays in `clock::act`.
                     let toggle = tauri_plugin_global_shortcut::Shortcut::new(
-                        Some(Modifiers::SUPER | Modifiers::SHIFT),
+                        Some(shortcut_modifiers()),
                         Code::KeyI,
                     );
                     if shortcut == &toggle {
@@ -323,9 +403,9 @@ pub fn run() {
                         clock::act(app, action);
                         return;
                     }
-                    // Cmd+Shift+M: toggle the mini panel.
+                    // Cmd+Shift+M (Ctrl+Alt+M on Windows/Linux): the quick panel.
                     let panel = tauri_plugin_global_shortcut::Shortcut::new(
-                        Some(Modifiers::SUPER | Modifiers::SHIFT),
+                        Some(shortcut_modifiers()),
                         Code::KeyM,
                     );
                     if shortcut == &panel {
@@ -340,36 +420,27 @@ pub fn run() {
         // Toggl) and comes back in show_main/show_library — so there is
         // never a dead dock icon. Quit is in the tray menu (or Cmd+Q).
         .on_window_event(|window, event| {
-            if window.label() == "main" || window.label() == "mini" {
-                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                    api.prevent_close();
-                    let _ = window.hide();
-                    // With the last visible window gone the dock icon goes
-                    // too (pure menu-bar app). It returns in show_main /
-                    // show_library, so there is never a dead dock icon.
-                    #[cfg(target_os = "macos")]
-                    {
-                        let app = window.app_handle();
-                        let hidden = window.label().to_string();
-                        let any_other = ["main", "mini", "library"]
-                            .iter()
-                            .filter(|label| label.to_string() != hidden)
-                            .any(|label| {
-                                app.get_webview_window(label)
-                                    .and_then(|w| w.is_visible().ok())
-                                    .unwrap_or(false)
-                            });
-                        if !any_other {
-                            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
-                        }
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                match window.label() {
+                    // Hide to the menu bar / tray, or quit (close.rs).
+                    "main" => {
+                        api.prevent_close();
+                        close::main_window_closed(window);
                     }
+                    "mini" => {
+                        api.prevent_close();
+                        hide_to_tray(window);
+                    }
+                    _ => {}
                 }
             }
-            // Panel behavior: the mini hides when it loses focus.
-            if window.label() == "mini" {
-                if matches!(event, tauri::WindowEvent::Focused(false)) {
-                    let _ = window.hide();
-                }
+            // Drop-down behaviour: the quick panel hides when it loses focus,
+            // unless it is pinned as a floating timer.
+            if window.label() == "mini"
+                && matches!(event, tauri::WindowEvent::Focused(false))
+                && !mini::is_pinned()
+            {
+                mini::hide(window.app_handle());
             }
         })
         .manage(std::sync::Mutex::new(None::<offline::PendingCapture>))
@@ -384,9 +455,9 @@ pub fn run() {
             mini::mini_expand_notifications,
             mini::mini_hide,
             mini::mini_open,
-            mini::mini_drag_start,
-            mini::mini_drag_move,
-            mini::mini_drag_end
+            mini::mini_menu,
+            mini::mini_pin,
+            mini::mini_compact
         ])
         .setup(|app| {
             #[cfg(target_os = "linux")]
@@ -531,11 +602,13 @@ pub fn run() {
 
             // Mini bar (mini.rs + mini.html): hidden until the tray toggle.
             // Frameless, transparent, always on top, out of Alt-Tab.
+            // The quick panel (mini.rs): drawn edge to edge by mini.html, with
+            // its own rounded card and shadow inside the transparent window.
             WebviewWindowBuilder::new(app, "mini", WebviewUrl::App("mini.html".into()))
-                .title("Tracker Mini")
-                .inner_size(340.0, 320.0)
-                .min_inner_size(300.0, 240.0)
+                .title("CoolerBox Tracker")
+                .inner_size(372.0, 576.0) // mini::FULL_SIZE
                 .resizable(false)
+                .shadow(false)
                 .decorations(false)
                 .transparent(true)
                 .always_on_top(true)
@@ -573,7 +646,7 @@ pub fn run() {
             let tray_offline =
                 MenuItem::with_id(app, "tray-offline", "Saved for offline", true, None::<&str>)?;
             let tray_mini =
-                MenuItem::with_id(app, "tray-mini", "Mini bar", true, None::<&str>)?;
+                MenuItem::with_id(app, "tray-mini", "Quick panel", true, None::<&str>)?;
             let tray_update =
                 MenuItem::with_id(app, "tray-update", "Check for updates", true, None::<&str>)?;
             let tray_diagnostics =
@@ -587,7 +660,9 @@ pub fn run() {
                     None::<&str>,
                 )?
             };
-            let tray_quit = MenuItem::with_id(app, "tray-quit", "Quit", true, None::<&str>)?;
+            // Windows says "Exit" in tray menus, macOS and Linux "Quit".
+            let quit_label = if cfg!(target_os = "windows") { "Exit" } else { "Quit" };
+            let tray_quit = MenuItem::with_id(app, "tray-quit", quit_label, true, None::<&str>)?;
             // The time sheet's clock (clock.rs): a line saying where you are,
             // then the four taps, enabled as they make sense.
             let clock_items = clock::Items {
@@ -623,23 +698,24 @@ pub fn run() {
             // Autostart checkbox reflects actual state at launch.
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
             {
-                use tauri_plugin_autostart::ManagerExt;
-                if app.autolaunch().is_enabled().unwrap_or(false) {
+                if autostart_enabled(app.handle()) {
                     let _ = tray_autostart.set_text("✓ Launch at login");
                 }
+                app.manage(AutostartItem(tray_autostart.clone()));
             }
-            // Cmd+Shift+I toggles the clock from anywhere, Cmd+Shift+M the
-            // mini panel. Best-effort: macOS may need Accessibility
+            // Cmd+Shift+I (Ctrl+Alt+I on Windows/Linux) toggles the clock
+            // from anywhere, Cmd+Shift+M (Ctrl+Alt+M) the quick panel.
+            // Best-effort: macOS may need Accessibility
             // permission; failure just means no hotkey, the tray items keep
             // working.
             #[cfg(desktop)]
             {
-                use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut};
+                use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Shortcut};
                 let toggle =
-                    Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyI);
+                    Shortcut::new(Some(shortcut_modifiers()), Code::KeyI);
                 let _ = app.global_shortcut().register(toggle);
                 let panel =
-                    Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyM);
+                    Shortcut::new(Some(shortcut_modifiers()), Code::KeyM);
                 let _ = app.global_shortcut().register(panel);
             }
             let _tray = TrayIconBuilder::with_id(TRAY_ID)
@@ -651,6 +727,10 @@ pub fn run() {
                 )
                 .icon_as_template(true)
                 .menu(&tray_menu)
+                // Left-click opens the quick panel (on_tray_icon_event); the
+                // menu is the right-click fallback. Linux reports no tray
+                // clicks, so there the menu is all there is.
+                .show_menu_on_left_click(false)
                 .tooltip("CoolerBox Tracker")
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "tray-show" => show_main(app),
@@ -673,32 +753,7 @@ pub fn run() {
                     "clock-wrap" => clock::act(app, "wrap"),
                     "tray-update" => updater::check_now(app.clone()),
                     "tray-diagnostics" => diagnostics::show(app),
-                    "tray-autostart" => {
-                        #[cfg(not(any(target_os = "android", target_os = "ios")))]
-                        {
-                            use tauri_plugin_autostart::ManagerExt;
-                            use tauri_plugin_notification::NotificationExt;
-                            let manager = app.autolaunch();
-                            let enabled = manager.is_enabled().unwrap_or(false);
-                            if enabled {
-                                let _ = manager.disable();
-                                let _ = app
-                                    .notification()
-                                    .builder()
-                                    .title("CoolerBox Tracker")
-                                    .body("Launch at login turned off.")
-                                    .show();
-                            } else {
-                                let _ = manager.enable();
-                                let _ = app
-                                    .notification()
-                                    .builder()
-                                    .title("CoolerBox Tracker")
-                                    .body("Launch at login turned on.")
-                                    .show();
-                            }
-                        }
-                    }
+                    "tray-autostart" => toggle_autostart(app),
                     "tray-quit" => app.exit(0),
                     _ => {}
                 })

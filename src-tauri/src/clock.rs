@@ -279,7 +279,7 @@ pub(crate) fn act<R: Runtime>(app: &AppHandle<R>, action: &str) {
 }
 
 /// Seconds since the Unix epoch, via the system clock.
-fn unix_now() -> u64 {
+pub(crate) fn unix_now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -418,7 +418,11 @@ fn maybe_nudge<R: Runtime>(app: &AppHandle<R>) {
         .notification()
         .builder()
         .title("Not called in yet")
-        .body("Call in from the tray, the mini panel (Cmd+Shift+M), or Cmd+Shift+I.")
+        .body(if cfg!(target_os = "macos") {
+            "Call in from the menu bar, the quick panel (Cmd+Shift+M), or Cmd+Shift+I."
+        } else {
+            "Call in from the tray, the quick panel (Ctrl+Alt+M), or Ctrl+Alt+I."
+        })
         .show();
 }
 

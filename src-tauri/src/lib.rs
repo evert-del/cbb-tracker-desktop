@@ -424,6 +424,9 @@ pub(crate) fn build_tracker_window<R: Runtime>(
     .background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Disabled)
     .inner_size(1280.0, 800.0)
     .min_inner_size(1024.0, 640.0)
+    // The main window is placed before it is shown (session.rs), so it never
+    // opens at one size and jumps to another.
+    .visible(label != "main")
     .on_navigation(move |url| {
         // nav_bar.js hands a clicked file link over as
         // cbb-download://go?u=<https url>[&save=1]: open it (or, for
@@ -735,24 +738,6 @@ pub fn run() {
         )
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_positioner::init())
-        // The main window reopens where it was left, at the size it was left
-        // (a position off every screen is not restored). Showing or hiding
-        // stays the app's call; the mini bar always opens under the tray
-        // icon. The Saved-for-offline window is left out: it is created
-        // hidden from tauri.conf.json, and on a Retina screen its restored
-        // size doubled on every launch (480 → 960 → 1920 …, found live).
-        .plugin(
-            tauri_plugin_window_state::Builder::new()
-                .with_state_flags(
-                    tauri_plugin_window_state::StateFlags::SIZE
-                        | tauri_plugin_window_state::StateFlags::POSITION
-                        | tauri_plugin_window_state::StateFlags::MAXIMIZED,
-                )
-                .with_denylist(&["mini", "library"])
-                // Extra tracker windows (tracker-<n>) open fresh each time.
-                .with_filter(|label| label == "main")
-                .build(),
-        )
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
@@ -898,15 +883,15 @@ pub fn run() {
             // macOS: Tauri turns window tabbing off app-wide whenever it
             // builds a window without a tab group (the panel, the library),
             // which hid the tracker's tab bar. Turn it back on now that every
-            // startup window exists, keep those two out of tab groups, and
-            // show the tab bar (tabs.rs).
+            // startup window exists, keep those two out of tab groups (tabs.rs).
             #[cfg(target_os = "macos")]
-            {
-                tabs::allow_tabs(app.handle());
-                tabs::show_tab_bar(&main_window);
-            }
-            #[cfg(not(target_os = "macos"))]
-            let _ = main_window;
+            tabs::allow_tabs(app.handle());
+            // Size and place the main window for whoever is here (the sign-in
+            // window or the tracker as it was left), then show it (session.rs).
+            session::place_main_at_launch(&main_window);
+            // The tab bar, once the window is on screen (hidden when signed out).
+            #[cfg(target_os = "macos")]
+            tabs::show_tab_bar(&main_window);
 
             // Cold start through a tracker:// URL.
             if let Ok(Some(urls)) = app.deep_link().get_current() {
@@ -1101,8 +1086,14 @@ pub fn run() {
             updater::start(app.handle().clone());
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            // Remember the tracker window's place for next time (session.rs).
+            if let tauri::RunEvent::Exit = event {
+                session::save(app);
+            }
+        });
 }
 
 #[cfg(test)]

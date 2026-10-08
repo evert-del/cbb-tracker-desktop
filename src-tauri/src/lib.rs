@@ -22,6 +22,7 @@ use tauri::{
 };
 use tauri_plugin_deep_link::DeepLinkExt;
 
+mod analytics;
 mod clock;
 mod close;
 mod desktop_entry;
@@ -260,8 +261,8 @@ pub(crate) fn autostart_enabled<R: Runtime>(app: &AppHandle<R>) -> bool {
 }
 
 /// Turn launch at login on or off (tray menu or quick panel), tick the tray
-/// row to match and confirm with a banner.
-pub(crate) fn toggle_autostart<R: Runtime>(app: &AppHandle<R>) {
+/// row to match and confirm with a banner. Returns whether it is now on.
+pub(crate) fn toggle_autostart<R: Runtime>(app: &AppHandle<R>) -> bool {
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
         use tauri_plugin_autostart::ManagerExt;
@@ -279,6 +280,12 @@ pub(crate) fn toggle_autostart<R: Runtime>(app: &AppHandle<R>) {
             .title("CoolerBox Tracker")
             .body(if on { "Launch at login turned on." } else { "Launch at login turned off." })
             .show();
+        on
+    }
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        let _ = app;
+        false
     }
 }
 
@@ -411,6 +418,9 @@ pub fn run() {
                             })
                             .unwrap_or("in");
                         clock::act(app, action);
+                        if let Some(label) = analytics::clock_label(action) {
+                            analytics::clock_tapped(app, label, "shortcut");
+                        }
                         return;
                     }
                     // Cmd+Shift+M (Ctrl+Alt+M on Windows/Linux): the quick panel.
@@ -419,7 +429,7 @@ pub fn run() {
                         Code::KeyM,
                     );
                     if shortcut == &panel {
-                        mini::toggle(app);
+                        mini::toggle(app, "shortcut");
                     }
                 })
                 .build(),
@@ -507,6 +517,14 @@ pub fn run() {
             .on_permission_request(|webview, kind| {
                 location::decide(webview.url().ok().as_ref(), kind)
             })
+            // Keep the tracker page running at full speed while the window is
+            // closed to the menu bar. By default WebKit throttles a hidden
+            // page's timers and may suspend it after ~5 minutes, so PostHog's
+            // batched sends (analytics.rs), the notification poll and the
+            // clock stalled until the window came back; found live: panel
+            // events queued and were lost on sign-out. macOS 14+; Windows and
+            // Linux don't support the setting and keep their own behaviour.
+            .background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Disabled)
             .inner_size(1280.0, 800.0)
             .min_inner_size(1024.0, 640.0)
             .on_navigation(move |url| {
@@ -766,8 +784,13 @@ pub fn run() {
                 .show_menu_on_left_click(false)
                 .tooltip("CoolerBox Tracker")
                 .on_menu_event(|app, event| match event.id.as_ref() {
-                    "tray-show" => show_main(app),
+                    "tray-show" => {
+                        show_main(app);
+                        analytics::action(app, "open_tracker", "tray_menu");
+                    }
                     "tray-notifications" => {
+                        // Handed over before the page navigates away.
+                        analytics::action(app, "see_all_notifications", "tray_menu");
                         if let (Some(window), Ok(url)) = (
                             app.get_webview_window("main"),
                             format!("{APP_ORIGIN}/notifications").parse::<url::Url>(),
@@ -776,17 +799,35 @@ pub fn run() {
                         }
                         show_main(app);
                     }
-                    "inbox-1" => notify::open_inbox(app, 0),
-                    "inbox-2" => notify::open_inbox(app, 1),
-                    "inbox-3" => notify::open_inbox(app, 2),
-                    "tray-offline" => show_library(app),
-                    "tray-mini" => mini::toggle(app),                    "clock-in" => clock::act(app, "in"),
-                    "clock-break" => clock::act(app, "break"),
-                    "clock-back" => clock::act(app, "back"),
-                    "clock-wrap" => clock::act(app, "wrap"),
-                    "tray-update" => updater::check_now(app.clone()),
-                    "tray-diagnostics" => diagnostics::show(app),
-                    "tray-autostart" => toggle_autostart(app),
+                    "inbox-1" | "inbox-2" | "inbox-3" => {
+                        let row = match event.id.as_ref() { "inbox-1" => 0, "inbox-2" => 1, _ => 2 };
+                        analytics::action(app, "notification", "tray_menu");
+                        notify::open_inbox(app, row);
+                    }
+                    "tray-offline" => {
+                        show_library(app);
+                        analytics::action(app, "saved_offline", "tray_menu");
+                    }
+                    "tray-mini" => mini::toggle(app, "tray_menu"),
+                    "clock-in" | "clock-break" | "clock-back" | "clock-wrap" => {
+                        let action = event.id.as_ref().trim_start_matches("clock-");
+                        clock::act(app, action);
+                        if let Some(label) = analytics::clock_label(action) {
+                            analytics::clock_tapped(app, label, "tray_menu");
+                        }
+                    }
+                    "tray-update" => {
+                        updater::check_now(app.clone());
+                        analytics::action(app, "check_updates", "tray_menu");
+                    }
+                    "tray-diagnostics" => {
+                        diagnostics::show(app);
+                        analytics::action(app, "diagnostics", "tray_menu");
+                    }
+                    "tray-autostart" => {
+                        let on = toggle_autostart(app);
+                        analytics::setting_changed(app, "launch_at_login", on);
+                    }
                     "tray-quit" => app.exit(0),
                     _ => {}
                 })
@@ -799,7 +840,7 @@ pub fn run() {
                         ..
                     } = event
                     {
-                        mini::toggle(tray.app_handle());
+                        mini::toggle(tray.app_handle(), "tray_icon");
                     }
                 })
                 .build(app)?;

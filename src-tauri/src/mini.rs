@@ -207,7 +207,8 @@ fn place_under_tray<R: Runtime>(mini: &tauri::WebviewWindow<R>) {
 }
 
 /// Toggle the panel (tray click, tray menu, Cmd+Shift+M / Ctrl+Alt+M).
-pub(crate) fn toggle<R: Runtime>(app: &AppHandle<R>) {
+/// `via` says which, for analytics.rs: tray_icon, tray_menu or shortcut.
+pub(crate) fn toggle<R: Runtime>(app: &AppHandle<R>, via: &'static str) {
     let visible = app
         .get_webview_window("mini")
         .and_then(|w| w.is_visible().ok())
@@ -221,6 +222,7 @@ pub(crate) fn toggle<R: Runtime>(app: &AppHandle<R>) {
         hide(app);
     } else if !just_hidden {
         show(app);
+        crate::analytics::panel_opened(app, via);
     }
 }
 
@@ -240,12 +242,20 @@ fn is_allowed(action: &str) -> bool {
     matches!(action, "in" | "break" | "back" | "wrap")
 }
 
+/// A clock tap from the panel (`from`: "panel") or the mini timer
+/// ("mini_timer").
 #[tauri::command]
-pub(crate) fn mini_action<R: Runtime>(app: AppHandle<R>, action: String) -> Result<(), String> {
-    if !is_allowed(&action) {
+pub(crate) fn mini_action<R: Runtime>(
+    app: AppHandle<R>,
+    action: String,
+    from: Option<String>,
+) -> Result<(), String> {
+    let Some(label) = crate::analytics::clock_label(&action).filter(|_| is_allowed(&action)) else {
         return Err("Unknown action.".into());
-    }
+    };
     crate::clock::act(&app, &action);
+    let from = if from.as_deref() == Some("mini_timer") { "mini_timer" } else { "panel" };
+    crate::analytics::clock_tapped(&app, label, from);
     Ok(())
 }
 
@@ -258,11 +268,14 @@ fn expand_to_main<R: Runtime>(app: &AppHandle<R>) {
 #[tauri::command]
 pub(crate) fn mini_expand<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     expand_to_main(&app);
+    crate::analytics::action(&app, "open_tracker", "panel");
     Ok(())
 }
 
 #[tauri::command]
 pub(crate) fn mini_expand_notifications<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
+    // Handed over before the page navigates away.
+    crate::analytics::action(&app, "see_all_notifications", "panel");
     if let (Some(window), Ok(url)) = (
         app.get_webview_window("main"),
         format!("{}/notifications", crate::APP_ORIGIN).parse::<url::Url>(),
@@ -294,6 +307,8 @@ pub(crate) fn mini_open<R: Runtime>(app: AppHandle<R>, href: String) -> Result<(
     if !href.starts_with('/') {
         return Err("Unknown destination.".into());
     }
+    // Handed over before the page navigates away.
+    crate::analytics::action(&app, "notification", "panel");
     open_href(&app, &href);
     Ok(())
 }
@@ -317,6 +332,7 @@ pub(crate) fn mini_pin<R: Runtime>(app: AppHandle<R>, pinned: bool) -> Result<()
         }
     }
     push(&app);
+    crate::analytics::panel_mode(&app, is_pinned(), is_compact());
     Ok(())
 }
 
@@ -328,6 +344,7 @@ pub(crate) fn mini_compact<R: Runtime>(app: AppHandle<R>, compact: bool) -> Resu
     }
     set_compact(&app, compact);
     push(&app);
+    crate::analytics::panel_mode(&app, is_pinned(), is_compact());
     Ok(())
 }
 
@@ -348,22 +365,28 @@ pub(crate) fn mini_menu<R: Runtime>(app: AppHandle<R>, item: String) -> Result<(
         "offline" => {
             hide(&app);
             crate::show_library(&app);
+            crate::analytics::action(&app, "saved_offline", "panel");
         }
         "update" => {
             hide(&app);
             crate::updater::check_now(app.clone());
+            crate::analytics::action(&app, "check_updates", "panel");
         }
         "diagnostics" => {
             hide(&app);
             crate::diagnostics::show(&app);
+            crate::analytics::action(&app, "diagnostics", "panel");
         }
         "autostart" => {
-            crate::toggle_autostart(&app);
+            let on = crate::toggle_autostart(&app);
             push(&app);
+            crate::analytics::setting_changed(&app, "launch_at_login", on);
         }
         "close-keep" | "close-quit" => {
-            crate::close::set_quits(&app, item == "close-quit");
+            let quits = item == "close-quit";
+            crate::close::set_quits(&app, quits);
             push(&app);
+            crate::analytics::setting_changed(&app, "close_quits", quits);
         }
         "quit" => app.exit(0),
         _ => {}

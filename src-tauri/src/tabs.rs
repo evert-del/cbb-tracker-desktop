@@ -46,6 +46,79 @@ pub(crate) fn open_from_front<R: Runtime>(app: &AppHandle<R>, tab: bool) {
     }
 }
 
+/// What the page shows, for its tab: its title, its main heading (a review
+/// page's version label, else its h1) and its path.
+const PAGE_LABEL_JS: &str = "JSON.stringify({t: document.title || '', \
+    h: ((document.querySelector('.gd-title') || document.querySelector('main h1') || document.querySelector('h1') || {}).textContent || '').trim().slice(0, 80), \
+    p: location.pathname})";
+
+#[derive(serde::Deserialize, Default)]
+struct PageLabel {
+    #[serde(default)]
+    t: String,
+    #[serde(default)]
+    h: String,
+    #[serde(default)]
+    p: String,
+}
+
+/// A tab / window title for what a tracker window shows. Most tracker pages
+/// keep the site name as their title, so then the page's heading (a review
+/// page's version label) names the tab; without one, its first path segment.
+pub(crate) fn tab_title(page_title: &str, heading: &str, path: &str) -> String {
+    const SITE: [&str; 2] = ["CoolerBox Production Tracker", "Production Tracker"];
+    let title = page_title.trim();
+    let title = SITE
+        .iter()
+        .find_map(|site| {
+            ["|", "·", "-"]
+                .iter()
+                .find_map(|sep| title.strip_suffix(&format!("{sep} {site}")))
+        })
+        .map(str::trim_end)
+        .unwrap_or(title);
+    if !title.is_empty() && !SITE.contains(&title) {
+        return title.to_string();
+    }
+    let heading = heading.split_whitespace().collect::<Vec<_>>().join(" ");
+    if !heading.is_empty() {
+        return heading;
+    }
+    let first = path.trim_matches('/').split('/').next().unwrap_or("");
+    if first.is_empty() || first == "sign-in" {
+        return "CoolerBox Tracker".to_string();
+    }
+    let words = first.replace('-', " ");
+    let mut chars = words.chars();
+    chars.next().map(|c| c.to_uppercase().chain(chars).collect()).unwrap_or_default()
+}
+
+/// Keeps every tracker window's title (its tab's label on macOS, the
+/// taskbar entry elsewhere) on the page it shows, so two tabs of two review
+/// versions can be told apart. The tracker changes pages without a full
+/// load, so this checks `document.title` every 1.5 s.
+pub(crate) fn follow_titles<R: Runtime>(app: &AppHandle<R>) {
+    let app = app.clone();
+    std::thread::spawn(move || loop {
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        for (label, window) in app.webview_windows() {
+            if label != "main" && !crate::is_extra_tracker_window(&label) {
+                continue;
+            }
+            let target = window.clone();
+            let _ = window.eval_with_callback(PAGE_LABEL_JS, move |raw| {
+                // The page returns a JSON string; the callback gets it JSON-encoded.
+                let json: String = serde_json::from_str(&raw).unwrap_or_default();
+                let page: PageLabel = serde_json::from_str(&json).unwrap_or_default();
+                let title = tab_title(&page.t, &page.h, &page.p);
+                if target.title().ok().as_deref() != Some(title.as_str()) {
+                    let _ = target.set_title(&title);
+                }
+            });
+        }
+    });
+}
+
 /// The one-time message for a second tracker window, in each system's words.
 pub(crate) fn side_by_side_text(os: &str) -> (&'static str, &'static str) {
     match os {
@@ -259,7 +332,11 @@ pub(crate) fn enable_plus_button<R: Runtime>(main: &tauri::WebviewWindow<R>) {
     // SAFETY: adds a method with the documented signature to the window's
     // class; harmless if it already exists (then nothing changes).
     unsafe {
-        let class = ffi::object_getClass(ns_window) as *mut AnyClass;
+        // The window's real class (TaoWindow). object_getClass would give the
+        // key-value-observing subclass AppKit slips in, which respondsToSelector:
+        // doesn't consult, so the + stayed hidden (found live).
+        let class: *const AnyClass = objc2::msg_send![ns_window, class];
+        let class = class as *mut AnyClass;
         let _ = ffi::class_addMethod(
             class,
             sel!(newWindowForTab:),
@@ -272,6 +349,22 @@ pub(crate) fn enable_plus_button<R: Runtime>(main: &tauri::WebviewWindow<R>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tab_titles_name_what_the_page_shows() {
+        // A real page title wins, without the site name.
+        assert_eq!(tab_title("Leave | CoolerBox Production Tracker", "", "/leave"), "Leave");
+        // Most pages keep the site name: the heading names the tab.
+        assert_eq!(
+            tab_title("CoolerBox Production Tracker", "V3 ·  Final   cut", "/viewing/version/abc"),
+            "V3 · Final cut"
+        );
+        assert_eq!(tab_title("Production Tracker", "Projects", "/projects"), "Projects");
+        // No heading: the first path segment.
+        assert_eq!(tab_title("CoolerBox Production Tracker", "", "/call-sheets/12"), "Call sheets");
+        assert_eq!(tab_title("CoolerBox Production Tracker", "", "/sign-in"), "CoolerBox Tracker");
+        assert_eq!(tab_title("", "", "/"), "CoolerBox Tracker");
+    }
 
     #[test]
     fn side_by_side_uses_each_systems_words() {

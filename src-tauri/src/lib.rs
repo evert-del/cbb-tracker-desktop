@@ -808,6 +808,8 @@ pub fn run() {
                 "main",
                 START_URL.parse().expect("START_URL is a valid URL"),
             )?;
+            // Tab / window titles follow the page each window shows (tabs.rs).
+            tabs::follow_titles(app.handle());
             // macOS: tabs you can see and click (tabs.rs): File ▸ New Tab /
             // New Window, the Window menu's tab commands, the tab bar and +.
             #[cfg(target_os = "macos")]

@@ -34,6 +34,7 @@ mod location;
 mod mini;
 mod notify;
 mod offline;
+mod session;
 mod system_open;
 mod tabs;
 mod title_buttons;
@@ -128,9 +129,10 @@ pub(crate) fn main_window_may_load(url: &url::Url, handed_off: &mut bool) -> boo
         return false;
     }
     match url.host_str() {
+        // The website's own pages open in the browser (is_website_page).
         Some(APP_HOST) => {
             *handed_off = false;
-            true
+            !is_website_page(url)
         }
         Some(host) if HAND_OFF_HOSTS.contains(&host) => {
             *handed_off = true;
@@ -145,6 +147,27 @@ pub(crate) fn main_window_may_load(url: &url::Url, handed_off: &mut bool) -> boo
 /// `webcal` is My Schedule's "Open in Apple Calendar or Outlook" feed link.
 /// Anything else (javascript:, file:, data:, …) is dropped.
 const EXTERNAL_SCHEMES: &[&str] = &["https", "http", "mailto", "tel", "webcal"];
+
+/// The website's own pages (marketing and legal): the app is the tracker, so
+/// these open in the person's browser, never in a tracker window. Everything
+/// else on the tracker host stays in the app, including the sign-in screens
+/// (sign in / up, passwords, two-step, invitations) and the pages people open
+/// from emails (quotes, invoices, viewings). app_only.js mirrors this list for
+/// links the tracker's router follows without loading a page.
+const WEBSITE_PATHS: &[&str] = &[
+    "pricing", "watch", "privacy", "terms", "blog", "compare", "templates",
+    "affiliates", "questions", "landing", "download", "cbb-casting", "dev-ui-kit", "unsubscribe",
+];
+
+/// Whether `url` is one of the website's own pages (see WEBSITE_PATHS).
+pub(crate) fn is_website_page(url: &url::Url) -> bool {
+    url.scheme() == "https"
+        && url.host_str() == Some(APP_HOST)
+        && url
+            .path_segments()
+            .and_then(|mut segments| segments.next())
+            .is_some_and(|first| WEBSITE_PATHS.contains(&first))
+}
 
 /// True when a link the WebView will not load should open in the OS instead.
 pub(crate) fn opens_externally(url: &url::Url) -> bool {
@@ -174,6 +197,9 @@ pub(crate) enum NewWindowAction {
 pub(crate) fn new_window_action(url: &url::Url) -> NewWindowAction {
     if download::is_file_url(url) {
         return NewWindowAction::SaveFile;
+    }
+    if is_website_page(url) {
+        return NewWindowAction::OpenExternal;
     }
     if url.scheme() == "https" && url.host_str() == Some(APP_HOST) {
         return NewWindowAction::NewTrackerWindow;
@@ -232,10 +258,7 @@ fn route_deep_link<R: Runtime>(app: &AppHandle<R>, url: &url::Url) {
 /// Chunked jars (`.0`, `.1` suffixes) share the same `sb-<ref>-auth-token`
 /// name prefix, so one check covers both.
 fn has_session_cookie(cookies: &str) -> bool {
-    cookies.split("; ").any(|pair| {
-        let name = pair.split('=').next().unwrap_or("");
-        name.starts_with("sb-") && name.contains("-auth-token")
-    })
+    session::has_session_cookie(cookies)
 }
 
 /// Bring the main window forward, with any tracker tabs / windows the quick
@@ -380,6 +403,9 @@ pub(crate) fn build_tracker_window<R: Runtime>(
     // New tabs / windows (tracker_windows.js): Cmd/Ctrl+T, Cmd/Ctrl+N and
     // Cmd/Ctrl- or middle-click on a tracker link, as cbb-window:// hand-overs.
     .initialization_script(include_str!("tracker_windows.js"))
+    // The app is the tracker, not the website (app_only.js): website pages
+    // open in the browser, and signed out only the sign-in screens show.
+    .initialization_script(include_str!("app_only.js"))
     // macOS: navigator.geolocation for the tracker's pages, answered
     // by Core Location through cbb-geo:// hand-overs (location.rs).
     .initialization_script(if cfg!(target_os = "macos") { include_str!("geo_bridge.js") } else { "" })
@@ -398,6 +424,9 @@ pub(crate) fn build_tracker_window<R: Runtime>(
     .background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Disabled)
     .inner_size(1280.0, 800.0)
     .min_inner_size(1024.0, 640.0)
+    // The main window is placed before it is shown (session.rs), so it never
+    // opens at one size and jumps to another.
+    .visible(label != "main")
     .on_navigation(move |url| {
         // nav_bar.js hands a clicked file link over as
         // cbb-download://go?u=<https url>[&save=1]: open it (or, for
@@ -410,6 +439,18 @@ pub(crate) fn build_tracker_window<R: Runtime>(
                 .and_then(|(_, value)| value.parse::<url::Url>().ok())
             {
                 download::start_in(&opener_handle, &own_label, target, save_as);
+            }
+            return false;
+        }
+        // app_only.js: one of the website's own pages, for the browser.
+        if url.scheme() == "cbb-browser" {
+            if let Some(page) = url
+                .query_pairs()
+                .find(|(key, _)| key == "u")
+                .and_then(|(_, value)| value.parse::<url::Url>().ok())
+                .filter(is_website_page)
+            {
+                system_open::open_url(&opener_handle, page.as_str());
             }
             return false;
         }
@@ -523,6 +564,24 @@ pub(crate) fn build_tracker_window<R: Runtime>(
         if page.host_str() != Some(APP_HOST) {
             return;
         }
+        // Signed out, "/" is the website's homepage: show sign in instead
+        // (signed in, it is the dashboard). Covers the first launch and
+        // signing out; app_only.js covers the tracker's own page changes.
+        if page.path() == "/" {
+            let probe = window.clone();
+            let _ = window.eval_with_callback("document.cookie", move |cookies_json| {
+                let cookies: String = serde_json::from_str(&cookies_json).unwrap_or_default();
+                if probe.label() == "main" {
+                    session::update(probe.app_handle(), has_session_cookie(&cookies));
+                }
+                if !has_session_cookie(&cookies) {
+                    if let Ok(sign_in) = START_URL.parse::<url::Url>() {
+                        let _ = probe.navigate(sign_in);
+                    }
+                }
+            });
+            return;
+        }
         // A signed-in page in the main window: time for the one-time
         // quick-panel tip, if it hasn't been shown yet.
         if page.path() != "/sign-in" {
@@ -542,6 +601,9 @@ pub(crate) fn build_tracker_window<R: Runtime>(
         let probe = window.clone();
         let _ = window.eval_with_callback("document.cookie", move |cookies_json| {
             let cookies: String = serde_json::from_str(&cookies_json).unwrap_or_default();
+            if probe.label() == "main" {
+                session::update(probe.app_handle(), has_session_cookie(&cookies));
+            }
             if has_session_cookie(&cookies) {
                 if let Ok(home) = APP_ORIGIN.parse::<url::Url>() {
                     let _ = probe.navigate(home);
@@ -676,24 +738,6 @@ pub fn run() {
         )
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_positioner::init())
-        // The main window reopens where it was left, at the size it was left
-        // (a position off every screen is not restored). Showing or hiding
-        // stays the app's call; the mini bar always opens under the tray
-        // icon. The Saved-for-offline window is left out: it is created
-        // hidden from tauri.conf.json, and on a Retina screen its restored
-        // size doubled on every launch (480 → 960 → 1920 …, found live).
-        .plugin(
-            tauri_plugin_window_state::Builder::new()
-                .with_state_flags(
-                    tauri_plugin_window_state::StateFlags::SIZE
-                        | tauri_plugin_window_state::StateFlags::POSITION
-                        | tauri_plugin_window_state::StateFlags::MAXIMIZED,
-                )
-                .with_denylist(&["mini", "library"])
-                // Extra tracker windows (tracker-<n>) open fresh each time.
-                .with_filter(|label| label == "main")
-                .build(),
-        )
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
@@ -839,15 +883,15 @@ pub fn run() {
             // macOS: Tauri turns window tabbing off app-wide whenever it
             // builds a window without a tab group (the panel, the library),
             // which hid the tracker's tab bar. Turn it back on now that every
-            // startup window exists, keep those two out of tab groups, and
-            // show the tab bar (tabs.rs).
+            // startup window exists, keep those two out of tab groups (tabs.rs).
             #[cfg(target_os = "macos")]
-            {
-                tabs::allow_tabs(app.handle());
-                tabs::show_tab_bar(&main_window);
-            }
-            #[cfg(not(target_os = "macos"))]
-            let _ = main_window;
+            tabs::allow_tabs(app.handle());
+            // Size and place the main window for whoever is here (the sign-in
+            // window or the tracker as it was left), then show it (session.rs).
+            session::place_main_at_launch(&main_window);
+            // The tab bar, once the window is on screen (hidden when signed out).
+            #[cfg(target_os = "macos")]
+            tabs::show_tab_bar(&main_window);
 
             // Cold start through a tracker:// URL.
             if let Ok(Some(urls)) = app.deep_link().get_current() {
@@ -920,6 +964,12 @@ pub fn run() {
                 ],
             )?;
             app.manage(clock_items);
+            // Rows that change with signing in (session.rs).
+            app.manage(session::TrayRows {
+                show: tray_show.clone(),
+                mini: tray_mini.clone(),
+                new_window: tray_new_window.clone(),
+            });
             app.manage(clock::Last::default());
             app.manage(clock::Net::default());
             app.manage(notify::Unread(std::sync::Mutex::new(0)));
@@ -1036,8 +1086,14 @@ pub fn run() {
             updater::start(app.handle().clone());
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            // Remember the tracker window's place for next time (session.rs).
+            if let tauri::RunEvent::Exit = event {
+                session::save(app);
+            }
+        });
 }
 
 #[cfg(test)]
@@ -1270,6 +1326,46 @@ mod tests {
         assert!(is_extra_tracker_window("tracker-12"));
         for label in ["main", "mini", "library", "tracker-", "tracker-x"] {
             assert!(!is_extra_tracker_window(label), "{label}");
+        }
+    }
+
+    #[test]
+    fn website_pages_open_in_the_browser() {
+        for raw in [
+            "https://tracker.coolerboxbrothers.com/privacy",
+            "https://tracker.coolerboxbrothers.com/terms",
+            "https://tracker.coolerboxbrothers.com/pricing",
+            "https://tracker.coolerboxbrothers.com/watch",
+            "https://tracker.coolerboxbrothers.com/blog/some-post",
+            "https://tracker.coolerboxbrothers.com/compare/toggl",
+        ] {
+            let url = parsed(raw);
+            assert!(is_website_page(&url), "{raw}");
+            let mut handed_off = false;
+            assert!(!main_window_may_load(&url, &mut handed_off), "{raw}");
+            assert!(opens_externally(&url), "{raw}");
+            assert_eq!(new_window_action(&url), NewWindowAction::OpenExternal, "{raw}");
+        }
+    }
+
+    #[test]
+    fn sign_in_and_app_pages_stay_in_the_app() {
+        for raw in [
+            "https://tracker.coolerboxbrothers.com/",
+            "https://tracker.coolerboxbrothers.com/sign-in",
+            "https://tracker.coolerboxbrothers.com/sign-up",
+            "https://tracker.coolerboxbrothers.com/forgot-password",
+            "https://tracker.coolerboxbrothers.com/reset-password",
+            "https://tracker.coolerboxbrothers.com/verify-2fa",
+            "https://tracker.coolerboxbrothers.com/invite/abc",
+            "https://tracker.coolerboxbrothers.com/quote/abc",
+            "https://tracker.coolerboxbrothers.com/projects",
+            "https://tracker.coolerboxbrothers.com/privacy-settings",
+        ] {
+            let url = parsed(raw);
+            assert!(!is_website_page(&url), "{raw}");
+            let mut handed_off = false;
+            assert!(main_window_may_load(&url, &mut handed_off), "{raw}");
         }
     }
 }

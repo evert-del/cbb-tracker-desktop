@@ -253,6 +253,11 @@ fn refresh<R: Runtime>(app: &AppHandle<R>) {
 
 /// A tray click on one of the clock items: "in", "break", "back" or "wrap".
 pub(crate) fn act<R: Runtime>(app: &AppHandle<R>, action: &str) {
+    // Signed out, a clock tap (tray, shortcut) opens sign in (session.rs).
+    if !crate::session::signed_in() {
+        crate::show_main(app);
+        return;
+    }
     let Some(window) = on_tracker(app) else {
         crate::show_main(app);
         return;

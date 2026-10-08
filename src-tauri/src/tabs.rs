@@ -230,6 +230,40 @@ pub(crate) fn install_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> 
     Ok(())
 }
 
+/// macOS: the title bar and tab strip take the tracker header's black, so
+/// they read as part of the app rather than grey system chrome. The window
+/// uses the dark appearance so its title, buttons and tab labels stay
+/// readable; macOS still draws the tabs and its own active-tab highlight.
+#[cfg(target_os = "macos")]
+pub(crate) fn style_title_bar<R: Runtime>(window: &tauri::WebviewWindow<R>) {
+    use objc2::msg_send;
+    use objc2::runtime::{AnyClass, AnyObject, Bool};
+    let Ok(ns_window) = window.ns_window() else { return };
+    let ns_window = ns_window.cast::<AnyObject>();
+    let (Some(color_class), Some(appearance_class), Some(string_class)) = (
+        AnyClass::get(c"NSColor"),
+        AnyClass::get(c"NSAppearance"),
+        AnyClass::get(c"NSString"),
+    ) else {
+        return;
+    };
+    if ns_window.is_null() {
+        return;
+    }
+    // SAFETY: AppKit calls on a live NSWindow, on the main thread.
+    unsafe {
+        let black: *mut AnyObject =
+            msg_send![color_class, colorWithSRGBRed: 0.0f64, green: 0.0f64, blue: 0.0f64, alpha: 1.0f64];
+        let name: *mut AnyObject = msg_send![string_class, stringWithUTF8String: c"NSAppearanceNameDarkAqua".as_ptr()];
+        let dark: *mut AnyObject = msg_send![appearance_class, appearanceNamed: name];
+        let _: () = msg_send![ns_window, setTitlebarAppearsTransparent: Bool::YES];
+        let _: () = msg_send![ns_window, setBackgroundColor: black];
+        if !dark.is_null() {
+            let _: () = msg_send![ns_window, setAppearance: dark];
+        }
+    }
+}
+
 /// macOS: allow window tabbing app-wide again and keep the quick panel and
 /// the Saved-for-offline library out of tab groups (NSWindowTabbingMode
 /// Disallowed). Tauri switches tabbing off for every window whenever it
@@ -282,6 +316,7 @@ pub(crate) fn show_tab_bar<R: Runtime>(window: &tauri::WebviewWindow<R>) {
         if group.is_null() {
             return;
         }
+        style_title_bar(window);
         let visible: Bool = msg_send![group, isTabBarVisible];
         if !visible.as_bool() {
             let _: () = msg_send![ns_window, toggleTabBar: std::ptr::null_mut::<AnyObject>()];

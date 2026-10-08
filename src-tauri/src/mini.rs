@@ -338,6 +338,172 @@ pub(crate) fn maybe_introduce<R: Runtime>(app: &AppHandle<R>) {
     });
 }
 
+// ── the mood check-in, asked in the panel after a tray / panel / shortcut ──
+// call in or wrap (the tracker's src/lib/mood-checkin.ts is the source of
+// truth; these rules mirror it so a bad answer never leaves the app).
+//
+// It is someone's state of mind: no score, word, cause or note is ever put in
+// analytics, logs, crash reports or storage here. The answer goes straight
+// from the panel to the tracker page's own session and is not kept.
+
+/// The words offered for each pair of scores (MOOD_BANDS on the tracker).
+const MOOD_BANDS: [(u8, u8, [&str; 3]); 5] = [
+    (1, 2, ["Drained", "Overwhelmed", "Low"]),
+    (3, 4, ["Tired", "Stressed", "Flat"]),
+    (5, 6, ["Okay", "Steady", "Meh"]),
+    (7, 8, ["Good", "Focused", "Motivated"]),
+    (9, 10, ["Great", "Energised", "On fire"]),
+];
+const MOOD_CAUSES: [&str; 4] = ["WORK", "PERSONAL", "BOTH", "UNSAID"];
+const MOOD_NOTE_MAX: usize = 280;
+
+/// The check-in grew a mini timer to the full panel: shrink it back after.
+static MOOD_SHRINK_AFTER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether `word` is one of the words offered for `score`.
+fn mood_word_fits(score: u8, word: &str) -> bool {
+    MOOD_BANDS
+        .iter()
+        .any(|(from, to, words)| (*from..=*to).contains(&score) && words.contains(&word))
+}
+
+/// The request body for POST /api/time-sheet/mood, built only from the
+/// fields the tracker accepts, or why the panel's request isn't one.
+pub(crate) fn mood_body(input: &serde_json::Value) -> Result<serde_json::Value, &'static str> {
+    use serde_json::{json, Value};
+    let moment = || match input.get("moment").and_then(Value::as_str) {
+        Some(moment @ ("IN" | "WRAP")) => Ok(moment),
+        _ => Err("Call in or wrap?"),
+    };
+    match input.get("intent").and_then(Value::as_str) {
+        Some("answer") => {
+            let moment = moment()?;
+            let score = input
+                .get("score")
+                .and_then(Value::as_u64)
+                .filter(|score| (1..=10).contains(score))
+                .ok_or("Pick a number from 1 to 10.")? as u8;
+            let keyword = match input.get("keyword") {
+                None | Some(Value::Null) => None,
+                Some(Value::String(word)) if mood_word_fits(score, word.trim()) => Some(word.trim().to_string()),
+                Some(_) => return Err("Pick one of the words, or say it in your own."),
+            };
+            let cause = match input.get("cause") {
+                None | Some(Value::Null) => None,
+                Some(Value::String(cause)) if MOOD_CAUSES.contains(&cause.as_str()) => Some(cause.clone()),
+                Some(_) => return Err("Unknown cause."),
+            };
+            let note = match input.get("note") {
+                None | Some(Value::Null) => None,
+                Some(Value::String(note)) if note.trim().is_empty() => None,
+                Some(Value::String(note)) if note.trim().chars().count() <= MOOD_NOTE_MAX => Some(note.trim().to_string()),
+                Some(_) => return Err("Keep it to 280 characters."),
+            };
+            Ok(json!({ "intent": "answer", "moment": moment, "score": score, "keyword": keyword, "cause": cause, "note": note }))
+        }
+        Some("skip") => Ok(json!({ "intent": "skip", "moment": moment()? })),
+        Some("talk") => match input.get("yes").and_then(Value::as_bool) {
+            Some(yes) => Ok(json!({ "intent": "talk", "yes": yes })),
+            None => Err("Yes or no?"),
+        },
+        _ => Err("Unknown request."),
+    }
+}
+
+/// Sends a mood request through the tracker page's own session and leaves
+/// only what the panel needs on `window.__cbbMoodResult` (whether to offer a
+/// chat, who was told, or the tracker's error), never the answer itself.
+/// Then `cbb:clock-changed`, so the web clock doesn't ask again.
+pub(crate) fn mood_script(body: &serde_json::Value) -> String {
+    format!(
+        r#"(function (body) {{
+  window.__cbbMoodResult = '';
+  fetch('/api/time-sheet/mood', {{ method: 'POST', credentials: 'same-origin', headers: {{ 'Content-Type': 'application/json' }}, body: JSON.stringify(body) }})
+    .then(function (r) {{ return r.json().catch(function () {{ return {{}}; }}).then(function (b) {{ return {{ ok: r.ok, b: b || {{}} }}; }}); }})
+    .then(function (x) {{
+      window.__cbbMoodResult = JSON.stringify(x.ok
+        ? {{ ok: true, offerTalk: !!x.b.offerTalk, told: Array.isArray(x.b.told) ? x.b.told : [] }}
+        : {{ ok: false, error: x.b.error || "That didn't save. Try again." }});
+      if (x.ok) window.dispatchEvent(new CustomEvent('cbb:clock-changed'));
+    }})
+    .catch(function () {{ window.__cbbMoodResult = JSON.stringify({{ ok: false, error: 'You seem to be offline. Try again in a moment.' }}); }});
+}})({body})"#
+    )
+}
+
+/// Returns and clears the last mood request's result ("" while waiting).
+const TAKE_MOOD_RESULT_JS: &str =
+    "(function () { var v = window.__cbbMoodResult || ''; window.__cbbMoodResult = ''; return v; })()";
+
+/// Ask how they are, in the panel: `moment` is "IN" or "WRAP". Opens the
+/// panel (full size) when it isn't showing. Support stays inside the
+/// company: the only route is the "someone to check in" request to HR.
+pub(crate) fn ask_mood<R: Runtime>(app: &AppHandle<R>, moment: &str) {
+    if is_compact() {
+        MOOD_SHRINK_AFTER.store(true, std::sync::atomic::Ordering::Relaxed);
+        set_compact(app, false);
+        push(app);
+    }
+    let visible = app
+        .get_webview_window("mini")
+        .and_then(|mini| mini.is_visible().ok())
+        .unwrap_or(false);
+    if !visible {
+        show(app);
+    }
+    if let Some(mini) = app.get_webview_window("mini") {
+        let ask = serde_json::json!({ "moment": moment });
+        let _ = mini.eval(format!("window.__cbbMiniMood && window.__cbbMiniMood({ask})"));
+        let _ = mini.set_focus();
+    }
+}
+
+/// The panel's check-in: answer, skip ("Not now") or the chat offer.
+#[tauri::command]
+pub(crate) fn mini_mood<R: Runtime>(app: AppHandle<R>, request: serde_json::Value) -> Result<(), String> {
+    let body = mood_body(&request).map_err(str::to_string)?;
+    let window = app
+        .get_webview_window("main")
+        .filter(|main| main.url().is_ok_and(|url| url.host_str() == Some(crate::APP_HOST)))
+        .ok_or("Open the tracker first.")?;
+    window.eval(mood_script(&body)).map_err(|_| "That didn't save. Try again.".to_string())?;
+    // Collect the outcome and hand it to the panel (up to ~10 s).
+    std::thread::spawn(move || {
+        for _ in 0..33 {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let _ = window.eval_with_callback(TAKE_MOOD_RESULT_JS, move |raw| {
+                let json: String = serde_json::from_str(&raw).unwrap_or_default();
+                let _ = sender.send(json);
+            });
+            let Ok(json) = receiver.recv_timeout(std::time::Duration::from_secs(2)) else { continue };
+            if json.is_empty() {
+                continue;
+            }
+            if let (Some(mini), Ok(result)) = (app.get_webview_window("mini"), serde_json::from_str::<serde_json::Value>(&json)) {
+                let _ = mini.eval(format!("window.__cbbMiniMoodResult && window.__cbbMiniMoodResult({result})"));
+            }
+            return;
+        }
+        if let Some(mini) = app.get_webview_window("mini") {
+            let _ = mini.eval(
+                "window.__cbbMiniMoodResult && window.__cbbMiniMoodResult({ok:false,error:'The tracker could not be reached.'})",
+            );
+        }
+    });
+    Ok(())
+}
+
+/// The check-in is over: a mini timer it grew goes back to its small size.
+#[tauri::command]
+pub(crate) fn mini_mood_done<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
+    if MOOD_SHRINK_AFTER.swap(false, std::sync::atomic::Ordering::Relaxed) && is_pinned() {
+        set_compact(&app, true);
+        push(&app);
+    }
+    Ok(())
+}
+
 fn is_allowed(action: &str) -> bool {
     matches!(action, "in" | "break" | "back" | "wrap")
 }
@@ -603,6 +769,56 @@ mod tests {
         assert!(tip_text("macos").1.contains("top of your screen"));
         assert!(tip_text("windows").1.contains("^ arrow"));
         assert!(tip_text("linux").1.contains("Ctrl+Alt+M"));
+    }
+
+    #[test]
+    fn mood_answers_keep_only_what_the_tracker_accepts() {
+        use serde_json::json;
+        let body = mood_body(&json!({
+            "intent": "answer", "moment": "IN", "score": 7, "keyword": "Focused",
+            "cause": "WORK", "note": "  ", "extra": "dropped"
+        }))
+        .expect("valid");
+        assert_eq!(
+            body,
+            json!({ "intent": "answer", "moment": "IN", "score": 7, "keyword": "Focused", "cause": "WORK", "note": null })
+        );
+        let own = mood_body(&json!({ "intent": "answer", "moment": "WRAP", "score": 2, "note": " rough day " })).expect("valid");
+        assert_eq!(own["note"], "rough day");
+        assert_eq!(own["keyword"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn mood_answers_that_dont_fit_are_refused() {
+        use serde_json::json;
+        for bad in [
+            json!({ "intent": "answer", "moment": "IN", "score": 0 }),
+            json!({ "intent": "answer", "moment": "IN", "score": 11 }),
+            json!({ "intent": "answer", "moment": "LUNCH", "score": 5 }),
+            // A word from another band.
+            json!({ "intent": "answer", "moment": "IN", "score": 9, "keyword": "Drained" }),
+            json!({ "intent": "answer", "moment": "IN", "score": 5, "keyword": "Happy" }),
+            json!({ "intent": "answer", "moment": "IN", "score": 5, "cause": "MONEY" }),
+            json!({ "intent": "answer", "moment": "IN", "score": 5, "note": "x".repeat(281) }),
+            json!({ "intent": "skip" }),
+            json!({ "intent": "talk", "yes": "yes" }),
+            json!({ "intent": "delete" }),
+        ] {
+            assert!(mood_body(&bad).is_err(), "{bad}");
+        }
+        assert_eq!(mood_body(&json!({ "intent": "skip", "moment": "WRAP" })).unwrap(), json!({ "intent": "skip", "moment": "WRAP" }));
+        assert_eq!(mood_body(&json!({ "intent": "talk", "yes": true })).unwrap(), json!({ "intent": "talk", "yes": true }));
+    }
+
+    #[test]
+    fn mood_script_posts_to_the_tracker_and_keeps_no_answer() {
+        let body = mood_body(&serde_json::json!({ "intent": "skip", "moment": "IN" })).unwrap();
+        let js = mood_script(&body);
+        assert!(js.contains("fetch('/api/time-sheet/mood'"));
+        assert!(js.contains("cbb:clock-changed"));
+        // Only the outcome is left on the page, never the body.
+        assert!(js.contains("offerTalk") && js.contains("told"));
+        assert!(!js.contains("localStorage") && !js.contains("console."));
     }
 
     #[test]

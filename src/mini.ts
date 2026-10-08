@@ -248,7 +248,7 @@ function renderMode(view: View) {
   if (compact) {
     el("main-view").hidden = true;
     el("settings").hidden = true;
-  } else if (el("settings").hidden) {
+  } else if (el("settings").hidden && !mood) {
     el("main-view").hidden = false;
   }
   el("shrink").hidden = !view.pinned;
@@ -298,8 +298,137 @@ function renderPin(pinned: boolean) {
   el("pin-hint").hidden = !pinned;
 }
 
+// ── Mood check-in (mini.rs ask_mood / mini_mood). Health information: it is
+// only ever sent to the tracker through the app, never stored, logged or
+// counted here. Words mirror the tracker's src/lib/mood-checkin.ts.
+const MOOD_BANDS: Array<[number, number, string[]]> = [
+  [1, 2, ["Drained", "Overwhelmed", "Low"]],
+  [3, 4, ["Tired", "Stressed", "Flat"]],
+  [5, 6, ["Okay", "Steady", "Meh"]],
+  [7, 8, ["Good", "Focused", "Motivated"]],
+  [9, 10, ["Great", "Energised", "On fire"]],
+];
+const MOOD_CAUSES: Array<[string, string]> = [["WORK", "Work"], ["PERSONAL", "Personal"], ["BOTH", "Both"], ["UNSAID", "Rather not say"]];
+
+let mood: {
+  moment: "IN" | "WRAP";
+  stage: "ask" | "talk" | "done";
+  score: number | null;
+  word: string | null;
+  ownWords: boolean;
+  cause: string | null;
+  sent: "answer" | "skip" | "talk-yes" | "talk-no" | null;
+} | null = null;
+
+function moodWordsFor(score: number): string[] {
+  return MOOD_BANDS.find(([from, to]) => score >= from && score <= to)?.[2] ?? [];
+}
+
+function chip(label: string, on: boolean, onClick: () => void, cls = "mood-chip"): HTMLButtonElement {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = cls;
+  b.setAttribute("role", "radio");
+  b.setAttribute("aria-checked", String(on));
+  b.textContent = label;
+  b.addEventListener("click", onClick);
+  return b;
+}
+
+function renderMood() {
+  if (!mood) return;
+  const m = mood;
+  el("mood-ask").hidden = m.stage !== "ask";
+  el("mood-talk").hidden = m.stage !== "talk";
+  el("mood-done").hidden = m.stage !== "done";
+  el("mood-actions").hidden = m.stage === "done";
+  el("mood-question").textContent = m.moment === "IN" ? "How are you feeling today?" : "How was today?";
+
+  const scale = el("mood-scale");
+  scale.replaceChildren(...Array.from({ length: 10 }, (_, i) => i + 1).map((n) =>
+    chip(String(n), m.score === n, () => {
+      m.score = n;
+      if (m.word && !moodWordsFor(n).includes(m.word)) m.word = null;
+      renderMood();
+    }, "mood-score")));
+  el("mood-more").hidden = m.score === null;
+
+  const words = el("mood-words");
+  words.replaceChildren(
+    ...(m.score === null ? [] : moodWordsFor(m.score)).map((w) =>
+      chip(w, m.word === w && !m.ownWords, () => { m.word = m.word === w ? null : w; m.ownWords = false; renderMood(); })),
+    chip("Something else…", m.ownWords, () => { m.ownWords = !m.ownWords; m.word = null; renderMood(); }),
+  );
+  el("mood-note").hidden = !m.ownWords;
+
+  const causes = el("mood-causes");
+  causes.replaceChildren(causes.querySelector(".label") as Node,
+    ...MOOD_CAUSES.map(([key, label]) => chip(label, m.cause === key, () => { m.cause = m.cause === key ? null : key; renderMood(); })));
+
+  el("mood-save").textContent = m.stage === "talk" ? "Yes, please" : "Save";
+  el<HTMLButtonElement>("mood-save").disabled = m.sent !== null || (m.stage === "ask" && m.score === null);
+  el<HTMLButtonElement>("mood-skip").disabled = m.sent !== null;
+}
+
+function openMood(moment: "IN" | "WRAP") {
+  mood = { moment, stage: "ask", score: null, word: null, ownWords: false, cause: null, sent: null };
+  el<HTMLTextAreaElement>("mood-note").value = "";
+  el("mood-error").hidden = true;
+  el("main-view").hidden = true;
+  el("settings").hidden = true;
+  el("compact-view").hidden = true;
+  el("mood-view").hidden = false;
+  renderMood();
+}
+
+function closeMood() {
+  if (!mood) return;
+  mood = null;
+  el("mood-view").hidden = true;
+  el("main-view").hidden = false;
+  void invoke("mini_mood_done");
+}
+
+function sendMood(request: Record<string, unknown>, sent: NonNullable<NonNullable<typeof mood>["sent"]>) {
+  if (!mood) return;
+  mood.sent = sent;
+  el("mood-error").hidden = true;
+  renderMood();
+  invoke("mini_mood", { request }).catch((error) => moodResult({ ok: false, error: String(error) }));
+}
+
+function moodResult(r: { ok: boolean; offerTalk?: boolean; told?: string[]; error?: string }) {
+  if (!mood) return;
+  const sent = mood.sent;
+  mood.sent = null;
+  if (!r.ok) {
+    el("mood-error").textContent = r.error || "That didn't save. Try again.";
+    el("mood-error").hidden = false;
+    renderMood();
+    return;
+  }
+  if (sent === "answer" && r.offerTalk) { mood.stage = "talk"; renderMood(); return; }
+  if (sent === "skip" || sent === "talk-no") { closeMood(); return; }
+  const told = r.told ?? [];
+  el("mood-done").textContent = sent === "talk-yes"
+    ? `${told.length > 1 ? told.slice(0, -1).join(", ") + " and " + told[told.length - 1] : told[0] ?? "Your HR contact"} ${told.length > 1 ? "have" : "has"} been told. They'll be in touch.`
+    : "Thanks. Noted, without your name.";
+  mood.stage = "done";
+  renderMood();
+  window.setTimeout(closeMood, 2500);
+}
+
+declare global {
+  interface Window {
+    __cbbMiniMood?: (ask: { moment: "IN" | "WRAP" }) => void;
+    __cbbMiniMoodResult?: (r: { ok: boolean; offerTalk?: boolean; told?: string[]; error?: string }) => void;
+  }
+}
+window.__cbbMiniMood = (ask) => openMood(ask.moment);
+window.__cbbMiniMoodResult = (r) => moodResult(r);
+
 function showSettings(open: boolean) {
-  if (!el("compact-view").hidden) return;
+  if (!el("compact-view").hidden || mood) return;
   el("main-view").hidden = open;
   el("settings").hidden = !open;
 }
@@ -325,6 +454,21 @@ window.addEventListener("DOMContentLoaded", () => {
   click("quit", () => menu("quit"));
   click("quit-row", () => menu("quit"));
   click("open-settings", () => showSettings(true));
+  click("mood-save", () => {
+    if (!mood) return;
+    if (mood.stage === "talk") { sendMood({ intent: "talk", yes: true }, "talk-yes"); return; }
+    if (mood.score === null) return;
+    const note = mood.ownWords ? el<HTMLTextAreaElement>("mood-note").value.trim() : "";
+    sendMood({
+      intent: "answer", moment: mood.moment, score: mood.score,
+      keyword: mood.ownWords ? null : mood.word, cause: mood.cause, note: note || null,
+    }, "answer");
+  });
+  click("mood-skip", () => {
+    if (!mood) return;
+    if (mood.stage === "talk") sendMood({ intent: "talk", yes: false }, "talk-no");
+    else sendMood({ intent: "skip", moment: mood.moment }, "skip");
+  });
   click("close-settings", () => showSettings(false));
   click("pin", () => {
     const pinned = el("pin").getAttribute("aria-pressed") !== "true";
@@ -352,9 +496,14 @@ window.addEventListener("DOMContentLoaded", () => {
   });
   window.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;
+    if (mood) { if (mood.sent === null) closeMood(); return; }
     if (!el("settings").hidden) showSettings(false);
     else void invoke("mini_hide");
   });
-  // Each opening starts on the main view.
-  window.addEventListener("blur", () => showSettings(false));
+  // Each opening starts on the main view. A check-in left by clicking away
+  // isn't answered or skipped: like closing the web clock's panel.
+  window.addEventListener("blur", () => {
+    if (mood && mood.sent === null && !current?.pinned) closeMood();
+    showSettings(false);
+  });
 });

@@ -798,7 +798,9 @@ pub fn run() {
             mini::mini_open,
             mini::mini_menu,
             mini::mini_pin,
-            mini::mini_compact
+            mini::mini_compact,
+            mini::mini_mood,
+            mini::mini_mood_done
         ])
         .setup(|app| {
             #[cfg(target_os = "linux")]

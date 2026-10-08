@@ -170,14 +170,52 @@ fn set_compact<R: Runtime>(app: &AppHandle<R>, compact: bool) {
 /// the click would open it straight back up.
 static LAST_HIDDEN: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
 
+/// Tracker windows the drop-down panel put away when it opened: it's either
+/// the panel or the tracker on screen, not both. `bring_tracker_back` (via
+/// `show_main`: Open tracker, a notification, the tray's Show Tracker, a
+/// deep link) shows them again; pinning the panel does too.
+static PUT_AWAY: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// Hide every visible tracker window (main and extra tabs / windows) and
+/// remember which, for `bring_tracker_back`.
+fn put_tracker_away<R: Runtime>(app: &AppHandle<R>) {
+    let Ok(mut away) = PUT_AWAY.lock() else { return };
+    for (label, window) in app.webview_windows() {
+        let tracker = label == "main" || crate::is_extra_tracker_window(&label);
+        if tracker && window.is_visible().unwrap_or(false) {
+            let _ = window.hide();
+            if !away.contains(&label) {
+                away.push(label);
+            }
+        }
+    }
+}
+
+/// Show the tracker windows the panel put away, as they were.
+pub(crate) fn bring_tracker_back<R: Runtime>(app: &AppHandle<R>) {
+    let labels = PUT_AWAY.lock().map(|mut away| std::mem::take(&mut *away)).unwrap_or_default();
+    if labels.is_empty() {
+        return;
+    }
+    #[cfg(target_os = "macos")]
+    let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
+    for label in labels {
+        if let Some(window) = app.get_webview_window(&label) {
+            let _ = window.show();
+            let _ = window.unminimize();
+        }
+    }
+}
+
 /// Show the panel with fresh state, focused so its buttons work on the
 /// first click: under the tray icon, or where it was dragged when pinned.
-/// Unpinned, it hides again when it loses focus.
-/// The main window is left as it is: the panel is a drop-down, not a swap.
+/// Unpinned, it hides again when it loses focus, and it takes the tracker
+/// windows' place (put_tracker_away): either the panel or the tracker.
 pub(crate) fn show<R: Runtime>(app: &AppHandle<R>) {
     if let Some(mini) = app.get_webview_window("mini") {
-        // A pinned panel reopens where it was dragged to.
+        // A pinned panel reopens where it was dragged to, over the tracker.
         if !is_pinned() {
+            put_tracker_away(app);
             place_under_tray(&mini);
         }
         let _ = mini.show();
@@ -236,6 +274,8 @@ pub(crate) fn hide<R: Runtime>(app: &AppHandle<R>) {
         }
         let _ = mini.hide();
     }
+    // Nothing left on screen (the tracker was put away): a pure menu-bar app.
+    crate::drop_dock_icon_if_alone(app, "mini");
 }
 
 /// The one-time "there's a quick panel" tip has been shown (settings.json).
@@ -384,7 +424,10 @@ pub(crate) fn mini_hide<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
 #[tauri::command]
 pub(crate) fn mini_pin<R: Runtime>(app: AppHandle<R>, pinned: bool) -> Result<(), String> {
     PINNED.store(pinned, std::sync::atomic::Ordering::Relaxed);
-    if !pinned {
+    if pinned {
+        // A floating timer is for working in the tracker: bring it back.
+        bring_tracker_back(&app);
+    } else {
         // The drop-down is always the full panel.
         set_compact(&app, false);
         if let Some(mini) = app.get_webview_window("mini") {

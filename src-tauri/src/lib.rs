@@ -238,9 +238,11 @@ fn has_session_cookie(cookies: &str) -> bool {
     })
 }
 
-/// Bring the main window forward. Restores the dock icon on macOS (see
-/// the close handler: a hidden app is a pure menu-bar app, like Toggl).
+/// Bring the main window forward, with any tracker tabs / windows the quick
+/// panel put away (mini.rs). Restores the dock icon on macOS (see the close
+/// handler: a hidden app is a pure menu-bar app, like Toggl).
 pub(crate) fn show_main<R: Runtime>(app: &AppHandle<R>) {
+    mini::bring_tracker_back(app);
     #[cfg(target_os = "macos")]
     let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
     if let Some(window) = app.get_webview_window("main") {

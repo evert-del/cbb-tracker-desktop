@@ -128,9 +128,10 @@ pub(crate) fn main_window_may_load(url: &url::Url, handed_off: &mut bool) -> boo
         return false;
     }
     match url.host_str() {
+        // The website's own pages open in the browser (is_website_page).
         Some(APP_HOST) => {
             *handed_off = false;
-            true
+            !is_website_page(url)
         }
         Some(host) if HAND_OFF_HOSTS.contains(&host) => {
             *handed_off = true;
@@ -145,6 +146,27 @@ pub(crate) fn main_window_may_load(url: &url::Url, handed_off: &mut bool) -> boo
 /// `webcal` is My Schedule's "Open in Apple Calendar or Outlook" feed link.
 /// Anything else (javascript:, file:, data:, …) is dropped.
 const EXTERNAL_SCHEMES: &[&str] = &["https", "http", "mailto", "tel", "webcal"];
+
+/// The website's own pages (marketing and legal): the app is the tracker, so
+/// these open in the person's browser, never in a tracker window. Everything
+/// else on the tracker host stays in the app, including the sign-in screens
+/// (sign in / up, passwords, two-step, invitations) and the pages people open
+/// from emails (quotes, invoices, viewings). app_only.js mirrors this list for
+/// links the tracker's router follows without loading a page.
+const WEBSITE_PATHS: &[&str] = &[
+    "pricing", "watch", "privacy", "terms", "blog", "compare", "templates",
+    "affiliates", "questions", "landing", "download", "cbb-casting", "dev-ui-kit", "unsubscribe",
+];
+
+/// Whether `url` is one of the website's own pages (see WEBSITE_PATHS).
+pub(crate) fn is_website_page(url: &url::Url) -> bool {
+    url.scheme() == "https"
+        && url.host_str() == Some(APP_HOST)
+        && url
+            .path_segments()
+            .and_then(|mut segments| segments.next())
+            .is_some_and(|first| WEBSITE_PATHS.contains(&first))
+}
 
 /// True when a link the WebView will not load should open in the OS instead.
 pub(crate) fn opens_externally(url: &url::Url) -> bool {
@@ -174,6 +196,9 @@ pub(crate) enum NewWindowAction {
 pub(crate) fn new_window_action(url: &url::Url) -> NewWindowAction {
     if download::is_file_url(url) {
         return NewWindowAction::SaveFile;
+    }
+    if is_website_page(url) {
+        return NewWindowAction::OpenExternal;
     }
     if url.scheme() == "https" && url.host_str() == Some(APP_HOST) {
         return NewWindowAction::NewTrackerWindow;
@@ -380,6 +405,9 @@ pub(crate) fn build_tracker_window<R: Runtime>(
     // New tabs / windows (tracker_windows.js): Cmd/Ctrl+T, Cmd/Ctrl+N and
     // Cmd/Ctrl- or middle-click on a tracker link, as cbb-window:// hand-overs.
     .initialization_script(include_str!("tracker_windows.js"))
+    // The app is the tracker, not the website (app_only.js): website pages
+    // open in the browser, and signed out only the sign-in screens show.
+    .initialization_script(include_str!("app_only.js"))
     // macOS: navigator.geolocation for the tracker's pages, answered
     // by Core Location through cbb-geo:// hand-overs (location.rs).
     .initialization_script(if cfg!(target_os = "macos") { include_str!("geo_bridge.js") } else { "" })
@@ -410,6 +438,18 @@ pub(crate) fn build_tracker_window<R: Runtime>(
                 .and_then(|(_, value)| value.parse::<url::Url>().ok())
             {
                 download::start_in(&opener_handle, &own_label, target, save_as);
+            }
+            return false;
+        }
+        // app_only.js: one of the website's own pages, for the browser.
+        if url.scheme() == "cbb-browser" {
+            if let Some(page) = url
+                .query_pairs()
+                .find(|(key, _)| key == "u")
+                .and_then(|(_, value)| value.parse::<url::Url>().ok())
+                .filter(is_website_page)
+            {
+                system_open::open_url(&opener_handle, page.as_str());
             }
             return false;
         }
@@ -521,6 +561,21 @@ pub(crate) fn build_tracker_window<R: Runtime>(
             return;
         };
         if page.host_str() != Some(APP_HOST) {
+            return;
+        }
+        // Signed out, "/" is the website's homepage: show sign in instead
+        // (signed in, it is the dashboard). Covers the first launch and
+        // signing out; app_only.js covers the tracker's own page changes.
+        if page.path() == "/" {
+            let probe = window.clone();
+            let _ = window.eval_with_callback("document.cookie", move |cookies_json| {
+                let cookies: String = serde_json::from_str(&cookies_json).unwrap_or_default();
+                if !has_session_cookie(&cookies) {
+                    if let Ok(sign_in) = START_URL.parse::<url::Url>() {
+                        let _ = probe.navigate(sign_in);
+                    }
+                }
+            });
             return;
         }
         // A signed-in page in the main window: time for the one-time
@@ -1270,6 +1325,46 @@ mod tests {
         assert!(is_extra_tracker_window("tracker-12"));
         for label in ["main", "mini", "library", "tracker-", "tracker-x"] {
             assert!(!is_extra_tracker_window(label), "{label}");
+        }
+    }
+
+    #[test]
+    fn website_pages_open_in_the_browser() {
+        for raw in [
+            "https://tracker.coolerboxbrothers.com/privacy",
+            "https://tracker.coolerboxbrothers.com/terms",
+            "https://tracker.coolerboxbrothers.com/pricing",
+            "https://tracker.coolerboxbrothers.com/watch",
+            "https://tracker.coolerboxbrothers.com/blog/some-post",
+            "https://tracker.coolerboxbrothers.com/compare/toggl",
+        ] {
+            let url = parsed(raw);
+            assert!(is_website_page(&url), "{raw}");
+            let mut handed_off = false;
+            assert!(!main_window_may_load(&url, &mut handed_off), "{raw}");
+            assert!(opens_externally(&url), "{raw}");
+            assert_eq!(new_window_action(&url), NewWindowAction::OpenExternal, "{raw}");
+        }
+    }
+
+    #[test]
+    fn sign_in_and_app_pages_stay_in_the_app() {
+        for raw in [
+            "https://tracker.coolerboxbrothers.com/",
+            "https://tracker.coolerboxbrothers.com/sign-in",
+            "https://tracker.coolerboxbrothers.com/sign-up",
+            "https://tracker.coolerboxbrothers.com/forgot-password",
+            "https://tracker.coolerboxbrothers.com/reset-password",
+            "https://tracker.coolerboxbrothers.com/verify-2fa",
+            "https://tracker.coolerboxbrothers.com/invite/abc",
+            "https://tracker.coolerboxbrothers.com/quote/abc",
+            "https://tracker.coolerboxbrothers.com/projects",
+            "https://tracker.coolerboxbrothers.com/privacy-settings",
+        ] {
+            let url = parsed(raw);
+            assert!(!is_website_page(&url), "{raw}");
+            let mut handed_off = false;
+            assert!(main_window_may_load(&url, &mut handed_off), "{raw}");
         }
     }
 }

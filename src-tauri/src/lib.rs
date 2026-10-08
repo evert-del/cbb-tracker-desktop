@@ -151,15 +151,20 @@ pub(crate) fn opens_externally(url: &url::Url) -> bool {
 }
 
 /// What to do with a page-requested new window (`target="_blank"`,
-/// `window.open`). First-party files (attachments, Cooler Box items) are
-/// saved to Downloads through the shell, with the window's own session
-/// cookies — the tracker page itself never navigates away. Other
-/// first-party links load in the main window (so the session cookie is
-/// sent); everything else goes to the system browser.
+/// `window.open`, "Open Link in New Window"). First-party files
+/// (attachments, Cooler Box items) are saved to Downloads through the shell,
+/// with the window's own session cookies — the tracker page itself never
+/// navigates away. Other tracker pages open in a new tracker tab, as a
+/// browser would; the sign-in hosts load in the window that asked (so the
+/// session cookie lands in the app's jar); everything else goes to the
+/// system browser.
 #[derive(Debug, PartialEq)]
 pub(crate) enum NewWindowAction {
     /// First-party file (attachment, Cooler Box item): open it from Downloads.
     SaveFile,
+    /// A tracker page: a new tracker tab / window.
+    NewTrackerWindow,
+    /// A sign-in / billing host: load it in the window that asked.
     LoadInMain,
     OpenExternal,
     Ignore,
@@ -168,6 +173,9 @@ pub(crate) enum NewWindowAction {
 pub(crate) fn new_window_action(url: &url::Url) -> NewWindowAction {
     if download::is_file_url(url) {
         return NewWindowAction::SaveFile;
+    }
+    if url.scheme() == "https" && url.host_str() == Some(APP_HOST) {
+        return NewWindowAction::NewTrackerWindow;
     }
     if webview_may_load(url) {
         return NewWindowAction::LoadInMain;
@@ -294,18 +302,20 @@ pub(crate) fn toggle_autostart<R: Runtime>(app: &AppHandle<R>) -> bool {
 /// returns in show_main / show_library, so there is never a dead dock icon.
 pub(crate) fn hide_to_tray<R: Runtime>(window: &tauri::Window<R>) {
     let _ = window.hide();
+    drop_dock_icon_if_alone(window.app_handle(), window.label());
+}
+
+/// macOS: with no window but `gone` showing (main, extra tracker windows,
+/// the library, the panel), the app becomes a pure menu-bar app again.
+#[allow(unused_variables)]
+pub(crate) fn drop_dock_icon_if_alone<R: Runtime>(app: &AppHandle<R>, gone: &str) {
     #[cfg(target_os = "macos")]
     {
-        let app = window.app_handle();
-        let hidden = window.label().to_string();
-        let any_other = ["main", "mini", "library"]
+        let any_other = app
+            .webview_windows()
             .iter()
-            .filter(|label| label.to_string() != hidden)
-            .any(|label| {
-                app.get_webview_window(label)
-                    .and_then(|w| w.is_visible().ok())
-                    .unwrap_or(false)
-            });
+            .filter(|(label, _)| label.as_str() != gone)
+            .any(|(_, window)| window.is_visible().unwrap_or(false));
         if !any_other {
             let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
         }
@@ -321,6 +331,277 @@ pub(crate) fn show_library<R: Runtime>(app: &AppHandle<R>) {
         let _ = library.unminimize();
         let _ = library.set_focus();
     }
+}
+
+/// Tracker windows beyond the main one are labelled `tracker-<n>`.
+const EXTRA_PREFIX: &str = "tracker-";
+
+/// macOS tab group shared by every tracker window (native window tabs).
+#[cfg(target_os = "macos")]
+const TAB_GROUP: &str = "cbb-tracker";
+
+/// Builds a tracker window: the main one at launch, or another one for a
+/// second tab / window (`open_tracker_window`). Every tracker window gets the
+/// same page helpers, navigation policy, downloads and location handling;
+/// what a window asks for is answered in that window. The background work
+/// (notification poll, clock, idle, analytics hand-over) stays on "main".
+pub(crate) fn build_tracker_window<R: Runtime>(
+    app: &AppHandle<R>,
+    label: &str,
+    start: url::Url,
+) -> tauri::Result<tauri::WebviewWindow<R>> {
+    let opener_handle = app.clone();
+    let own_label = label.to_string();
+    // Whether time away can be read from input here (not only from
+    // sleep), so the tracker knows its "you were away" prompt is real.
+    let idle_supported = idle::supported();
+    let download_handle = app.clone();
+    let handed_off = std::sync::Mutex::new(false);
+    let builder = WebviewWindowBuilder::new(app, label, WebviewUrl::External(start))
+    .title("CoolerBox Tracker")
+    // Lets the tracker know it is inside the app (it hides "Get the
+    // desktop app"), and whether the shell reports time away for the
+    // time sheet (idle.rs). Plain values on the page, not IPC.
+    .initialization_script(&format!(
+        "window.cbbDesktopApp=Object.freeze({{version:{:?},idleSupported:{}}});",
+        env!("CARGO_PKG_VERSION"),
+        idle_supported
+    ))
+    // Download helpers (nav_bar.js): file links are intercepted in
+    // the page and handed to the shell, which saves them with the
+    // window's own session. No on-page buttons: the tracker page is
+    // left exactly as the website made it.
+    .initialization_script(include_str!("nav_bar.js"))
+    // New tabs / windows (tracker_windows.js): Cmd/Ctrl+T, Cmd/Ctrl+N and
+    // Cmd/Ctrl- or middle-click on a tracker link, as cbb-window:// hand-overs.
+    .initialization_script(include_str!("tracker_windows.js"))
+    // macOS: navigator.geolocation for the tracker's pages, answered
+    // by Core Location through cbb-geo:// hand-overs (location.rs).
+    .initialization_script(if cfg!(target_os = "macos") { include_str!("geo_bridge.js") } else { "" })
+    // Location for the time sheet: the tracker's own pages only
+    // (location.rs). Windows and Linux; macOS uses geo_bridge.js.
+    .on_permission_request(|webview, kind| {
+        location::decide(webview.url().ok().as_ref(), kind)
+    })
+    // Keep the tracker page running at full speed while the window is
+    // closed to the menu bar. By default WebKit throttles a hidden
+    // page's timers and may suspend it after ~5 minutes, so PostHog's
+    // batched sends (analytics.rs), the notification poll and the
+    // clock stalled until the window came back; found live: panel
+    // events queued and were lost on sign-out. macOS 14+; Windows and
+    // Linux don't support the setting and keep their own behaviour.
+    .background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Disabled)
+    .inner_size(1280.0, 800.0)
+    .min_inner_size(1024.0, 640.0)
+    .on_navigation(move |url| {
+        // nav_bar.js hands a clicked file link over as
+        // cbb-download://go?u=<https url>[&save=1]: open it (or, for
+        // a `download` link, save it), staying on the page.
+        if url.scheme() == "cbb-download" {
+            let save_as = url.query_pairs().any(|(key, value)| key == "save" && value == "1");
+            if let Some(target) = url
+                .query_pairs()
+                .find(|(key, _)| key == "u")
+                .and_then(|(_, value)| value.parse::<url::Url>().ok())
+            {
+                download::start_in(&opener_handle, &own_label, target, save_as);
+            }
+            return false;
+        }
+        // tracker_windows.js: open a tracker page in a new tab / window.
+        if url.scheme() == "cbb-window" {
+            if let Some((target, tab)) = window_request(url) {
+                open_tracker_window(&opener_handle, Some(&own_label), target, tab);
+            }
+            return false;
+        }
+        // geo_bridge.js (macOS) asks for the location as
+        // cbb-geo://get?id=N; answered only on the tracker's pages.
+        if url.scheme() == "cbb-geo" {
+            #[cfg(target_os = "macos")]
+            if let Some(id) = location::request_id(url) {
+                let on_tracker = opener_handle
+                    .get_webview_window(&own_label)
+                    .and_then(|window| window.url().ok())
+                    .is_some_and(|page| location::page_may_locate(&page));
+                if on_tracker {
+                    location::request(&opener_handle, &own_label, id);
+                }
+            }
+            return false;
+        }
+        // "Show in folder" button of the download message.
+        if url.scheme() == "cbb-reveal" {
+            if let Some(path) = url
+                .query_pairs()
+                .find(|(key, _)| key == "p")
+                .map(|(_, value)| value.into_owned())
+            {
+                download::reveal(&opener_handle, &path);
+            }
+            return false;
+        }
+        // about:blank / about:srcdoc frames are created by widgets
+        // like Turnstile and carry no network content.
+        if url.scheme() == "about" {
+            return true;
+        }
+        // Google refuses embedded sign-in: that step finishes in the
+        // system browser and returns via tracker://signed-in.
+        if google_sign_in::start(&opener_handle, url) {
+            return false;
+        }
+        let allowed = match handed_off.lock() {
+            Ok(mut state) => main_window_may_load(url, &mut state),
+            Err(_) => webview_may_load(url),
+        };
+        if allowed {
+            return true;
+        }
+        // `tracker://` URLs are delivered to route_deep_link by the
+        // deep-link plugin; anything else foreign leaves the app.
+        if opens_externally(url) {
+            system_open::open_url(&opener_handle, url.as_str());
+        }
+        false
+    })
+    .on_new_window({
+        let app = app.clone();
+        let own_label = label.to_string();
+        move |url, _features| {
+            match new_window_action(&url) {
+                NewWindowAction::SaveFile => download::start_in(&app, &own_label, url, false),
+                // A tracker page asked for a new tab (target="_blank", or the
+                // "Open Link in New Window" menu): a new tracker tab.
+                NewWindowAction::NewTrackerWindow => {
+                    open_tracker_window(&app, Some(&own_label), url, true);
+                }
+                NewWindowAction::LoadInMain => {
+                    if let Some(window) = app.get_webview_window(&own_label) {
+                        let _ = window.navigate(url);
+                    }
+                }
+                NewWindowAction::OpenExternal => {
+                    system_open::open_url(&app, url.as_str());
+                }
+                NewWindowAction::Ignore => {}
+            }
+            tauri::webview::NewWindowResponse::Deny
+        }
+    })
+    .on_download(move |_webview, event| match event {
+        DownloadEvent::Requested { url, destination } => {
+            offline::handle_download(&download_handle, &url, destination)
+        }
+        DownloadEvent::Finished { url, path, success } => {
+            if offline::is_capture_url(&download_handle, &url) {
+                offline::finish_download(&download_handle, &url, success);
+            } else {
+                offline::finish_regular_download(&download_handle, path, success);
+            }
+            true
+        }
+        _ => true,
+    })
+    .on_page_load(|window, payload| {
+        if !matches!(payload.event(), PageLoadEvent::Finished) {
+            return;
+        }
+        let Ok(page) = payload.url().to_string().parse::<url::Url>() else {
+            return;
+        };
+        if page.host_str() != Some(APP_HOST) || page.path() != "/sign-in" {
+            return;
+        }
+        // Cold start with a persisted session: the Supabase
+        // auth-token cookie is script-readable, so peek at the jar
+        // and skip the form straight to the dashboard. No cookie —
+        // stay on the login screen. An expired session bounces back
+        // here through the app's own auth gate.
+        let probe = window.clone();
+        let _ = window.eval_with_callback("document.cookie", move |cookies_json| {
+            let cookies: String = serde_json::from_str(&cookies_json).unwrap_or_default();
+            if has_session_cookie(&cookies) {
+                if let Ok(home) = APP_ORIGIN.parse::<url::Url>() {
+                    let _ = probe.navigate(home);
+                }
+            }
+        });
+    });
+    #[cfg(target_os = "macos")]
+    let builder = builder.tabbing_identifier(TAB_GROUP);
+    builder.build()
+}
+
+/// The target of a `cbb-window://open?u=<tracker url>[&tab=1]` hand-over:
+/// only https pages on the tracker itself.
+pub(crate) fn window_request(url: &url::Url) -> Option<(url::Url, bool)> {
+    if url.scheme() != "cbb-window" {
+        return None;
+    }
+    let target = url
+        .query_pairs()
+        .find(|(key, _)| key == "u")
+        .and_then(|(_, value)| value.parse::<url::Url>().ok())
+        .filter(|target| target.scheme() == "https" && target.host_str() == Some(APP_HOST))?;
+    let tab = url.query_pairs().any(|(key, value)| key == "tab" && value == "1");
+    Some((target, tab))
+}
+
+/// Next free number for an extra tracker window's label.
+static NEXT_WINDOW: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+
+/// Opens a tracker page in another window, for comparing one review page
+/// with another side by side. On macOS `tab` adds it as a native tab of the
+/// window it came from (drag the tab out for side by side); elsewhere, and
+/// for a new window, it is its own window. Runs on the main thread.
+pub(crate) fn open_tracker_window<R: Runtime>(
+    app: &AppHandle<R>,
+    from: Option<&str>,
+    url: url::Url,
+    tab: bool,
+) {
+    let app = app.clone();
+    let from = from.map(str::to_string);
+    let _ = app.clone().run_on_main_thread(move || {
+        #[cfg(target_os = "macos")]
+        let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
+        let n = NEXT_WINDOW.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let label = format!("{EXTRA_PREFIX}{n}");
+        let Ok(window) = build_tracker_window(&app, &label, url) else { return };
+        #[cfg(target_os = "macos")]
+        if tab {
+            if let Some(parent) = from.as_deref().and_then(|label| app.get_webview_window(label)) {
+                add_as_tab(&parent, &window);
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        let _ = (tab, &from);
+        let _ = window.set_focus();
+    });
+}
+
+/// macOS: put `child` in `parent`'s tab bar, right after it.
+#[cfg(target_os = "macos")]
+fn add_as_tab<R: Runtime>(parent: &tauri::WebviewWindow<R>, child: &tauri::WebviewWindow<R>) {
+    use objc2::msg_send;
+    use objc2::runtime::AnyObject;
+    let (Ok(parent), Ok(child)) = (parent.ns_window(), child.ns_window()) else { return };
+    let (parent, child) = (parent.cast::<AnyObject>(), child.cast::<AnyObject>());
+    if parent.is_null() || child.is_null() {
+        return;
+    }
+    /// NSWindowAbove.
+    const ABOVE: isize = 1;
+    // SAFETY: both are live NSWindows owned by Tauri, on the main thread.
+    unsafe {
+        let _: () = msg_send![parent, addTabbedWindow: child, ordered: ABOVE];
+    }
+}
+
+/// Whether a window label is an extra tracker window (`tracker-<n>`).
+pub(crate) fn is_extra_tracker_window(label: &str) -> bool {
+    label.strip_prefix(EXTRA_PREFIX).is_some_and(|n| n.parse::<u32>().is_ok())
 }
 
 /// Modifiers of the two global shortcuts (I: clock, M: quick panel).
@@ -385,6 +666,8 @@ pub fn run() {
                         | tauri_plugin_window_state::StateFlags::MAXIMIZED,
                 )
                 .with_denylist(&["mini", "library"])
+                // Extra tracker windows (tracker-<n>) open fresh each time.
+                .with_filter(|label| label == "main")
                 .build(),
         )
         .plugin(tauri_plugin_autostart::init(
@@ -451,8 +734,12 @@ pub fn run() {
                         api.prevent_close();
                         hide_to_tray(window);
                     }
+                    // Extra tracker windows (tracker-<n>) really close.
                     _ => {}
                 }
+            }
+            if matches!(event, tauri::WindowEvent::Destroyed) && is_extra_tracker_window(window.label()) {
+                drop_dock_icon_if_alone(window.app_handle(), window.label());
             }
             // Drop-down behaviour: the quick panel hides when it loses focus,
             // unless it is pinned as a floating timer.
@@ -484,172 +771,11 @@ pub fn run() {
             desktop_entry::keep_installed();
             #[cfg(target_os = "linux")]
             title_buttons::follow_host(app.handle());
-            let opener_handle = app.handle().clone();
-            // Whether time away can be read from input here (not only from
-            // sleep), so the tracker knows its "you were away" prompt is real.
-            let idle_supported = idle::supported();
-            let download_handle = app.handle().clone();
-            let handed_off = std::sync::Mutex::new(false);
-            WebviewWindowBuilder::new(
-                app,
+            build_tracker_window(
+                app.handle(),
                 "main",
-                WebviewUrl::External(START_URL.parse().expect("START_URL is a valid URL")),
-            )
-            .title("CoolerBox Tracker")
-            // Lets the tracker know it is inside the app (it hides "Get the
-            // desktop app"), and whether the shell reports time away for the
-            // time sheet (idle.rs). Plain values on the page, not IPC.
-            .initialization_script(&format!(
-                "window.cbbDesktopApp=Object.freeze({{version:{:?},idleSupported:{}}});",
-                env!("CARGO_PKG_VERSION"),
-                idle_supported
-            ))
-            // Download helpers (nav_bar.js): file links are intercepted in
-            // the page and handed to the shell, which saves them with the
-            // window's own session. No on-page buttons: the tracker page is
-            // left exactly as the website made it.
-            .initialization_script(include_str!("nav_bar.js"))
-            // macOS: navigator.geolocation for the tracker's pages, answered
-            // by Core Location through cbb-geo:// hand-overs (location.rs).
-            .initialization_script(if cfg!(target_os = "macos") { include_str!("geo_bridge.js") } else { "" })
-            // Location for the time sheet: the tracker's own pages only
-            // (location.rs). Windows and Linux; macOS uses geo_bridge.js.
-            .on_permission_request(|webview, kind| {
-                location::decide(webview.url().ok().as_ref(), kind)
-            })
-            // Keep the tracker page running at full speed while the window is
-            // closed to the menu bar. By default WebKit throttles a hidden
-            // page's timers and may suspend it after ~5 minutes, so PostHog's
-            // batched sends (analytics.rs), the notification poll and the
-            // clock stalled until the window came back; found live: panel
-            // events queued and were lost on sign-out. macOS 14+; Windows and
-            // Linux don't support the setting and keep their own behaviour.
-            .background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Disabled)
-            .inner_size(1280.0, 800.0)
-            .min_inner_size(1024.0, 640.0)
-            .on_navigation(move |url| {
-                // nav_bar.js hands a clicked file link over as
-                // cbb-download://go?u=<https url>[&save=1]: open it (or, for
-                // a `download` link, save it), staying on the page.
-                if url.scheme() == "cbb-download" {
-                    let save_as = url.query_pairs().any(|(key, value)| key == "save" && value == "1");
-                    if let Some(target) = url
-                        .query_pairs()
-                        .find(|(key, _)| key == "u")
-                        .and_then(|(_, value)| value.parse::<url::Url>().ok())
-                    {
-                        download::start(&opener_handle, target, save_as);
-                    }
-                    return false;
-                }
-                // geo_bridge.js (macOS) asks for the location as
-                // cbb-geo://get?id=N; answered only on the tracker's pages.
-                if url.scheme() == "cbb-geo" {
-                    #[cfg(target_os = "macos")]
-                    if let Some(id) = location::request_id(url) {
-                        let on_tracker = opener_handle
-                            .get_webview_window("main")
-                            .and_then(|main| main.url().ok())
-                            .is_some_and(|page| location::page_may_locate(&page));
-                        if on_tracker {
-                            location::request(&opener_handle, id);
-                        }
-                    }
-                    return false;
-                }
-                // "Show in folder" button of the download message.
-                if url.scheme() == "cbb-reveal" {
-                    if let Some(path) = url
-                        .query_pairs()
-                        .find(|(key, _)| key == "p")
-                        .map(|(_, value)| value.into_owned())
-                    {
-                        download::reveal(&opener_handle, &path);
-                    }
-                    return false;
-                }
-                // about:blank / about:srcdoc frames are created by widgets
-                // like Turnstile and carry no network content.
-                if url.scheme() == "about" {
-                    return true;
-                }
-                // Google refuses embedded sign-in: that step finishes in the
-                // system browser and returns via tracker://signed-in.
-                if google_sign_in::start(&opener_handle, url) {
-                    return false;
-                }
-                let allowed = match handed_off.lock() {
-                    Ok(mut state) => main_window_may_load(url, &mut state),
-                    Err(_) => webview_may_load(url),
-                };
-                if allowed {
-                    return true;
-                }
-                // `tracker://` URLs are delivered to route_deep_link by the
-                // deep-link plugin; anything else foreign leaves the app.
-                if opens_externally(url) {
-                    system_open::open_url(&opener_handle, url.as_str());
-                }
-                false
-            })
-            .on_new_window({
-                let app = app.handle().clone();
-                move |url, _features| {
-                    match new_window_action(&url) {
-                        NewWindowAction::SaveFile => download::start(&app, url, false),
-                        NewWindowAction::LoadInMain => {
-                            if let Some(main) = app.get_webview_window("main") {
-                                let _ = main.navigate(url);
-                            }
-                        }
-                        NewWindowAction::OpenExternal => {
-                            system_open::open_url(&app, url.as_str());
-                        }
-                        NewWindowAction::Ignore => {}
-                    }
-                    tauri::webview::NewWindowResponse::Deny
-                }
-            })
-            .on_download(move |_webview, event| match event {
-                DownloadEvent::Requested { url, destination } => {
-                    offline::handle_download(&download_handle, &url, destination)
-                }
-                DownloadEvent::Finished { url, path, success } => {
-                    if offline::is_capture_url(&download_handle, &url) {
-                        offline::finish_download(&download_handle, &url, success);
-                    } else {
-                        offline::finish_regular_download(&download_handle, path, success);
-                    }
-                    true
-                }
-                _ => true,
-            })
-            .on_page_load(|window, payload| {
-                if !matches!(payload.event(), PageLoadEvent::Finished) {
-                    return;
-                }
-                let Ok(page) = payload.url().to_string().parse::<url::Url>() else {
-                    return;
-                };
-                if page.host_str() != Some(APP_HOST) || page.path() != "/sign-in" {
-                    return;
-                }
-                // Cold start with a persisted session: the Supabase
-                // auth-token cookie is script-readable, so peek at the jar
-                // and skip the form straight to the dashboard. No cookie —
-                // stay on the login screen. An expired session bounces back
-                // here through the app's own auth gate.
-                let probe = window.clone();
-                let _ = window.eval_with_callback("document.cookie", move |cookies_json| {
-                    let cookies: String = serde_json::from_str(&cookies_json).unwrap_or_default();
-                    if has_session_cookie(&cookies) {
-                        if let Ok(home) = APP_ORIGIN.parse::<url::Url>() {
-                            let _ = probe.navigate(home);
-                        }
-                    }
-                });
-            })
-            .build()?;
+                START_URL.parse().expect("START_URL is a valid URL"),
+            )?;
 
             // Mini bar (mini.rs + mini.html): hidden until the tray toggle.
             // Frameless, transparent, always on top, out of Alt-Tab.
@@ -688,6 +814,8 @@ pub fn run() {
             // so each poll refreshes these 3 rows (label + href) instead.
             let tray_show =
                 MenuItem::with_id(app, "tray-show", "Show Tracker", true, None::<&str>)?;
+            let tray_new_window =
+                MenuItem::with_id(app, "tray-new-window", "New Window", true, None::<&str>)?;
             let tray_notifications =
                 MenuItem::with_id(app, "tray-notifications", "Notifications", true, None::<&str>)?;
             let inbox_1 =
@@ -729,7 +857,7 @@ pub fn run() {
                 app,
                 &[
                     &clock_items.status, &clock_items.call_in, &clock_items.take_break, &clock_items.back,
-                    &clock_items.wrap, &separator, &tray_show, &tray_notifications, &inbox_1, &inbox_2, &inbox_3,
+                    &clock_items.wrap, &separator, &tray_show, &tray_new_window, &tray_notifications, &inbox_1, &inbox_2, &inbox_3,
                     &separator2, &tray_offline, &tray_mini, &tray_update, &tray_diagnostics,
                     #[cfg(not(any(target_os = "android", target_os = "ios")))]
                     &tray_autostart,
@@ -784,6 +912,17 @@ pub fn run() {
                 .show_menu_on_left_click(false)
                 .tooltip("CoolerBox Tracker")
                 .on_menu_event(|app, event| match event.id.as_ref() {
+                    // Another tracker window, on the page the main one shows.
+                    "tray-new-window" => {
+                        let page = app
+                            .get_webview_window("main")
+                            .and_then(|main| main.url().ok())
+                            .filter(|page| page.scheme() == "https" && page.host_str() == Some(APP_HOST))
+                            .or_else(|| APP_ORIGIN.parse().ok());
+                        if let Some(page) = page {
+                            open_tracker_window(app, None, page, false);
+                        }
+                    }
                     "tray-show" => {
                         show_main(app);
                         analytics::action(app, "open_tracker", "tray_menu");
@@ -999,6 +1138,10 @@ mod tests {
         );
         assert_eq!(
             new_window_action(&parsed("https://tracker.coolerboxbrothers.com/projects/1")),
+            NewWindowAction::NewTrackerWindow
+        );
+        assert_eq!(
+            new_window_action(&parsed("https://accounts.google.com/o/oauth2/v2/auth")),
             NewWindowAction::LoadInMain
         );
         assert_eq!(
@@ -1049,6 +1192,38 @@ mod tests {
             "http://next.frame.io/share/abc",
         ] {
             assert!(!main_window_may_load(&parsed(raw), &mut handed_off), "{raw}");
+        }
+    }
+
+    #[test]
+    fn window_hand_over_opens_only_tracker_pages() {
+        let (url, tab) = window_request(&parsed(
+            "cbb-window://open?u=https%3A%2F%2Ftracker.coolerboxbrothers.com%2Fviewing%2Fversion%2Fabc&tab=1",
+        ))
+        .expect("tracker page");
+        assert_eq!(url.as_str(), "https://tracker.coolerboxbrothers.com/viewing/version/abc");
+        assert!(tab);
+        let (_, tab) = window_request(&parsed(
+            "cbb-window://open?u=https%3A%2F%2Ftracker.coolerboxbrothers.com%2F",
+        ))
+        .expect("tracker page");
+        assert!(!tab);
+        for raw in [
+            "cbb-window://open?u=https%3A%2F%2Fevil.example%2F",
+            "cbb-window://open?u=http%3A%2F%2Ftracker.coolerboxbrothers.com%2F",
+            "cbb-window://open",
+            "cbb-download://open?u=https%3A%2F%2Ftracker.coolerboxbrothers.com%2F",
+        ] {
+            assert!(window_request(&parsed(raw)).is_none(), "{raw}");
+        }
+    }
+
+    #[test]
+    fn extra_window_labels() {
+        assert!(is_extra_tracker_window("tracker-1"));
+        assert!(is_extra_tracker_window("tracker-12"));
+        for label in ["main", "mini", "library", "tracker-", "tracker-x"] {
+            assert!(!is_extra_tracker_window(label), "{label}");
         }
     }
 }

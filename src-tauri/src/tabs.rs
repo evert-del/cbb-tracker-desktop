@@ -193,8 +193,18 @@ pub(crate) fn show_tab_bar<R: Runtime>(window: &tauri::WebviewWindow<R>) {
     if ns_window.is_null() {
         return;
     }
+    /// NSWindowStyleMaskFullSizeContentView.
+    const FULL_SIZE_CONTENT: usize = 1 << 15;
     // SAFETY: a live NSWindow owned by Tauri, on the main thread.
     unsafe {
+        // Tauri's default title-bar style stretches the content under the
+        // title bar and places the page below it once; the tab bar then grows
+        // the title-bar area and the page covers it. Without the stretch, the
+        // tab bar pushes the page down, as in Safari.
+        let style: usize = msg_send![ns_window, styleMask];
+        if style & FULL_SIZE_CONTENT != 0 {
+            let _: () = msg_send![ns_window, setStyleMask: style & !FULL_SIZE_CONTENT];
+        }
         let group: *mut AnyObject = msg_send![ns_window, tabGroup];
         if group.is_null() {
             return;

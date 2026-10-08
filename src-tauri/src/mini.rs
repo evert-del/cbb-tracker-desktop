@@ -170,14 +170,52 @@ fn set_compact<R: Runtime>(app: &AppHandle<R>, compact: bool) {
 /// the click would open it straight back up.
 static LAST_HIDDEN: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
 
+/// Tracker windows the drop-down panel put away when it opened: it's either
+/// the panel or the tracker on screen, not both. `bring_tracker_back` (via
+/// `show_main`: Open tracker, a notification, the tray's Show Tracker, a
+/// deep link) shows them again; pinning the panel does too.
+static PUT_AWAY: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// Hide every visible tracker window (main and extra tabs / windows) and
+/// remember which, for `bring_tracker_back`.
+fn put_tracker_away<R: Runtime>(app: &AppHandle<R>) {
+    let Ok(mut away) = PUT_AWAY.lock() else { return };
+    for (label, window) in app.webview_windows() {
+        let tracker = label == "main" || crate::is_extra_tracker_window(&label);
+        if tracker && window.is_visible().unwrap_or(false) {
+            let _ = window.hide();
+            if !away.contains(&label) {
+                away.push(label);
+            }
+        }
+    }
+}
+
+/// Show the tracker windows the panel put away, as they were.
+pub(crate) fn bring_tracker_back<R: Runtime>(app: &AppHandle<R>) {
+    let labels = PUT_AWAY.lock().map(|mut away| std::mem::take(&mut *away)).unwrap_or_default();
+    if labels.is_empty() {
+        return;
+    }
+    #[cfg(target_os = "macos")]
+    let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
+    for label in labels {
+        if let Some(window) = app.get_webview_window(&label) {
+            let _ = window.show();
+            let _ = window.unminimize();
+        }
+    }
+}
+
 /// Show the panel with fresh state, focused so its buttons work on the
 /// first click: under the tray icon, or where it was dragged when pinned.
-/// Unpinned, it hides again when it loses focus.
-/// The main window is left as it is: the panel is a drop-down, not a swap.
+/// Unpinned, it hides again when it loses focus, and it takes the tracker
+/// windows' place (put_tracker_away): either the panel or the tracker.
 pub(crate) fn show<R: Runtime>(app: &AppHandle<R>) {
     if let Some(mini) = app.get_webview_window("mini") {
-        // A pinned panel reopens where it was dragged to.
+        // A pinned panel reopens where it was dragged to, over the tracker.
         if !is_pinned() {
+            put_tracker_away(app);
             place_under_tray(&mini);
         }
         let _ = mini.show();
@@ -236,6 +274,68 @@ pub(crate) fn hide<R: Runtime>(app: &AppHandle<R>) {
         }
         let _ = mini.hide();
     }
+    // Nothing left on screen (the tracker was put away): a pure menu-bar app.
+    crate::drop_dock_icon_if_alone(app, "mini");
+}
+
+/// The one-time "there's a quick panel" tip has been shown (settings.json).
+const INTRODUCED: &str = "panel_introduced";
+
+/// Scheduled for this run already (the tip waits for a signed-in page).
+static TIP_SCHEDULED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The tip's words, in each system's terms for where the panel lives.
+pub(crate) fn tip_text(os: &str) -> (&'static str, &'static str) {
+    match os {
+        "macos" => (
+            "Your time sheet is in the menu bar",
+            "Click the CoolerBox icon at the top of your screen for your timer, clock buttons and notifications. Pin it to keep a small timer on screen.",
+        ),
+        "windows" => (
+            "Your time sheet is in the system tray",
+            "Click the CoolerBox icon by the clock (it may be under the ^ arrow) for your timer, clock buttons and notifications. Pin it to keep a small timer on screen.",
+        ),
+        _ => (
+            "Your time sheet has a quick panel",
+            "Choose Quick panel from the CoolerBox tray icon, or press Ctrl+Alt+M, for your timer, clock buttons and notifications. Pin it to keep a small timer on screen.",
+        ),
+    }
+}
+
+/// Once per install: a few seconds after the tracker's first signed-in page
+/// has loaded in the main window, a small in-app message (nav_bar.js toast,
+/// bottom of the window, dismissible, gone after 15 s) says where the quick
+/// panel lives, with "Show me". Nothing permanent is added to the page.
+pub(crate) fn maybe_introduce<R: Runtime>(app: &AppHandle<R>) {
+    if crate::close::flag(app, INTRODUCED)
+        || TIP_SCHEDULED.swap(true, std::sync::atomic::Ordering::Relaxed)
+    {
+        return;
+    }
+    let app = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(10));
+        let visible = app
+            .get_webview_window("main")
+            .and_then(|main| main.is_visible().ok())
+            .unwrap_or(false);
+        if !visible {
+            // Try again on a later page load, when someone is looking.
+            TIP_SCHEDULED.store(false, std::sync::atomic::Ordering::Relaxed);
+            return;
+        }
+        crate::close::set_flag(&app, INTRODUCED, true);
+        let (title, detail) = tip_text(std::env::consts::OS);
+        crate::download::toast(
+            &app,
+            serde_json::json!({
+                "kind": "ok",
+                "title": title,
+                "detail": detail,
+                "action": { "label": "Show me", "panel": true },
+            }),
+        );
+    });
 }
 
 fn is_allowed(action: &str) -> bool {
@@ -324,7 +424,10 @@ pub(crate) fn mini_hide<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
 #[tauri::command]
 pub(crate) fn mini_pin<R: Runtime>(app: AppHandle<R>, pinned: bool) -> Result<(), String> {
     PINNED.store(pinned, std::sync::atomic::Ordering::Relaxed);
-    if !pinned {
+    if pinned {
+        // A floating timer is for working in the tracker: bring it back.
+        bring_tracker_back(&app);
+    } else {
         // The drop-down is always the full panel.
         set_compact(&app, false);
         if let Some(mini) = app.get_webview_window("mini") {
@@ -351,7 +454,7 @@ pub(crate) fn mini_compact<R: Runtime>(app: AppHandle<R>, compact: bool) -> Resu
 fn is_menu_item(item: &str) -> bool {
     matches!(
         item,
-        "offline" | "update" | "diagnostics" | "autostart" | "close-keep" | "close-quit" | "quit"
+        "offline" | "new-window" | "update" | "diagnostics" | "autostart" | "close-keep" | "close-quit" | "quit"
     )
 }
 
@@ -366,6 +469,10 @@ pub(crate) fn mini_menu<R: Runtime>(app: AppHandle<R>, item: String) -> Result<(
             hide(&app);
             crate::show_library(&app);
             crate::analytics::action(&app, "saved_offline", "panel");
+        }
+        "new-window" => {
+            hide(&app);
+            crate::tabs::open_from_front(&app, false);
         }
         "update" => {
             hide(&app);
@@ -492,6 +599,13 @@ mod tests {
     }
 
     #[test]
+    fn tip_names_where_the_panel_lives() {
+        assert!(tip_text("macos").1.contains("top of your screen"));
+        assert!(tip_text("windows").1.contains("^ arrow"));
+        assert!(tip_text("linux").1.contains("Ctrl+Alt+M"));
+    }
+
+    #[test]
     fn only_known_actions_pass() {
         for action in ["in", "break", "back", "wrap"] {
             assert!(is_allowed(action), "{action}");
@@ -503,7 +617,7 @@ mod tests {
 
     #[test]
     fn only_known_menu_items_pass() {
-        for item in ["offline", "update", "diagnostics", "autostart", "close-keep", "close-quit", "quit"] {
+        for item in ["offline", "new-window", "update", "diagnostics", "autostart", "close-keep", "close-quit", "quit"] {
             assert!(is_menu_item(item), "{item}");
         }
         for item in ["", "show", "quit;", "eval"] {

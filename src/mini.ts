@@ -315,6 +315,7 @@ window.addEventListener("DOMContentLoaded", () => {
   click("open-tracker", () => void invoke("mini_expand"));
   click("see-all", () => void invoke("mini_expand_notifications"));
   click("open-offline", () => menu("offline"));
+  click("new-window", () => menu("new-window"));
   click("update", () => menu("update"));
   click("update-row", () => menu("update"));
   click("diagnostics-row", () => menu("diagnostics"));

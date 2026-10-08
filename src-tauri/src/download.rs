@@ -73,7 +73,12 @@ pub(crate) fn is_file_url(url: &url::Url) -> bool {
 
 /// Show a message in the main window (see `__cbbToast` in nav_bar.js).
 pub(crate) fn toast<R: Runtime>(app: &AppHandle<R>, message: serde_json::Value) {
-    if let Some(window) = app.get_webview_window("main") {
+    toast_in(app, "main", message);
+}
+
+/// Show a message in the tracker window `label`.
+pub(crate) fn toast_in<R: Runtime>(app: &AppHandle<R>, label: &str, message: serde_json::Value) {
+    if let Some(window) = app.get_webview_window(label) {
         let _ = window.eval(format!(
             "window.__cbbToast&&window.__cbbToast({message})"
         ));
@@ -133,17 +138,20 @@ fn remember(path: &Path) {
 
 /// Open `url` (or, with `save_as`, ask where to save it). Anything that is
 /// not a first-party file URL is ignored.
-pub(crate) fn start<R: Runtime>(app: &AppHandle<R>, url: url::Url, save_as: bool) {
+/// Open (or, `save_as`, save) a file link clicked in the tracker window
+/// `label`: its messages and Save dialog belong to that window.
+pub(crate) fn start_in<R: Runtime>(app: &AppHandle<R>, label: &str, url: url::Url, save_as: bool) {
     if !is_file_url(&url) {
         return;
     }
     let app = app.clone();
+    let label = label.to_string();
     // Own thread: cookie access, the dialog and the transfer must not run on
     // the UI thread.
     std::thread::spawn(move || {
         let title = if save_as { "Preparing your download…" } else { "Opening…" };
-        toast(&app, serde_json::json!({ "kind": "busy", "title": title }));
-        match tauri::async_runtime::block_on(fetch(&app, &url, save_as)) {
+        toast_in(&app, &label, serde_json::json!({ "kind": "busy", "title": title }));
+        match tauri::async_runtime::block_on(fetch(&app, &label, &url, save_as)) {
             Ok(Fetched::Saved(path)) => {
                 let name = path
                     .file_name()
@@ -152,8 +160,8 @@ pub(crate) fn start<R: Runtime>(app: &AppHandle<R>, url: url::Url, save_as: bool
                 let shown = path.display().to_string();
                 remember(&path);
                 if save_as {
-                    toast(
-                        &app,
+                    toast_in(
+                        &app, &label,
                         serde_json::json!({
                             "kind": "ok",
                             "title": "Download complete",
@@ -163,8 +171,8 @@ pub(crate) fn start<R: Runtime>(app: &AppHandle<R>, url: url::Url, save_as: bool
                     );
                     offline::finish_regular_download(&app, Some(path), true);
                 } else if system_open::open_path(&app, &shown).is_ok() {
-                    toast(
-                        &app,
+                    toast_in(
+                        &app, &label,
                         serde_json::json!({
                             "kind": "ok",
                             "title": format!("Opened {name}"),
@@ -173,8 +181,8 @@ pub(crate) fn start<R: Runtime>(app: &AppHandle<R>, url: url::Url, save_as: bool
                         }),
                     );
                 } else {
-                    toast(
-                        &app,
+                    toast_in(
+                        &app, &label,
                         serde_json::json!({
                             "kind": "ok",
                             "title": "Saved to your Downloads",
@@ -184,11 +192,11 @@ pub(crate) fn start<R: Runtime>(app: &AppHandle<R>, url: url::Url, save_as: bool
                     );
                 }
             }
-            Ok(Fetched::Cancelled) => toast(&app, serde_json::json!({ "kind": "hide" })),
+            Ok(Fetched::Cancelled) => toast_in(&app, &label, serde_json::json!({ "kind": "hide" })),
             Ok(Fetched::Page(page)) => {
                 system_open::open_url(&app, page.as_str());
-                toast(
-                    &app,
+                toast_in(
+                    &app, &label,
                     serde_json::json!({
                         "kind": "ok",
                         "title": "Opened in your browser",
@@ -197,8 +205,8 @@ pub(crate) fn start<R: Runtime>(app: &AppHandle<R>, url: url::Url, save_as: bool
                 );
             }
             Err(_) => {
-                toast(
-                    &app,
+                toast_in(
+                    &app, &label,
                     serde_json::json!({
                         "kind": "error",
                         "title": "Download failed",
@@ -231,10 +239,11 @@ fn percent(done: u64, total: Option<u64>) -> Option<u8> {
 
 async fn fetch<R: Runtime>(
     app: &AppHandle<R>,
+    label: &str,
     url: &url::Url,
     save_as: bool,
 ) -> Result<Fetched, String> {
-    let window = app.get_webview_window("main").ok_or("main window unavailable")?;
+    let window = app.get_webview_window(label).ok_or("tracker window unavailable")?;
     let cookies = window
         .cookies_for_url(url.clone())
         .map_err(|e| e.to_string())?;
@@ -282,8 +291,8 @@ async fn fetch<R: Runtime>(
         // first), in front of the window: unparented, Windows could put it
         // behind. The transfer is already started, so this is quick after
         // "Save".
-        toast(
-            app,
+        toast_in(
+            app, label,
             serde_json::json!({
                 "kind": "busy",
                 "title": "Choose where to save the file",
@@ -312,8 +321,8 @@ async fn fetch<R: Runtime>(
     };
     let part = PathBuf::from(format!("{}.cbb-part", dest.display()));
 
-    toast(
-        app,
+    toast_in(
+        app, label,
         serde_json::json!({
             "kind": "busy",
             "title": if save_as { "Downloading…" } else { "Opening…" },
@@ -331,8 +340,8 @@ async fn fetch<R: Runtime>(
             done += chunk.len() as u64;
             if last_update.elapsed() >= PROGRESS_EVERY {
                 last_update = Instant::now();
-                toast(
-                    app,
+                toast_in(
+                    app, label,
                     serde_json::json!({
                         "kind": "busy",
                         "title": if save_as { "Downloading…" } else { "Opening…" },

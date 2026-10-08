@@ -70,6 +70,16 @@ plus OS toasts on offline save/fail. Live message/approval toasts are
 parked: the shell cannot see page state, and screen-scraping the remote DOM
 is off the table without a web-side hook (out of scope for this repo).
 
+More tracker windows (`build_tracker_window` / `open_tracker_window` in
+`src-tauri/src/lib.rs`, `tracker_windows.js`), for comparing one review page
+with another: Cmd/Ctrl+T opens the current page in a new tab (macOS window
+tabs; a new window on Windows/Linux), Cmd/Ctrl+N in a new window, and
+Cmd/Ctrl- or middle-click on a tracker link (or a tracker `target="_blank"`
+link) opens it in a new tab; the tray has **New Window** too. Every tracker
+window gets the same helpers and navigation policy, and downloads and
+location are answered in the window that asked; background work stays on the
+main window. Extra windows close for real and are not position-remembered.
+
 Usage of the app's own features (`src-tauri/src/analytics.rs`): opening the
 quick panel, clock taps from the panel / mini timer / tray / shortcut, the
 panel and tray shortcuts, pin / mini-timer mode and settings changes. The shell

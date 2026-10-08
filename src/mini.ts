@@ -111,6 +111,38 @@ function tick() {
         : `Today ${fmtSpan(worked)} worked` + (rest >= 1 ? ` · ${fmtSpan(rest)} break` : "");
 }
 
+/**
+ * After a clock tap the clock buttons rest until the time sheet's new state
+ * arrives (the next push) or 3 s pass, so a double-click can't send the tap
+ * twice. Seen live: two "break" taps a second apart.
+ */
+const REST_MS = 3000;
+let tapped: { state: string; until: number } | null = null;
+
+function clockResting(): boolean {
+  if (!tapped) return false;
+  if (Date.now() > tapped.until || (current !== null && current.state !== tapped.state)) {
+    tapped = null;
+    return false;
+  }
+  return true;
+}
+
+function restClockButtons(): void {
+  const resting = clockResting();
+  document.querySelectorAll<HTMLButtonElement>("#actions .act, #c-action").forEach((btn) => {
+    btn.disabled = resting;
+  });
+}
+
+function tapClock(action: string, from: "panel" | "mini_timer"): void {
+  if (clockResting()) return;
+  tapped = { state: current?.state ?? "", until: Date.now() + REST_MS };
+  restClockButtons();
+  void invoke("mini_action", { action, from });
+  window.setTimeout(restClockButtons, REST_MS + 50);
+}
+
 function renderActions(view: View) {
   const box = el("actions");
   box.replaceChildren();
@@ -123,9 +155,7 @@ function renderActions(view: View) {
     if (action.id === "in" || action.id === "back") btn.classList.add("primary");
     if (action.id === "wrap") btn.classList.add("wrap");
     btn.append(svg(ICONS[action.id] ?? ICONS.in), document.createTextNode(action.label));
-    btn.addEventListener("click", () => {
-      void invoke("mini_action", { action: action.id, from: "panel" });
-    });
+    btn.addEventListener("click", () => tapClock(action.id, "panel"));
     box.appendChild(btn);
   }
 }
@@ -253,6 +283,7 @@ window.__cbbMiniShow = (view) => {
   renderNeeds(view);
   renderSummary(view);
   renderCompactAction(view);
+  restClockButtons();
   renderMode(view);
   tick();
 };
@@ -305,7 +336,7 @@ window.addEventListener("DOMContentLoaded", () => {
   click("c-bell", () => void invoke("mini_expand_notifications"));
   click("c-action", () => {
     const action = el("c-action").dataset.action;
-    if (action) void invoke("mini_action", { action, from: "mini_timer" });
+    if (action) tapClock(action, "mini_timer");
   });
   // The mini timer drags from anywhere but its buttons.
   el("compact-view").addEventListener("mousedown", (e) => {

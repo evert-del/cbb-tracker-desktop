@@ -430,6 +430,11 @@ pub(crate) fn build_tracker_window<R: Runtime>(
             }
             return false;
         }
+        // "Show me" in the one-time quick-panel tip.
+        if url.scheme() == "cbb-panel" {
+            mini::show(&opener_handle);
+            return false;
+        }
         // "Show in folder" button of the download message.
         if url.scheme() == "cbb-reveal" {
             if let Some(path) = url
@@ -510,7 +515,15 @@ pub(crate) fn build_tracker_window<R: Runtime>(
         let Ok(page) = payload.url().to_string().parse::<url::Url>() else {
             return;
         };
-        if page.host_str() != Some(APP_HOST) || page.path() != "/sign-in" {
+        if page.host_str() != Some(APP_HOST) {
+            return;
+        }
+        // A signed-in page in the main window: time for the one-time
+        // quick-panel tip, if it hasn't been shown yet.
+        if page.path() != "/sign-in" {
+            if window.label() == "main" {
+                mini::maybe_introduce(window.app_handle());
+            }
             return;
         }
         // Cold start with a persisted session: the Supabase

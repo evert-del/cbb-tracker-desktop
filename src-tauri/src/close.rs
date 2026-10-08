@@ -17,7 +17,8 @@ const QUITS: &str = "close_quits";
 /// The one-time "still running" message has been shown.
 const EXPLAINED: &str = "close_explained";
 
-fn flag<R: Runtime>(app: &AppHandle<R>, key: &str) -> bool {
+/// A true/false setting in `settings.json` (false when unset).
+pub(crate) fn flag<R: Runtime>(app: &AppHandle<R>, key: &str) -> bool {
     app.store(STORE)
         .ok()
         .and_then(|store| store.get(key))
@@ -25,7 +26,7 @@ fn flag<R: Runtime>(app: &AppHandle<R>, key: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn set_flag<R: Runtime>(app: &AppHandle<R>, key: &str, on: bool) {
+pub(crate) fn set_flag<R: Runtime>(app: &AppHandle<R>, key: &str, on: bool) {
     if let Ok(store) = app.store(STORE) {
         store.set(key, on);
         let _ = store.save();
@@ -43,14 +44,15 @@ pub(crate) fn set_quits<R: Runtime>(app: &AppHandle<R>, on: bool) {
 /// The one-time message, in each system's own words for where the app
 /// keeps running and how to quit it.
 pub(crate) fn explanation(os: &str) -> String {
-    let (place, quit, shortcut) = match os {
-        "macos" => ("menu bar", "Quit", " (or press Cmd+Q)"),
-        "windows" => ("system tray", "Exit", ""),
-        _ => ("system tray", "Quit", ""),
+    let (place, quit, shortcut, open_panel) = match os {
+        "macos" => ("menu bar", "Quit", " (or press Cmd+Q)", "Click its icon"),
+        "windows" => ("system tray", "Exit", "", "Click its icon"),
+        _ => ("system tray", "Quit", "", "Choose Quick panel from its icon"),
     };
     format!(
         "Closing the window keeps CoolerBox Tracker running in the {place}, so your \
-         time sheet, reminders and notifications keep working.\n\nTo close it \
+         time sheet, reminders and notifications keep working. {open_panel} any time \
+         for the quick panel: your timer, clock buttons and notifications.\n\nTo close it \
          completely, choose {quit} from its icon in the {place} or from the quick \
          panel{shortcut}. You can change what closing does in the quick panel's Settings."
     )

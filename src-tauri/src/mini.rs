@@ -238,6 +238,66 @@ pub(crate) fn hide<R: Runtime>(app: &AppHandle<R>) {
     }
 }
 
+/// The one-time "there's a quick panel" tip has been shown (settings.json).
+const INTRODUCED: &str = "panel_introduced";
+
+/// Scheduled for this run already (the tip waits for a signed-in page).
+static TIP_SCHEDULED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The tip's words, in each system's terms for where the panel lives.
+pub(crate) fn tip_text(os: &str) -> (&'static str, &'static str) {
+    match os {
+        "macos" => (
+            "Your time sheet is in the menu bar",
+            "Click the CoolerBox icon at the top of your screen for your timer, clock buttons and notifications. Pin it to keep a small timer on screen.",
+        ),
+        "windows" => (
+            "Your time sheet is in the system tray",
+            "Click the CoolerBox icon by the clock (it may be under the ^ arrow) for your timer, clock buttons and notifications. Pin it to keep a small timer on screen.",
+        ),
+        _ => (
+            "Your time sheet has a quick panel",
+            "Choose Quick panel from the CoolerBox tray icon, or press Ctrl+Alt+M, for your timer, clock buttons and notifications. Pin it to keep a small timer on screen.",
+        ),
+    }
+}
+
+/// Once per install: a few seconds after the tracker's first signed-in page
+/// has loaded in the main window, a small in-app message (nav_bar.js toast,
+/// bottom of the window, dismissible, gone after 15 s) says where the quick
+/// panel lives, with "Show me". Nothing permanent is added to the page.
+pub(crate) fn maybe_introduce<R: Runtime>(app: &AppHandle<R>) {
+    if crate::close::flag(app, INTRODUCED)
+        || TIP_SCHEDULED.swap(true, std::sync::atomic::Ordering::Relaxed)
+    {
+        return;
+    }
+    let app = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(10));
+        let visible = app
+            .get_webview_window("main")
+            .and_then(|main| main.is_visible().ok())
+            .unwrap_or(false);
+        if !visible {
+            // Try again on a later page load, when someone is looking.
+            TIP_SCHEDULED.store(false, std::sync::atomic::Ordering::Relaxed);
+            return;
+        }
+        crate::close::set_flag(&app, INTRODUCED, true);
+        let (title, detail) = tip_text(std::env::consts::OS);
+        crate::download::toast(
+            &app,
+            serde_json::json!({
+                "kind": "ok",
+                "title": title,
+                "detail": detail,
+                "action": { "label": "Show me", "panel": true },
+            }),
+        );
+    });
+}
+
 fn is_allowed(action: &str) -> bool {
     matches!(action, "in" | "break" | "back" | "wrap")
 }
@@ -489,6 +549,13 @@ mod tests {
             assert_eq!(view.state, "none");
             assert_eq!(view.since_iso, "");
         }
+    }
+
+    #[test]
+    fn tip_names_where_the_panel_lives() {
+        assert!(tip_text("macos").1.contains("top of your screen"));
+        assert!(tip_text("windows").1.contains("^ arrow"));
+        assert!(tip_text("linux").1.contains("Ctrl+Alt+M"));
     }
 
     #[test]

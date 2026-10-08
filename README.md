@@ -70,6 +70,14 @@ plus OS toasts on offline save/fail. Live message/approval toasts are
 parked: the shell cannot see page state, and screen-scraping the remote DOM
 is off the table without a web-side hook (out of scope for this repo).
 
+Usage of the app's own features (`src-tauri/src/analytics.rs`): opening the
+quick panel, clock taps from the panel / mini timer / tray / shortcut, the
+panel and tray shortcuts, pin / mini-timer mode and settings changes. The shell
+has no analytics key and sends nothing itself: it hands each event (fixed
+labels only, never content) to the tracker page as `window.cbbDesktopEvents` +
+a `cbb:desktop-event`, and the page sends it with its own `track()`, under the
+same consent rules, only when someone is signed in.
+
 Linux AppImage: on every start the app keeps its own launcher in
 `~/.local/share/applications/cbb-tracker-desktop.desktop` (named after the
 window's id, so the dock shows the right icon), with its icons, pointing at

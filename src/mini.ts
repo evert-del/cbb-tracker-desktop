@@ -124,7 +124,7 @@ function renderActions(view: View) {
     if (action.id === "wrap") btn.classList.add("wrap");
     btn.append(svg(ICONS[action.id] ?? ICONS.in), document.createTextNode(action.label));
     btn.addEventListener("click", () => {
-      void invoke("mini_action", { action: action.id });
+      void invoke("mini_action", { action: action.id, from: "panel" });
     });
     box.appendChild(btn);
   }
@@ -305,7 +305,7 @@ window.addEventListener("DOMContentLoaded", () => {
   click("c-bell", () => void invoke("mini_expand_notifications"));
   click("c-action", () => {
     const action = el("c-action").dataset.action;
-    if (action) void invoke("mini_action", { action });
+    if (action) void invoke("mini_action", { action, from: "mini_timer" });
   });
   // The mini timer drags from anywhere but its buttons.
   el("compact-view").addEventListener("mousedown", (e) => {

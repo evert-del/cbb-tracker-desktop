@@ -34,6 +34,7 @@ mod location;
 mod mini;
 mod notify;
 mod offline;
+mod session;
 mod system_open;
 mod tabs;
 mod title_buttons;
@@ -257,10 +258,7 @@ fn route_deep_link<R: Runtime>(app: &AppHandle<R>, url: &url::Url) {
 /// Chunked jars (`.0`, `.1` suffixes) share the same `sb-<ref>-auth-token`
 /// name prefix, so one check covers both.
 fn has_session_cookie(cookies: &str) -> bool {
-    cookies.split("; ").any(|pair| {
-        let name = pair.split('=').next().unwrap_or("");
-        name.starts_with("sb-") && name.contains("-auth-token")
-    })
+    session::has_session_cookie(cookies)
 }
 
 /// Bring the main window forward, with any tracker tabs / windows the quick
@@ -570,6 +568,9 @@ pub(crate) fn build_tracker_window<R: Runtime>(
             let probe = window.clone();
             let _ = window.eval_with_callback("document.cookie", move |cookies_json| {
                 let cookies: String = serde_json::from_str(&cookies_json).unwrap_or_default();
+                if probe.label() == "main" {
+                    session::update(probe.app_handle(), has_session_cookie(&cookies));
+                }
                 if !has_session_cookie(&cookies) {
                     if let Ok(sign_in) = START_URL.parse::<url::Url>() {
                         let _ = probe.navigate(sign_in);
@@ -597,6 +598,9 @@ pub(crate) fn build_tracker_window<R: Runtime>(
         let probe = window.clone();
         let _ = window.eval_with_callback("document.cookie", move |cookies_json| {
             let cookies: String = serde_json::from_str(&cookies_json).unwrap_or_default();
+            if probe.label() == "main" {
+                session::update(probe.app_handle(), has_session_cookie(&cookies));
+            }
             if has_session_cookie(&cookies) {
                 if let Ok(home) = APP_ORIGIN.parse::<url::Url>() {
                     let _ = probe.navigate(home);
@@ -975,6 +979,12 @@ pub fn run() {
                 ],
             )?;
             app.manage(clock_items);
+            // Rows that change with signing in (session.rs).
+            app.manage(session::TrayRows {
+                show: tray_show.clone(),
+                mini: tray_mini.clone(),
+                new_window: tray_new_window.clone(),
+            });
             app.manage(clock::Last::default());
             app.manage(clock::Net::default());
             app.manage(notify::Unread(std::sync::Mutex::new(0)));

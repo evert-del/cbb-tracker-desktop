@@ -212,6 +212,11 @@ pub(crate) fn bring_tracker_back<R: Runtime>(app: &AppHandle<R>) {
 /// Unpinned, it hides again when it loses focus, and it takes the tracker
 /// windows' place (put_tracker_away): either the panel or the tracker.
 pub(crate) fn show<R: Runtime>(app: &AppHandle<R>) {
+    // Signed out there's no panel: the tray icon opens sign in (session.rs).
+    if !crate::session::signed_in() {
+        crate::show_main(app);
+        return;
+    }
     if let Some(mini) = app.get_webview_window("mini") {
         // A pinned panel reopens where it was dragged to, over the tracker.
         if !is_pinned() {
@@ -278,6 +283,23 @@ pub(crate) fn hide<R: Runtime>(app: &AppHandle<R>) {
     crate::drop_dock_icon_if_alone(app, "mini");
 }
 
+/// Signed out: the panel closes, unpinned and full size (session.rs). The
+/// tracker windows it put away come back, showing sign in.
+pub(crate) fn sign_out<R: Runtime>(app: &AppHandle<R>) {
+    PINNED.store(false, std::sync::atomic::Ordering::Relaxed);
+    if is_compact() {
+        set_compact(app, false);
+    }
+    let was_open = app
+        .get_webview_window("mini")
+        .and_then(|mini| mini.is_visible().ok())
+        .unwrap_or(false);
+    hide(app);
+    if was_open {
+        crate::show_main(app);
+    }
+}
+
 /// The one-time "there's a quick panel" tip has been shown (settings.json).
 const INTRODUCED: &str = "panel_introduced";
 
@@ -319,7 +341,7 @@ pub(crate) fn maybe_introduce<R: Runtime>(app: &AppHandle<R>) {
             .get_webview_window("main")
             .and_then(|main| main.is_visible().ok())
             .unwrap_or(false);
-        if !visible {
+        if !visible || !crate::session::signed_in() {
             // Try again on a later page load, when someone is looking.
             TIP_SCHEDULED.store(false, std::sync::atomic::Ordering::Relaxed);
             return;

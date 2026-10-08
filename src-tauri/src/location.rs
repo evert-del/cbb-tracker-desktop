@@ -76,11 +76,14 @@ pub(crate) fn answer_script(id: u64, answer: &Answer) -> String {
 
 /// macOS: answer request `id` from Core Location (main thread).
 #[cfg(target_os = "macos")]
-pub(crate) fn request<R: tauri::Runtime>(app: &tauri::AppHandle<R>, id: u64) {
+/// The answer goes back to the tracker window `label` that asked (each
+/// window numbers its own requests).
+pub(crate) fn request<R: tauri::Runtime>(app: &tauri::AppHandle<R>, label: &str, id: u64) {
     macos::deliver_to(app);
+    let label = label.to_string();
     let _ = app.run_on_main_thread(move || {
         // SAFETY: on the main thread, which owns the location manager.
-        unsafe { macos::start(id) }
+        unsafe { macos::start(label, id) }
     });
 }
 
@@ -121,10 +124,11 @@ mod macos {
     const ACCURACY_BEST: f64 = -1.0;
 
     /// Requests waiting for the next answer.
-    static PENDING: Mutex<Vec<u64>> = Mutex::new(Vec::new());
+    /// (window label, request id) of each request waiting for an answer.
+    static PENDING: Mutex<Vec<(String, u64)>> = Mutex::new(Vec::new());
 
-    /// Hands a script to the main window.
-    static DELIVER: OnceLock<Box<dyn Fn(String) + Send + Sync>> = OnceLock::new();
+    /// Hands a script to a tracker window.
+    static DELIVER: OnceLock<Box<dyn Fn(&str, String) + Send + Sync>> = OnceLock::new();
 
     thread_local! {
         /// The location manager (main thread only; kept for the app's life).
@@ -133,8 +137,8 @@ mod macos {
 
     pub(super) fn deliver_to<R: Runtime>(app: &AppHandle<R>) {
         let app = app.clone();
-        let _ = DELIVER.set(Box::new(move |script: String| {
-            if let Some(window) = app.get_webview_window("main") {
+        let _ = DELIVER.set(Box::new(move |label: &str, script: String| {
+            if let Some(window) = app.get_webview_window(label) {
                 let _ = window.eval(script.as_str());
             }
         }));
@@ -143,8 +147,8 @@ mod macos {
     fn answer_all(answer: Answer) {
         let ids = PENDING.lock().map(|mut ids| std::mem::take(&mut *ids)).unwrap_or_default();
         if let Some(deliver) = DELIVER.get() {
-            for id in ids {
-                deliver(answer_script(id, &answer));
+            for (label, id) in ids {
+                deliver(&label, answer_script(id, &answer));
             }
         }
     }
@@ -263,9 +267,9 @@ mod macos {
         }
     }
 
-    pub(super) unsafe fn start(id: u64) {
+    pub(super) unsafe fn start(label: String, id: u64) {
         if let Ok(mut ids) = PENDING.lock() {
-            ids.push(id);
+            ids.push((label, id));
         }
         let mut manager = MANAGER.with(Cell::get);
         if manager.is_null() {

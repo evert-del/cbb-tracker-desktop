@@ -48,7 +48,7 @@
     box.setAttribute('role', 'status');
     box.appendChild(el('div', 'font-weight:700;font-size:15px;', o.title || ''));
     if (o.detail) {
-      box.appendChild(el('div', 'margin-top:4px;color:#c9ccd6;font-size:13px;white-space:pre-line;word-break:break-all;', o.detail));
+      box.appendChild(el('div', 'margin-top:4px;color:#c9ccd6;font-size:13px;white-space:pre-line;overflow-wrap:anywhere;', o.detail));
     }
     if (o.kind === 'busy') {
       var track = el('div', 'margin-top:10px;height:5px;border-radius:99px;background:#3a3f52;overflow:hidden;');
@@ -78,7 +78,13 @@
       );
       go.type = 'button';
       go.addEventListener('click', function () {
-        location.href = 'cbb-reveal://go?p=' + encodeURIComponent(o.action.path);
+        if (o.action.panel) {
+          // The quick-panel tip's "Show me" (mini.rs maybe_introduce).
+          window.__cbbToast({ kind: 'hide' });
+          location.href = 'cbb-panel://open';
+        } else {
+          location.href = 'cbb-reveal://go?p=' + encodeURIComponent(o.action.path);
+        }
       });
       box.appendChild(go);
     }

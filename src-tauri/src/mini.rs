@@ -411,7 +411,7 @@ pub(crate) fn mini_compact<R: Runtime>(app: AppHandle<R>, compact: bool) -> Resu
 fn is_menu_item(item: &str) -> bool {
     matches!(
         item,
-        "offline" | "update" | "diagnostics" | "autostart" | "close-keep" | "close-quit" | "quit"
+        "offline" | "new-window" | "update" | "diagnostics" | "autostart" | "close-keep" | "close-quit" | "quit"
     )
 }
 
@@ -426,6 +426,10 @@ pub(crate) fn mini_menu<R: Runtime>(app: AppHandle<R>, item: String) -> Result<(
             hide(&app);
             crate::show_library(&app);
             crate::analytics::action(&app, "saved_offline", "panel");
+        }
+        "new-window" => {
+            hide(&app);
+            crate::tabs::open_from_front(&app, false);
         }
         "update" => {
             hide(&app);
@@ -570,7 +574,7 @@ mod tests {
 
     #[test]
     fn only_known_menu_items_pass() {
-        for item in ["offline", "update", "diagnostics", "autostart", "close-keep", "close-quit", "quit"] {
+        for item in ["offline", "new-window", "update", "diagnostics", "autostart", "close-keep", "close-quit", "quit"] {
             assert!(is_menu_item(item), "{item}");
         }
         for item in ["", "show", "quit;", "eval"] {

@@ -2,9 +2,9 @@
 // open_tracker_window). Plain DOM, no IPC: each request is handed to the
 // shell as a cbb-window://open?u=<page>[&tab=1] navigation, which the shell
 // cancels, so the page stays put.
-//  - Cmd+T (Ctrl+T on Windows/Linux): this page again, in a new tab (macOS
-//    window tabs; a new window elsewhere).
-//  - Cmd+N (Ctrl+N): this page again, in a new window.
+//  - Ctrl+T / Ctrl+N (Windows/Linux): this page again, in a new window. On
+//    macOS Cmd+T / Cmd+N are the menu bar's File ▸ New Tab / New Window
+//    (tabs.rs), so they're left alone here.
 //  - Cmd/Ctrl-click or middle-click on a tracker link: that page in a new tab.
 // File links (/api/…) are left to nav_bar.js.
 (function () {
@@ -21,8 +21,9 @@
     return mac ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey;
   }
 
+  // On macOS the menu bar's File ▸ New Tab / New Window own Cmd+T / Cmd+N.
   document.addEventListener('keydown', function (e) {
-    if (!withModifier(e) || e.altKey || e.shiftKey || e.repeat) return;
+    if (mac || !withModifier(e) || e.altKey || e.shiftKey || e.repeat) return;
     var key = (e.key || '').toLowerCase();
     if (key !== 't' && key !== 'n') return;
     e.preventDefault();

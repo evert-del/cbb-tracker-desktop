@@ -35,6 +35,7 @@ mod mini;
 mod notify;
 mod offline;
 mod system_open;
+mod tabs;
 mod title_buttons;
 mod updater;
 
@@ -523,6 +524,9 @@ pub(crate) fn build_tracker_window<R: Runtime>(
         if page.path() != "/sign-in" {
             if window.label() == "main" {
                 mini::maybe_introduce(window.app_handle());
+            } else if is_extra_tracker_window(window.label()) {
+                // A second tracker window: how to compare side by side, once.
+                tabs::maybe_explain(window.app_handle(), window.label());
             }
             return;
         }
@@ -583,10 +587,13 @@ pub(crate) fn open_tracker_window<R: Runtime>(
         let label = format!("{EXTRA_PREFIX}{n}");
         let Ok(window) = build_tracker_window(&app, &label, url) else { return };
         #[cfg(target_os = "macos")]
-        if tab {
-            if let Some(parent) = from.as_deref().and_then(|label| app.get_webview_window(label)) {
-                add_as_tab(&parent, &window);
+        {
+            if tab {
+                if let Some(parent) = from.as_deref().and_then(|label| app.get_webview_window(label)) {
+                    add_as_tab(&parent, &window);
+                }
             }
+            tabs::show_tab_bar(&window);
         }
         #[cfg(not(target_os = "macos"))]
         let _ = (tab, &from);
@@ -751,6 +758,16 @@ pub fn run() {
                     _ => {}
                 }
             }
+            // macOS: keep the tab bar showing, also on a window whose tab was
+            // just dragged out into its own window (tabs.rs).
+            #[cfg(target_os = "macos")]
+            if matches!(event, tauri::WindowEvent::Focused(true))
+                && (window.label() == "main" || is_extra_tracker_window(window.label()))
+            {
+                if let Some(tracker) = window.app_handle().get_webview_window(window.label()) {
+                    tabs::show_tab_bar(&tracker);
+                }
+            }
             if matches!(event, tauri::WindowEvent::Destroyed) && is_extra_tracker_window(window.label()) {
                 drop_dock_icon_if_alone(window.app_handle(), window.label());
             }
@@ -784,11 +801,21 @@ pub fn run() {
             desktop_entry::keep_installed();
             #[cfg(target_os = "linux")]
             title_buttons::follow_host(app.handle());
-            build_tracker_window(
+            let main_window = build_tracker_window(
                 app.handle(),
                 "main",
                 START_URL.parse().expect("START_URL is a valid URL"),
             )?;
+            // macOS: tabs you can see and click (tabs.rs): File ▸ New Tab /
+            // New Window, the Window menu's tab commands, the tab bar and +.
+            #[cfg(target_os = "macos")]
+            {
+                tabs::install_menu(app.handle())?;
+                tabs::enable_plus_button(&main_window);
+                tabs::show_tab_bar(&main_window);
+            }
+            #[cfg(not(target_os = "macos"))]
+            let _ = main_window;
 
             // Mini bar (mini.rs + mini.html): hidden until the tray toggle.
             // Frameless, transparent, always on top, out of Alt-Tab.
@@ -926,16 +953,7 @@ pub fn run() {
                 .tooltip("CoolerBox Tracker")
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     // Another tracker window, on the page the main one shows.
-                    "tray-new-window" => {
-                        let page = app
-                            .get_webview_window("main")
-                            .and_then(|main| main.url().ok())
-                            .filter(|page| page.scheme() == "https" && page.host_str() == Some(APP_HOST))
-                            .or_else(|| APP_ORIGIN.parse().ok());
-                        if let Some(page) = page {
-                            open_tracker_window(app, None, page, false);
-                        }
-                    }
+                    "tray-new-window" => tabs::open_from_front(app, false),
                     "tray-show" => {
                         show_main(app);
                         analytics::action(app, "open_tracker", "tray_menu");

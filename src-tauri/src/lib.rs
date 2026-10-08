@@ -361,10 +361,12 @@ pub(crate) fn build_tracker_window<R: Runtime>(
     let builder = WebviewWindowBuilder::new(app, label, WebviewUrl::External(start))
     .title("CoolerBox Tracker")
     // Lets the tracker know it is inside the app (it hides "Get the
-    // desktop app"), and whether the shell reports time away for the
-    // time sheet (idle.rs). Plain values on the page, not IPC.
+    // desktop app"), whether the shell reports time away for the time sheet
+    // (idle.rs), and which app features its own buttons can ask for:
+    // "new-tab" (cbb-window://open?u=<page>&tab=1) and "quick-panel"
+    // (cbb-panel://open). Plain values on the page, not IPC.
     .initialization_script(&format!(
-        "window.cbbDesktopApp=Object.freeze({{version:{:?},idleSupported:{}}});",
+        "window.cbbDesktopApp=Object.freeze({{version:{:?},idleSupported:{},features:Object.freeze([\"new-tab\",\"quick-panel\"])}});",
         env!("CARGO_PKG_VERSION"),
         idle_supported
     ))
@@ -812,10 +814,7 @@ pub fn run() {
             {
                 tabs::install_menu(app.handle())?;
                 tabs::enable_plus_button(&main_window);
-                tabs::show_tab_bar(&main_window);
             }
-            #[cfg(not(target_os = "macos"))]
-            let _ = main_window;
 
             // Mini bar (mini.rs + mini.html): hidden until the tray toggle.
             // Frameless, transparent, always on top, out of Alt-Tab.
@@ -833,6 +832,18 @@ pub fn run() {
                 .visible(false)
                 .focused(false)
                 .build()?;
+            // macOS: Tauri turns window tabbing off app-wide whenever it
+            // builds a window without a tab group (the panel, the library),
+            // which hid the tracker's tab bar. Turn it back on now that every
+            // startup window exists, keep those two out of tab groups, and
+            // show the tab bar (tabs.rs).
+            #[cfg(target_os = "macos")]
+            {
+                tabs::allow_tabs(app.handle());
+                tabs::show_tab_bar(&main_window);
+            }
+            #[cfg(not(target_os = "macos"))]
+            let _ = main_window;
 
             // Cold start through a tracker:// URL.
             if let Ok(Some(urls)) = app.deep_link().get_current() {

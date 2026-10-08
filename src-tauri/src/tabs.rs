@@ -157,6 +157,31 @@ pub(crate) fn install_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> 
     Ok(())
 }
 
+/// macOS: allow window tabbing app-wide again and keep the quick panel and
+/// the Saved-for-offline library out of tab groups (NSWindowTabbingMode
+/// Disallowed). Tauri switches tabbing off for every window whenever it
+/// builds one without a tabbing identifier.
+#[cfg(target_os = "macos")]
+pub(crate) fn allow_tabs<R: Runtime>(app: &AppHandle<R>) {
+    use objc2::runtime::{AnyClass, AnyObject, Bool};
+    use objc2::msg_send;
+    /// NSWindowTabbingModeDisallowed.
+    const DISALLOWED: isize = 2;
+    let Some(class) = AnyClass::get(c"NSWindow") else { return };
+    // SAFETY: class and instance methods of NSWindow, on the main thread.
+    unsafe {
+        let _: () = msg_send![class, setAllowsAutomaticWindowTabbing: Bool::YES];
+        for label in ["mini", "library"] {
+            if let Some(ns_window) = app.get_webview_window(label).and_then(|w| w.ns_window().ok()) {
+                let ns_window = ns_window.cast::<AnyObject>();
+                if !ns_window.is_null() {
+                    let _: () = msg_send![ns_window, setTabbingMode: DISALLOWED];
+                }
+            }
+        }
+    }
+}
+
 /// macOS: show `window`'s tab bar if it is hidden (it is the clickable way
 /// to see and open tabs; macOS hides it for a lone window by default).
 #[cfg(target_os = "macos")]

@@ -47,7 +47,7 @@ jobs:
       AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Check the secrets are set
         run: |

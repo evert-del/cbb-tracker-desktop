@@ -517,6 +517,14 @@ pub fn run() {
             .on_permission_request(|webview, kind| {
                 location::decide(webview.url().ok().as_ref(), kind)
             })
+            // Keep the tracker page running at full speed while the window is
+            // closed to the menu bar. By default WebKit throttles a hidden
+            // page's timers and may suspend it after ~5 minutes, so PostHog's
+            // batched sends (analytics.rs), the notification poll and the
+            // clock stalled until the window came back; found live: panel
+            // events queued and were lost on sign-out. macOS 14+; Windows and
+            // Linux don't support the setting and keep their own behaviour.
+            .background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Disabled)
             .inner_size(1280.0, 800.0)
             .min_inner_size(1024.0, 640.0)
             .on_navigation(move |url| {

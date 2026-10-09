@@ -296,6 +296,7 @@ function renderPin(pinned: boolean) {
   pin.setAttribute("aria-label", label);
   pin.title = label;
   el("head").classList.toggle("pinned", pinned);
+  el("compact-view").classList.toggle("pinned", pinned);
   el("pin-hint").hidden = !pinned;
   const cPin = el("c-pin");
   cPin.setAttribute("aria-pressed", String(pinned));
@@ -842,14 +843,15 @@ window.addEventListener("DOMContentLoaded", () => {
     const action = el("c-action").dataset.action;
     if (action) tapClock(action, "mini_timer");
   });
-  // The mini timer drags from anywhere but its buttons.
+  // Unpinned, the mini timer drags from anywhere but its buttons. Pinned,
+  // it stays where it was pinned: unpin to move it.
   el("compact-view").addEventListener("mousedown", (e) => {
-    if (e.button !== 0 || (e.target as HTMLElement).closest("button")) return;
+    if (e.button !== 0 || current?.pinned || (e.target as HTMLElement).closest("button")) return;
     void getCurrentWindow().startDragging();
   });
-  // The header drags the window, pinned or not (not from its buttons).
+  // Unpinned, the header drags the window (not from its buttons).
   el("head").addEventListener("mousedown", (e) => {
-    if (e.button !== 0) return;
+    if (e.button !== 0 || el("head").classList.contains("pinned")) return;
     if ((e.target as HTMLElement).closest("button")) return;
     void getCurrentWindow().startDragging();
   });

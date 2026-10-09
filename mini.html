@@ -96,9 +96,10 @@
       .head-btn:hover { opacity: 1; background: rgba(255, 255, 255, 0.16); }
       #pin[aria-pressed="true"] { opacity: 1; background: rgba(255, 255, 255, 0.24); }
       #pin[aria-pressed="true"] svg { fill: currentColor; }
-      /* The header is the handle for dragging the panel. */
-      #head { cursor: grab; }
-      #head:active { cursor: grabbing; }
+      /* Unpinned, the header is the handle for dragging the panel; pinned,
+         it stays put. */
+      #head:not(.pinned) { cursor: grab; }
+      #head:not(.pinned):active { cursor: grabbing; }
       #c-pin[aria-pressed="true"] { opacity: 1; background: rgba(255, 255, 255, 0.24); }
       #c-pin[aria-pressed="true"] svg { fill: currentColor; }
       #pin-hint { font-size: 11px; opacity: 0.8; margin-top: 2px; }
@@ -177,6 +178,7 @@
       /* Mini timer: the pinned panel shrunk to one strip, coloured by state. */
       #compact-view { flex: 1; display: flex; align-items: center; gap: 6px; padding: 0 8px 0 12px; color: #fff; background: var(--head-out); cursor: grab; }
       #compact-view:active { cursor: grabbing; }
+      #compact-view.pinned, #compact-view.pinned:active { cursor: default; }
       #compact-view[data-state="in"] { background: var(--head-in); }
       #compact-view[data-state="break"] { background: var(--head-break); }
       #compact-view[data-state="in"] #c-dot { background: #8ff0be; }
@@ -276,7 +278,7 @@
           <div id="timer">0:00</div>
           <div id="today"></div>
           <div id="greeting" role="status" hidden></div>
-          <div id="pin-hint" hidden>Pinned. Drag here to move it.</div>
+          <div id="pin-hint" hidden>Pinned here. Unpin to move it.</div>
         </div>
         <div id="actions"></div>
         <div id="no-sheet" hidden>The time sheet isn't switched on for you.</div>

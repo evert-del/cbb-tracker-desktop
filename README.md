@@ -150,5 +150,5 @@ in a password manager.
 
 ## Verified against
 
-Web commit: `2bf30b01` (tracker `main`, 2026-10-08; includes the desktop client tag and the `cbb:desktop-event` listener).
+Web commit: `32028a9e` (tracker `main`, 2026-10-09; includes the mood check-in, #1022).
 One-line note per desktop release; not automation, not a sync.

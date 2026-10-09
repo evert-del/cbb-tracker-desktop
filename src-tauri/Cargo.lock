@@ -448,7 +448,7 @@ dependencies = [
 
 [[package]]
 name = "cbb-tracker-desktop"
-version = "0.2.15"
+version = "0.2.16"
 dependencies = [
  "gtk",
  "objc2",

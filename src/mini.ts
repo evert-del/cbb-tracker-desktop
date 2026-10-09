@@ -263,6 +263,8 @@ window.__cbbMiniShow = (view) => {
   el("quit").setAttribute("aria-label", `${quit} CoolerBox Tracker`);
   el("compact-view").dataset.state = view.state;
   el("c-status").textContent = view.status;
+  // The thin mini timer shows the status and the summary on hover.
+  el("compact-view").title = [view.status, summaryText(view)].filter(Boolean).join("\n");
   el("head").dataset.state = view.state;
   el("status").textContent = view.status;
   el("version").textContent = `CoolerBox Tracker ${view.version}`;
@@ -371,7 +373,7 @@ function renderMood() {
 }
 
 // The tracker's greeting after a clock tap: under the timer, or in place of
-// the summary line in the mini timer, for a few seconds.
+// the timer in the thin mini timer, for a few seconds.
 let greetTimer = 0;
 function greet(text: string) {
   window.clearTimeout(greetTimer);
@@ -379,11 +381,11 @@ function greet(text: string) {
   el("c-greeting").textContent = text;
   el("greeting").hidden = false;
   el("c-greeting").hidden = false;
-  el("c-summary").hidden = true;
+  el("c-timer").hidden = true;
   greetTimer = window.setTimeout(() => {
     el("greeting").hidden = true;
     el("c-greeting").hidden = true;
-    el("c-summary").hidden = false;
+    el("c-timer").hidden = false;
   }, 6000);
 }
 

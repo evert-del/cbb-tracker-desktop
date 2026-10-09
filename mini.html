@@ -104,7 +104,7 @@
       #today { font-size: 12px; opacity: 0.88; font-variant-numeric: tabular-nums; }
       /* The tracker's greeting after a clock tap, for a few seconds. */
       #greeting, #c-greeting { font-size: 12px; font-weight: 600; margin-top: 4px; animation: greet-in 0.25s ease-out; }
-      #c-greeting { font-size: 11.5px; margin-top: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      #c-greeting { font-size: 12px; margin-top: 0; min-width: 0; flex: 1 1 auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
       #mood-greeting { margin: 0 0 6px; font-size: 12.5px; font-weight: 600; color: var(--pink-ink); }
       @keyframes greet-in { from { opacity: 0; transform: translateY(-2px); } to { opacity: 1; transform: none; } }
       @media (prefers-reduced-motion: reduce) { #greeting, #c-greeting { animation: none; } }
@@ -173,23 +173,21 @@
       .seg[aria-checked="true"] { background: var(--card); color: var(--fg); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12); }
       #close-choice + .set-row { border-top: 0.5px solid var(--rule); }
       /* Mini timer: the pinned panel shrunk to one strip, coloured by state. */
-      #compact-view { flex: 1; display: flex; flex-direction: column; gap: 6px; padding: 10px 12px 10px 14px; color: #fff; background: var(--head-out); cursor: grab; }
+      #compact-view { flex: 1; display: flex; align-items: center; gap: 6px; padding: 0 8px 0 12px; color: #fff; background: var(--head-out); cursor: grab; }
       #compact-view:active { cursor: grabbing; }
       #compact-view[data-state="in"] { background: var(--head-in); }
       #compact-view[data-state="break"] { background: var(--head-break); }
-      #c-top { display: flex; align-items: center; gap: 8px; font-size: 12px; }
-      #c-status { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; opacity: 0.95; }
       #compact-view[data-state="in"] #c-dot { background: #8ff0be; }
       #compact-view[data-state="break"] #c-dot { background: #ffe08a; }
       #c-dot { width: 8px; height: 8px; border-radius: 50%; background: #c9c4d1; flex: none; }
-      #c-mid { display: flex; align-items: center; gap: 8px; }
-      #c-timer { flex: 1; font-size: 24px; font-weight: 600; line-height: 1.1; font-variant-numeric: tabular-nums; }
-      #c-action { min-height: 28px; padding: 0 12px; border-radius: var(--r-ctl); background: rgba(255,255,255,0.22); color: #fff; font-weight: 600; font-size: 12px; }
+      #c-timer { font-size: 19px; font-weight: 600; line-height: 1; font-variant-numeric: tabular-nums; white-space: nowrap; }
+      #c-fill { flex: 1; }
+      #c-action { min-height: 26px; padding: 0 10px; border-radius: var(--r-ctl); background: rgba(255,255,255,0.22); color: #fff; font-weight: 600; font-size: 12px; flex: none; }
       #c-action:hover { background: rgba(255,255,255,0.32); }
-      #c-bell { position: relative; display: grid; place-items: center; width: 30px; height: 28px; border-radius: var(--r-ctl); background: rgba(255,255,255,0.14); color: #fff; }
+      #c-bell { position: relative; display: grid; place-items: center; width: 28px; height: 26px; border-radius: var(--r-ctl); background: rgba(255,255,255,0.14); color: #fff; flex: none; }
       #c-bell:hover { background: rgba(255,255,255,0.26); }
+      #compact-view .head-btn { width: 24px; height: 24px; flex: none; }
       #c-count { position: absolute; top: -5px; right: -6px; min-width: 16px; height: 16px; padding: 0 4px; box-sizing: border-box; border-radius: 99px; background: #fff; color: var(--pink-ink); font-size: 10.5px; font-weight: 700; display: grid; place-items: center; }
-      #c-summary { font-size: 11.5px; opacity: 0.9; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
       /* Mood check-in (mini.rs ask_mood), the web clock card's in the panel. */
       #mood-view { display: flex; flex-direction: column; gap: 10px; flex: 1; padding: 16px; overflow-y: auto; }
       #mood-view h2 { margin: 0; font-size: 16px; font-weight: 600; }
@@ -224,7 +222,7 @@
       .chat-row .preview { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
       .chat-row.ringing .preview { color: var(--pink-ink); font-weight: 600; }
       .pill { min-width: 18px; height: 18px; padding: 0 5px; box-sizing: border-box; border-radius: 99px; background: var(--pink); color: #fff; font-size: 11px; font-weight: 700; display: grid; place-items: center; flex: none; font-variant-numeric: tabular-nums; }
-      #c-walkie { position: relative; display: grid; place-items: center; width: 30px; height: 28px; border-radius: var(--r-ctl); background: rgba(255,255,255,0.14); color: #fff; }
+      #c-walkie { position: relative; flex: none; display: grid; place-items: center; width: 28px; height: 26px; border-radius: var(--r-ctl); background: rgba(255,255,255,0.14); color: #fff; }
       #c-walkie:hover { background: rgba(255,255,255,0.26); }
       #c-walkie-count { position: absolute; top: -5px; right: -6px; min-width: 16px; height: 16px; padding: 0 4px; box-sizing: border-box; border-radius: 99px; background: #fff; color: var(--pink-ink); font-size: 10.5px; font-weight: 700; display: grid; place-items: center; }
       #chat-view { display: flex; flex-direction: column; flex: 1; min-height: 0; }
@@ -324,31 +322,30 @@
         </div>
       </div>
 
+      <!-- The mini timer: one thin row. Status and notification summary are
+           in the hover text and on the bell, to keep it out of the way. -->
       <div id="compact-view" hidden data-state="none">
-        <div id="c-top">
-          <span id="c-dot"></span>
-          <span id="c-status"></span>
-          <button id="grow" class="head-btn" type="button" aria-label="Show the full panel" title="Show the full panel">
-            <svg viewBox="0 0 24 24"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg>
-          </button>
-          <button id="c-unpin" class="head-btn" type="button" aria-label="Unpin" title="Unpin">
-            <svg viewBox="0 0 24 24" style="fill:currentColor"><path d="M9 4h6l-1 6 4 4H6l4-4zM12 14v7"/></svg>
-          </button>
-        </div>
-        <div id="c-mid">
-          <span id="c-timer">0:00</span>
-          <button id="c-action" type="button" hidden></button>
-          <button id="c-walkie" type="button" hidden aria-label="Walkie messages" title="Walkie messages">
-            <svg viewBox="0 0 24 24"><rect x="6" y="7" width="12" height="15" rx="2"/><path d="M9 7V2M9 11h6M9 14h6"/></svg>
-            <span id="c-walkie-count"></span>
-          </button>
-          <button id="c-bell" type="button" aria-label="Notifications" title="Notifications">
-            <svg viewBox="0 0 24 24"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9M10.3 21a1.9 1.9 0 0 0 3.4 0"/></svg>
-            <span id="c-count" hidden></span>
-          </button>
-        </div>
-        <div id="c-summary"></div>
+        <span id="c-dot"></span>
+        <span id="c-timer">0:00</span>
         <div id="c-greeting" role="status" hidden></div>
+        <span id="c-status" hidden></span>
+        <div id="c-summary" hidden></div>
+        <span id="c-fill"></span>
+        <button id="c-action" type="button" hidden></button>
+        <button id="c-walkie" type="button" hidden aria-label="Walkie messages" title="Walkie messages">
+          <svg viewBox="0 0 24 24"><rect x="6" y="7" width="12" height="15" rx="2"/><path d="M9 7V2M9 11h6M9 14h6"/></svg>
+          <span id="c-walkie-count"></span>
+        </button>
+        <button id="c-bell" type="button" aria-label="Notifications" title="Notifications">
+          <svg viewBox="0 0 24 24"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9M10.3 21a1.9 1.9 0 0 0 3.4 0"/></svg>
+          <span id="c-count" hidden></span>
+        </button>
+        <button id="grow" class="head-btn" type="button" aria-label="Show the full panel" title="Show the full panel">
+          <svg viewBox="0 0 24 24"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg>
+        </button>
+        <button id="c-unpin" class="head-btn" type="button" aria-label="Unpin" title="Unpin">
+          <svg viewBox="0 0 24 24" style="fill:currentColor"><path d="M9 4h6l-1 6 4 4H6l4-4zM12 14v7"/></svg>
+        </button>
       </div>
 
       <div id="mood-view" hidden>

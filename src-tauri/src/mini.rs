@@ -162,7 +162,7 @@ fn is_compact() -> bool {
 
 /// Window sizes (logical px, including the margin the card's shadow needs).
 const FULL_SIZE: (f64, f64) = (372.0, 576.0);
-const COMPACT_SIZE: (f64, f64) = (372.0, 140.0);
+const COMPACT_SIZE: (f64, f64) = (300.0, 46.0);
 
 fn set_compact<R: Runtime>(app: &AppHandle<R>, compact: bool) {
     COMPACT.store(compact, std::sync::atomic::Ordering::Relaxed);

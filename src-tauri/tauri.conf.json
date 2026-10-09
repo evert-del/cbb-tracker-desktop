@@ -60,6 +60,11 @@
       "signingIdentity": "-",
       "entitlements": "./Entitlements.plist"
     },
-    "createUpdaterArtifacts": true
+    "createUpdaterArtifacts": true,
+    "linux": {
+      "appimage": {
+        "bundleMediaFramework": true
+      }
+    }
   }
 }

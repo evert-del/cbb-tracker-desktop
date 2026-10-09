@@ -306,11 +306,22 @@ fn apply<R: Runtime>(app: &AppHandle<R>, state: &Mutex<State>, poll: &Poll) {
         }
     }
     crate::mini::push(app);
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.set_badge_count(if count > 0 { Some(i64::from(count)) } else { None });
-    }
+    set_badge(app);
     if let Some(tray) = app.tray_by_id(crate::TRAY_ID) {
         let _ = tray.set_tooltip(Some(tooltip_text(count, &summarize(&poll))));
+    }
+}
+
+/// The dock / taskbar badge: unread notifications plus unread walkie
+/// messages (walkie.rs), so a message waiting shows even with the bell clear.
+pub(crate) fn set_badge<R: Runtime>(app: &AppHandle<R>) {
+    let bell = app
+        .try_state::<Unread>()
+        .and_then(|unread| unread.0.lock().ok().map(|slot| *slot))
+        .unwrap_or(0);
+    let count = bell + crate::walkie::unread(app);
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.set_badge_count(if count > 0 { Some(i64::from(count)) } else { None });
     }
 }
 

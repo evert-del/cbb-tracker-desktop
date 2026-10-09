@@ -39,6 +39,7 @@ mod system_open;
 mod tabs;
 mod title_buttons;
 mod updater;
+mod walkie;
 
 /// Tray icon id, so the poller can update its tooltip.
 const TRAY_ID: &str = "main-tray";
@@ -853,7 +854,9 @@ pub fn run() {
             mini::mini_pin,
             mini::mini_compact,
             mini::mini_mood,
-            mini::mini_mood_done
+            mini::mini_mood_done,
+            walkie::mini_walkie_open,
+            walkie::mini_walkie_send
         ])
         .setup(|app| {
             #[cfg(target_os = "linux")]
@@ -985,6 +988,7 @@ pub fn run() {
             app.manage(clock::Net::default());
             app.manage(notify::Unread(std::sync::Mutex::new(0)));
             app.manage(notify::Snapshot::default());
+            app.manage(walkie::Walkie::default());
             app.manage(notify::InboxItems {
                 rows: [inbox_1, inbox_2, inbox_3],
                 hrefs: std::sync::Mutex::new([None, None, None]),
@@ -1092,6 +1096,7 @@ pub fn run() {
                 .build(app)?;
 
             notify::start(app.handle().clone());
+            walkie::start(app.handle().clone());
             idle::start(app.handle().clone());
             clock::start(app.handle().clone());
             updater::start(app.handle().clone());

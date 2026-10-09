@@ -44,14 +44,14 @@ pub(crate) fn set_quits<R: Runtime>(app: &AppHandle<R>, on: bool) {
 /// The one-time message, in each system's own words for where the app
 /// keeps running and how to quit it.
 pub(crate) fn explanation(os: &str) -> String {
-    let (place, quit, shortcut, open_panel) = match os {
-        "macos" => ("menu bar", "Quit", " (or press Cmd+Q)", "Click its icon"),
-        "windows" => ("system tray", "Exit", "", "Click its icon"),
-        _ => ("system tray", "Quit", "", "Choose Quick panel from its icon"),
+    let (place, quit, shortcut, open_panel, back) = match os {
+        "macos" => ("menu bar", "Quit", " (or press Cmd+Q)", "Click its icon", " Click its Dock icon to bring the window back."),
+        "windows" => ("system tray", "Exit", "", "Click its icon", ""),
+        _ => ("system tray", "Quit", "", "Choose Quick panel from its icon", ""),
     };
     format!(
         "Closing the window keeps CoolerBox Tracker running in the {place}, so your \
-         time sheet, reminders and notifications keep working. {open_panel} any time \
+         time sheet, reminders and notifications keep working.{back} {open_panel} any time \
          for the quick panel: your timer, clock buttons and notifications.\n\nTo close it \
          completely, choose {quit} from its icon in the {place} or from the quick \
          panel{shortcut}. You can change what closing does in the quick panel's Settings."
@@ -100,9 +100,9 @@ mod tests {
     #[test]
     fn explanation_uses_each_systems_words() {
         let mac = explanation("macos");
-        assert!(mac.contains("menu bar") && mac.contains("Quit") && mac.contains("Cmd+Q"));
+        assert!(mac.contains("menu bar") && mac.contains("Quit") && mac.contains("Cmd+Q") && mac.contains("Dock icon"));
         let win = explanation("windows");
-        assert!(win.contains("system tray") && win.contains("Exit") && !win.contains("Cmd+Q"));
+        assert!(win.contains("system tray") && win.contains("Exit") && !win.contains("Cmd+Q") && !win.contains("Dock"));
         let linux = explanation("linux");
         assert!(linux.contains("system tray") && linux.contains("Quit") && !linux.contains("Cmd+Q"));
     }

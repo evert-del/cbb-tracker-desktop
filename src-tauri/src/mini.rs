@@ -37,7 +37,7 @@ pub(crate) struct View {
     /// Closing the main window quits the app (close.rs) instead of hiding it.
     pub close_quits: bool,
     pub pinned: bool,
-    /// Shrunk to the mini timer (only while pinned).
+    /// Shrunk to the mini timer (pinned or not).
     pub compact: bool,
     /// "macos", "windows" or "linux": the panel follows each system's own
     /// look (corner radii, typeface, wording).
@@ -162,7 +162,9 @@ fn is_compact() -> bool {
 
 /// Window sizes (logical px, including the margin the card's shadow needs).
 const FULL_SIZE: (f64, f64) = (372.0, 576.0);
-const COMPACT_SIZE: (f64, f64) = (372.0, 140.0);
+/// A 300x44 row, plus the transparent room around the card for its shadow
+/// (body padding: 16px each side, 6px above, 22px below).
+const COMPACT_SIZE: (f64, f64) = (332.0, 72.0);
 
 fn set_compact<R: Runtime>(app: &AppHandle<R>, compact: bool) {
     COMPACT.store(compact, std::sync::atomic::Ordering::Relaxed);
@@ -198,8 +200,19 @@ fn put_tracker_away<R: Runtime>(app: &AppHandle<R>) {
     }
 }
 
-/// Show the tracker windows the panel put away, as they were.
+/// The panel is floating only because a tracker window was minimised
+/// (minimised_to_panel): when the tracker comes back it goes away again.
+static FLOATED_FOR_MINIMISE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Show the tracker windows the panel put away, as they were. A mini timer
+/// that only floated for a minimise closes: it's the tracker or the timer.
 pub(crate) fn bring_tracker_back<R: Runtime>(app: &AppHandle<R>) {
+    if FLOATED_FOR_MINIMISE.swap(false, std::sync::atomic::Ordering::Relaxed) {
+        PINNED.store(false, std::sync::atomic::Ordering::Relaxed);
+        set_compact(app, false);
+        hide(app);
+        push(app);
+    }
     let labels = PUT_AWAY.lock().map(|mut away| std::mem::take(&mut *away)).unwrap_or_default();
     if labels.is_empty() {
         return;
@@ -236,24 +249,73 @@ pub(crate) fn show<R: Runtime>(app: &AppHandle<R>) {
     }
 }
 
-/// Drop the panel down from the tray icon.
-fn place_under_tray<R: Runtime>(mini: &tauri::WebviewWindow<R>) {
-    use tauri_plugin_positioner::{Position, WindowExt};
-    // macOS: the menu bar is at the top, so the panel drops down from the
-    // icon. Windows: the taskbar is usually at the bottom, so it rises above
-    // the icon. Linux reports no tray position (or clicks: there the panel
-    // opens from the tray menu or the shortcut), so it sits in the top-right
-    // corner, where most panels keep the tray. Tray positions also fail until
-    // the icon has reported where it is; the corner covers that too.
-    let at = if cfg!(target_os = "macos") {
-        Position::TrayBottomCenter
-    } else {
-        Position::TrayCenter
-    };
-    if mini.move_window(at).is_err() {
-        let fallback = if cfg!(target_os = "windows") { Position::BottomRight } else { Position::TopRight };
-        let _ = mini.move_window(fallback);
+/// A tracker window was minimised: instead of sitting in the Dock / taskbar
+/// it is put away (as the drop-down puts it away) and the panel floats as the
+/// mini timer, so the timer and clock buttons stay in reach. Open tracker
+/// brings it back (bring_tracker_back). An already pinned panel keeps its
+/// size and place.
+pub(crate) fn minimised_to_panel<R: Runtime>(app: &AppHandle<R>, label: &str) {
+    if !crate::session::signed_in() {
+        return;
     }
+    let Some(window) = app.get_webview_window(label) else { return };
+    {
+        let Ok(mut away) = PUT_AWAY.lock() else { return };
+        if away.iter().any(|l| l == label) {
+            return;
+        }
+        away.push(label.to_string());
+    }
+    let _ = window.hide();
+    let newly_pinned = !is_pinned();
+    if newly_pinned {
+        PINNED.store(true, std::sync::atomic::Ordering::Relaxed);
+        FLOATED_FOR_MINIMISE.store(true, std::sync::atomic::Ordering::Relaxed);
+        set_compact(app, true);
+    }
+    if let Some(mini) = app.get_webview_window("mini") {
+        if newly_pinned {
+            place_under_tray(&mini);
+        }
+        let _ = mini.show();
+    }
+    push(app);
+    if newly_pinned {
+        crate::analytics::panel_mode(app, true, true);
+    }
+}
+
+/// Drop the panel down by the tray: the top-right of the main screen on
+/// macOS (under the menu bar, where the icon is), bottom-right above the
+/// taskbar on Windows, top-right on Linux. Worked out here rather than from
+/// the tray icon's reported place, which comes out wrong when screens differ
+/// in density (a Retina laptop beside a plain monitor) and isn't known until
+/// the icon has been clicked or hovered.
+fn place_under_tray<R: Runtime>(mini: &tauri::WebviewWindow<R>) {
+    place_in_main_screen_corner(mini);
+}
+
+/// The corner by the tray on the main screen (the one with the menu bar /
+/// taskbar). Not the panel's own "current" screen, which with a second
+/// monitor can be the other one.
+fn place_in_main_screen_corner<R: Runtime>(mini: &tauri::WebviewWindow<R>) {
+    let Some(screen) = mini.primary_monitor().ok().flatten() else { return };
+    let Ok(size) = mini.outer_size() else { return };
+    // In points: the screens can differ in density (a Retina laptop beside a
+    // plain monitor), and the panel's pixels follow the screen it is on now.
+    let size = size.to_logical::<f64>(mini.scale_factor().unwrap_or(1.0));
+    let scale = screen.scale_factor();
+    let origin = screen.position().to_logical::<f64>(scale);
+    let area = screen.size().to_logical::<f64>(scale);
+    // Clear of the menu bar on macOS; the panel's own shadow room is margin
+    // enough at the sides. Windows: above the taskbar, bottom-right.
+    let x = origin.x + area.width - size.width - 8.0;
+    let y = if cfg!(target_os = "windows") {
+        origin.y + area.height - size.height - 48.0
+    } else {
+        origin.y + 30.0
+    };
+    let _ = mini.set_position(tauri::LogicalPosition::new(x, y));
 }
 
 /// Toggle the panel (tray click, tray menu, Cmd+Shift+M / Ctrl+Alt+M).
@@ -286,8 +348,6 @@ pub(crate) fn hide<R: Runtime>(app: &AppHandle<R>) {
         }
         let _ = mini.hide();
     }
-    // Nothing left on screen (the tracker was put away): a pure menu-bar app.
-    crate::drop_dock_icon_if_alone(app, "mini");
 }
 
 /// Signed out: the panel closes, unpinned and full size (session.rs). The
@@ -543,7 +603,69 @@ pub(crate) fn mini_mood<R: Runtime>(app: AppHandle<R>, request: serde_json::Valu
 /// The check-in is over: a mini timer it grew goes back to its small size.
 #[tauri::command]
 pub(crate) fn mini_mood_done<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
-    if MOOD_SHRINK_AFTER.swap(false, std::sync::atomic::Ordering::Relaxed) && is_pinned() {
+    if MOOD_SHRINK_AFTER.swap(false, std::sync::atomic::Ordering::Relaxed) {
+        set_compact(&app, true);
+        push(&app);
+    }
+    Ok(())
+}
+
+// ── what's new after an update (whats_new.rs) ──
+
+/// Whether the one-time panel tip was shown: the app was used before.
+pub(crate) fn was_introduced<R: Runtime>(app: &AppHandle<R>) -> bool {
+    crate::close::flag(app, INTRODUCED)
+}
+
+/// A mini timer that grew to show what's new: shrink it back after.
+static WHATS_NEW_SHRINK_AFTER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// While "What's new" is showing the panel stays open (it doesn't hide on
+/// losing focus) until "Got it": it can appear while someone is busy elsewhere.
+static HOLD_OPEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub(crate) fn held_open() -> bool {
+    HOLD_OPEN.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Open the panel (full size) on the "New in <version>" page, beside the
+/// tracker (it isn't put away).
+pub(crate) fn show_whats_new<R: Runtime>(app: &AppHandle<R>, version: &str, items: &[crate::whats_new::Item]) {
+    if !crate::session::signed_in() {
+        return;
+    }
+    HOLD_OPEN.store(true, std::sync::atomic::Ordering::Relaxed);
+    if is_compact() {
+        WHATS_NEW_SHRINK_AFTER.store(true, std::sync::atomic::Ordering::Relaxed);
+        set_compact(app, false);
+    }
+    if let Some(mini) = app.get_webview_window("mini") {
+        if !mini.is_visible().unwrap_or(false) {
+            if !is_pinned() {
+                place_under_tray(&mini);
+            }
+            let _ = mini.show();
+        }
+        push(app);
+        let page = serde_json::json!({ "version": version, "items": items });
+        let _ = mini.eval(format!("window.__cbbMiniWhatsNew && window.__cbbMiniWhatsNew({page})"));
+        let _ = mini.set_focus();
+    }
+}
+
+/// Settings ▸ What's new.
+#[tauri::command]
+pub(crate) fn mini_whats_new<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
+    crate::whats_new::show_now(&app);
+    Ok(())
+}
+
+/// "Got it": a mini timer that grew for it goes back to its small size.
+#[tauri::command]
+pub(crate) fn mini_whats_new_done<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
+    HOLD_OPEN.store(false, std::sync::atomic::Ordering::Relaxed);
+    crate::whats_new::mark_seen(&app);
+    if WHATS_NEW_SHRINK_AFTER.swap(false, std::sync::atomic::Ordering::Relaxed) {
         set_compact(&app, true);
         push(&app);
     }
@@ -636,14 +758,14 @@ pub(crate) fn mini_hide<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
 #[tauri::command]
 pub(crate) fn mini_pin<R: Runtime>(app: AppHandle<R>, pinned: bool) -> Result<(), String> {
     PINNED.store(pinned, std::sync::atomic::Ordering::Relaxed);
-    if pinned {
-        // A floating timer is for working in the tracker: bring it back.
-        bring_tracker_back(&app);
-    } else {
-        // The drop-down is always the full panel.
-        set_compact(&app, false);
+    // Pinned or unpinned by hand: the person's choice now, not the minimise's.
+    FLOATED_FOR_MINIMISE.store(false, std::sync::atomic::Ordering::Relaxed);
+    // Pin or unpin where it is and at the size it is: only Open tracker
+    // brings the tracker back. Unpinned it hides on losing focus, so it's
+    // focused to stay until the next click elsewhere.
+    if !pinned {
         if let Some(mini) = app.get_webview_window("mini") {
-            place_under_tray(&mini);
+            let _ = mini.set_focus();
         }
     }
     push(&app);
@@ -654,9 +776,7 @@ pub(crate) fn mini_pin<R: Runtime>(app: AppHandle<R>, pinned: bool) -> Result<()
 /// Shrink the pinned panel to the mini timer, or grow it back.
 #[tauri::command]
 pub(crate) fn mini_compact<R: Runtime>(app: AppHandle<R>, compact: bool) -> Result<(), String> {
-    if compact && !is_pinned() {
-        return Err("Pin the panel first.".into());
-    }
+    // Any time, pinned or not: size and pin are separate choices.
     set_compact(&app, compact);
     push(&app);
     crate::analytics::panel_mode(&app, is_pinned(), is_compact());

@@ -255,6 +255,33 @@ pub(crate) fn refresh<R: Runtime>(app: &AppHandle<R>) {
     });
 }
 
+/// walkie_bridge.js saw the tracker's own walkie list arrive in `label`'s
+/// window (its dock reloads it the moment something is said): take it now,
+/// rather than on the next poll.
+pub(crate) fn take_from<R: Runtime>(app: &AppHandle<R>, label: &str) {
+    let app = app.clone();
+    let label = label.to_string();
+    // Off the navigation handler, so the page is never asked from inside it.
+    std::thread::spawn(move || {
+        if !crate::session::signed_in() {
+            return;
+        }
+        let Some(window) = app
+            .get_webview_window(&label)
+            .filter(|window| window.url().is_ok_and(|url| url.host_str() == Some(crate::APP_HOST)))
+        else {
+            return;
+        };
+        let app_for_cb = app.clone();
+        let _ = window.eval_with_callback(TAKE_JS, move |raw| {
+            let raw: String = serde_json::from_str(&raw).unwrap_or_default();
+            if let Some(rail) = parse(&raw) {
+                apply(&app_for_cb, &rail);
+            }
+        });
+    });
+}
+
 /// Start the background poller. Does nothing while the main window is off the
 /// tracker (e.g. mid sign-in).
 pub(crate) fn start<R: Runtime>(app: AppHandle<R>) {
@@ -315,6 +342,7 @@ pub(crate) fn reply_body(body: &str) -> Result<String, &'static str> {
 /// `window.__cbbWalkieResult`.
 const CHAT_JS: &str = r#"(function (a) {
   window.__cbbWalkieResult = '';
+  var STICKERS = ['THUMBS_UP', 'HEART', 'FIRE', 'KISS', 'CRYING', 'FROWN', 'THINKING'];
   function done(x) { x.op = a.op; x.seq = a.seq; window.__cbbWalkieResult = JSON.stringify(x); }
   function json(r) { return r.json().catch(function () { return {}; }).then(function (b) { return { ok: r.ok, b: b || {} }; }); }
   function post(url, body) {
@@ -326,7 +354,11 @@ const CHAT_JS: &str = r#"(function (a) {
       if (!m.ok) return done({ ok: false, error: m.b.error || "Couldn't read that chat." });
       return post(base + '/read').catch(function () {}).then(function () {
         done({ ok: true, channelId: id, name: name, lines: (m.b.messages || []).slice(-20).map(function (l) {
-          return { id: String(l.id), body: l.body || '', author: l.author || '', mine: !!l.mine, createdAt: l.createdAt || '', call: l.kind === 'call', file: !!l.file };
+          return { id: String(l.id), body: l.body || '', author: l.author || '', mine: !!l.mine, createdAt: l.createdAt || '', call: l.kind === 'call', file: !!l.file,
+            fileName: l.file && l.file.filename ? String(l.file.filename).slice(0, 200) : '', fileGone: !!l.fileGone,
+            reactions: (Array.isArray(l.reactions) ? l.reactions : []).filter(function (r) { return r && STICKERS.indexOf(r.key) >= 0 && r.count > 0; }).map(function (r) {
+              return { key: r.key, count: Math.min(Number(r.count) || 0, 999), mine: !!r.mine, who: (Array.isArray(r.who) ? r.who : []).slice(0, 12).map(String) };
+            }) };
         }) });
       });
     });
@@ -505,6 +537,17 @@ mod tests {
         assert!(reply_body("   ").is_err());
         assert!(reply_body(&"x".repeat(2000)).is_ok());
         assert!(reply_body(&"x".repeat(2001)).is_err());
+    }
+
+    #[test]
+    fn the_bridge_only_watches_the_walkie_list_and_sends_nothing() {
+        let js = include_str!("walkie_bridge.js");
+        assert!(js.contains("url.pathname === '/api/walkie/channels'"));
+        assert!(js.contains("url.origin === location.origin"));
+        assert!(js.contains("r.clone()"), "the page still gets its own answer");
+        assert!(js.contains("location.href = 'cbb-walkie://rail'"));
+        assert_eq!(js.matches("pageFetch.apply").count(), 1, "no fetch of its own");
+        assert!(!js.contains("localStorage") && !js.contains("console."));
     }
 
     #[test]

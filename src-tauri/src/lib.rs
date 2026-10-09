@@ -41,6 +41,7 @@ mod theme;
 mod title_buttons;
 mod updater;
 mod walkie;
+mod whats_new;
 
 /// Tray icon id, so the poller can update its tooltip.
 const TRAY_ID: &str = "main-tray";
@@ -264,8 +265,7 @@ fn has_session_cookie(cookies: &str) -> bool {
 }
 
 /// Bring the main window forward, with any tracker tabs / windows the quick
-/// panel put away (mini.rs). Restores the dock icon on macOS (see the close
-/// handler: a hidden app is a pure menu-bar app, like Toggl).
+/// panel put away (mini.rs).
 pub(crate) fn show_main<R: Runtime>(app: &AppHandle<R>) {
     mini::bring_tracker_back(app);
     #[cfg(target_os = "macos")]
@@ -325,29 +325,10 @@ pub(crate) fn toggle_autostart<R: Runtime>(app: &AppHandle<R>) -> bool {
     }
 }
 
-/// Hide a window; the app keeps running in the menu bar / tray. With the
-/// last visible window gone the dock icon goes too (pure menu-bar app). It
-/// returns in show_main / show_library, so there is never a dead dock icon.
+/// Hide a window; the app keeps running in the menu bar / tray, and on macOS
+/// in the Dock, whose icon brings the tracker back (RunEvent::Reopen).
 pub(crate) fn hide_to_tray<R: Runtime>(window: &tauri::Window<R>) {
     let _ = window.hide();
-    drop_dock_icon_if_alone(window.app_handle(), window.label());
-}
-
-/// macOS: with no window but `gone` showing (main, extra tracker windows,
-/// the library, the panel), the app becomes a pure menu-bar app again.
-#[allow(unused_variables)]
-pub(crate) fn drop_dock_icon_if_alone<R: Runtime>(app: &AppHandle<R>, gone: &str) {
-    #[cfg(target_os = "macos")]
-    {
-        let any_other = app
-            .webview_windows()
-            .iter()
-            .filter(|(label, _)| label.as_str() != gone)
-            .any(|(_, window)| window.is_visible().unwrap_or(false));
-        if !any_other {
-            let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
-        }
-    }
 }
 
 /// Bring the Saved-for-offline library forward.
@@ -417,6 +398,9 @@ pub(crate) fn build_tracker_window<R: Runtime>(
     // by Core Location through cbb-geo:// hand-overs (location.rs).
     .initialization_script(if cfg!(target_os = "macos") { include_str!("geo_bridge.js") } else { "" })
     .initialization_script(&dark_script)
+    // Walkie at once (walkie_bridge.js): when the tracker's dock reloads its
+    // walkie list, the app takes the same answer (cbb-walkie://rail).
+    .initialization_script(include_str!("walkie_bridge.js"))
     // Location for the time sheet: the tracker's own pages only
     // (location.rs). Windows and Linux; macOS uses geo_bridge.js.
     .on_permission_request(|webview, kind| {
@@ -482,6 +466,11 @@ pub(crate) fn build_tracker_window<R: Runtime>(
                     location::request(&opener_handle, &own_label, id);
                 }
             }
+            return false;
+        }
+        // walkie_bridge.js: the tracker's walkie list just arrived.
+        if url.scheme() == "cbb-walkie" {
+            walkie::take_from(&opener_handle, &own_label);
             return false;
         }
         // "Show me" in the one-time quick-panel tip.
@@ -581,6 +570,11 @@ pub(crate) fn build_tracker_window<R: Runtime>(
                 let cookies: String = serde_json::from_str(&cookies_json).unwrap_or_default();
                 if probe.label() == "main" {
                     session::update(probe.app_handle(), has_session_cookie(&cookies));
+                    // Signed in on the dashboard (where the app opens): what's
+                    // new after an update, once (whats_new.rs).
+                    if has_session_cookie(&cookies) {
+                        whats_new::maybe_show(probe.app_handle());
+                    }
                 }
                 if !has_session_cookie(&cookies) {
                     if let Ok(sign_in) = START_URL.parse::<url::Url>() {
@@ -595,6 +589,8 @@ pub(crate) fn build_tracker_window<R: Runtime>(
         if page.path() != "/sign-in" {
             if window.label() == "main" {
                 mini::maybe_introduce(window.app_handle());
+                // After an update: what's new, once (whats_new.rs).
+                whats_new::maybe_show(window.app_handle());
             } else if is_extra_tracker_window(window.label()) {
                 // A second tracker window: how to compare side by side, once.
                 tabs::maybe_explain(window.app_handle(), window.label());
@@ -758,7 +754,6 @@ pub fn run() {
                 .build(),
         )
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(tauri_plugin_positioner::init())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
@@ -807,10 +802,9 @@ pub fn run() {
                 .build(),
         )
         // Closing a window hides it; the app keeps running in the tray /
-        // menu bar so notifications keep arriving. On macOS the dock icon
-        // goes away with the last visible window (pure menu-bar app, like
-        // Toggl) and comes back in show_main/show_library — so there is
-        // never a dead dock icon. Quit is in the tray menu (or Cmd+Q).
+        // menu bar so notifications keep arriving. On macOS it stays in the
+        // Dock too, and clicking the Dock icon brings the tracker back
+        // (RunEvent::Reopen below). Quit is in the tray menu (or Cmd+Q).
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 match window.label() {
@@ -845,14 +839,31 @@ pub fn run() {
                     theme::theme_changed(window.app_handle(), *theme == tauri::Theme::Dark);
                 }
             }
-            if matches!(event, tauri::WindowEvent::Destroyed) && is_extra_tracker_window(window.label()) {
-                drop_dock_icon_if_alone(window.app_handle(), window.label());
+            // Minimising a tracker window floats the quick panel as the mini
+            // timer instead (mini::minimised_to_panel). There's no minimise
+            // event: it shows as a resize (Windows) or a lost focus (macOS),
+            // so look once the minimise animation is done.
+            if matches!(event, tauri::WindowEvent::Resized(_) | tauri::WindowEvent::Focused(false))
+                && (window.label() == "main" || is_extra_tracker_window(window.label()))
+            {
+                let app = window.app_handle().clone();
+                let label = window.label().to_string();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(400));
+                    let minimised = app
+                        .get_webview_window(&label)
+                        .is_some_and(|tracker| tracker.is_minimized().unwrap_or(false));
+                    if minimised {
+                        mini::minimised_to_panel(&app, &label);
+                    }
+                });
             }
             // Drop-down behaviour: the quick panel hides when it loses focus,
             // unless it is pinned as a floating timer.
             if window.label() == "mini"
                 && matches!(event, tauri::WindowEvent::Focused(false))
                 && !mini::is_pinned()
+                && !mini::held_open()
             {
                 mini::hide(window.app_handle());
             }
@@ -874,6 +885,8 @@ pub fn run() {
             mini::mini_compact,
             mini::mini_mood,
             mini::mini_mood_done,
+            mini::mini_whats_new,
+            mini::mini_whats_new_done,
             walkie::mini_walkie_open,
             walkie::mini_walkie_send
         ])
@@ -1129,6 +1142,17 @@ pub fn run() {
             // Remember the tracker window's place for next time (session.rs).
             if let tauri::RunEvent::Exit = event {
                 session::save(app);
+            }
+            // macOS: clicking the Dock icon brings the tracker back after it
+            // was closed (hidden) or minimised to the mini timer.
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { .. } = event {
+                let hidden = app
+                    .get_webview_window("main")
+                    .is_some_and(|main| !main.is_visible().unwrap_or(true));
+                if hidden {
+                    show_main(app);
+                }
             }
         });
 }

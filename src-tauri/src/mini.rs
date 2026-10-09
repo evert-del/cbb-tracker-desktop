@@ -37,7 +37,7 @@ pub(crate) struct View {
     /// Closing the main window quits the app (close.rs) instead of hiding it.
     pub close_quits: bool,
     pub pinned: bool,
-    /// Shrunk to the mini timer (only while pinned).
+    /// Shrunk to the mini timer (pinned or not).
     pub compact: bool,
     /// "macos", "windows" or "linux": the panel follows each system's own
     /// look (corner radii, typeface, wording).
@@ -707,14 +707,11 @@ pub(crate) fn mini_pin<R: Runtime>(app: AppHandle<R>, pinned: bool) -> Result<()
     PINNED.store(pinned, std::sync::atomic::Ordering::Relaxed);
     // Pinned or unpinned by hand: the person's choice now, not the minimise's.
     FLOATED_FOR_MINIMISE.store(false, std::sync::atomic::Ordering::Relaxed);
-    // Pinning only floats the panel where it is: the tracker stays as it
-    // is, and only Open tracker brings it back.
+    // Pin or unpin where it is and at the size it is: only Open tracker
+    // brings the tracker back. Unpinned it hides on losing focus, so it's
+    // focused to stay until the next click elsewhere.
     if !pinned {
-        // The drop-down is always the full panel, focused so it stays until
-        // the next click elsewhere (it hides on losing focus).
-        set_compact(&app, false);
         if let Some(mini) = app.get_webview_window("mini") {
-            place_under_tray(&mini);
             let _ = mini.set_focus();
         }
     }
@@ -726,9 +723,7 @@ pub(crate) fn mini_pin<R: Runtime>(app: AppHandle<R>, pinned: bool) -> Result<()
 /// Shrink the pinned panel to the mini timer, or grow it back.
 #[tauri::command]
 pub(crate) fn mini_compact<R: Runtime>(app: AppHandle<R>, compact: bool) -> Result<(), String> {
-    if compact && !is_pinned() {
-        return Err("Pin the panel first.".into());
-    }
+    // Any time, pinned or not: size and pin are separate choices.
     set_compact(&app, compact);
     push(&app);
     crate::analytics::panel_mode(&app, is_pinned(), is_compact());

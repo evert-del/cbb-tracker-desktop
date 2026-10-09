@@ -96,9 +96,11 @@
       .head-btn:hover { opacity: 1; background: rgba(255, 255, 255, 0.16); }
       #pin[aria-pressed="true"] { opacity: 1; background: rgba(255, 255, 255, 0.24); }
       #pin[aria-pressed="true"] svg { fill: currentColor; }
-      /* Pinned: the header is the handle for dragging the floating timer. */
-      #head.pinned { cursor: grab; }
-      #head.pinned:active { cursor: grabbing; }
+      /* The header is the handle for dragging the panel. */
+      #head { cursor: grab; }
+      #head:active { cursor: grabbing; }
+      #c-pin[aria-pressed="true"] { opacity: 1; background: rgba(255, 255, 255, 0.24); }
+      #c-pin[aria-pressed="true"] svg { fill: currentColor; }
       #pin-hint { font-size: 11px; opacity: 0.8; margin-top: 2px; }
       #timer { font-size: 34px; font-weight: 600; letter-spacing: 0.01em; line-height: 1.15; margin-top: 6px; font-variant-numeric: tabular-nums; }
       #today { font-size: 12px; opacity: 0.88; font-variant-numeric: tabular-nums; }
@@ -261,7 +263,7 @@
           <div id="head-top">
             <span id="dot"></span>
             <span id="status">Loading…</span>
-            <button id="shrink" class="head-btn" type="button" hidden aria-label="Shrink to mini timer" title="Shrink to mini timer">
+            <button id="shrink" class="head-btn" type="button" aria-label="Shrink to mini timer" title="Shrink to mini timer">
               <svg viewBox="0 0 24 24"><path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7"/></svg>
             </button>
             <button id="pin" class="head-btn" type="button" aria-pressed="false" aria-label="Pin as a floating timer" title="Pin as a floating timer">
@@ -343,8 +345,8 @@
         <button id="grow" class="head-btn" type="button" aria-label="Show the full panel" title="Show the full panel">
           <svg viewBox="0 0 24 24"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg>
         </button>
-        <button id="c-unpin" class="head-btn" type="button" aria-label="Unpin" title="Unpin">
-          <svg viewBox="0 0 24 24" style="fill:currentColor"><path d="M9 4h6l-1 6 4 4H6l4-4zM12 14v7"/></svg>
+        <button id="c-pin" class="head-btn" type="button" aria-pressed="false" aria-label="Pin as a floating timer" title="Pin as a floating timer">
+          <svg viewBox="0 0 24 24"><path d="M9 4h6l-1 6 4 4H6l4-4zM12 14v7"/></svg>
         </button>
       </div>
 

@@ -242,7 +242,7 @@ function renderCompactAction(view: View) {
 }
 
 function renderMode(view: View) {
-  const compact = view.compact && view.pinned;
+  const compact = view.compact;
   el("compact-view").hidden = !compact;
   if (compact) {
     el("main-view").hidden = true;
@@ -250,7 +250,6 @@ function renderMode(view: View) {
   } else if (el("settings").hidden && !mood && !chat) {
     el("main-view").hidden = false;
   }
-  el("shrink").hidden = !view.pinned;
 }
 
 window.__cbbMiniShow = (view) => {
@@ -298,6 +297,10 @@ function renderPin(pinned: boolean) {
   pin.title = label;
   el("head").classList.toggle("pinned", pinned);
   el("pin-hint").hidden = !pinned;
+  const cPin = el("c-pin");
+  cPin.setAttribute("aria-pressed", String(pinned));
+  cPin.setAttribute("aria-label", label);
+  cPin.title = label;
 }
 
 // ── Mood check-in (mini.rs ask_mood / mini_mood). Health information: it is
@@ -808,7 +811,11 @@ window.addEventListener("DOMContentLoaded", () => {
   });
   click("shrink", () => void invoke("mini_compact", { compact: true }));
   click("grow", () => void invoke("mini_compact", { compact: false }));
-  click("c-unpin", () => void invoke("mini_pin", { pinned: false }));
+  click("c-pin", () => {
+    const pinned = el("c-pin").getAttribute("aria-pressed") !== "true";
+    renderPin(pinned);
+    void invoke("mini_pin", { pinned });
+  });
   click("c-bell", () => void invoke("mini_expand_notifications"));
   // The mini timer's walkie: grow to the full panel on the newest conversation.
   click("c-walkie", () => {
@@ -840,9 +847,9 @@ window.addEventListener("DOMContentLoaded", () => {
     if (e.button !== 0 || (e.target as HTMLElement).closest("button")) return;
     void getCurrentWindow().startDragging();
   });
-  // Pinned, the header drags the window (not from its buttons).
+  // The header drags the window, pinned or not (not from its buttons).
   el("head").addEventListener("mousedown", (e) => {
-    if (e.button !== 0 || !el("head").classList.contains("pinned")) return;
+    if (e.button !== 0) return;
     if ((e.target as HTMLElement).closest("button")) return;
     void getCurrentWindow().startDragging();
   });

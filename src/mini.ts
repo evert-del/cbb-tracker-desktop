@@ -86,19 +86,13 @@ function fmtSpan(mins: number): string {
   return h > 0 ? `${h}h ${String(m % 60).padStart(2, "0")}m` : `${m}m`;
 }
 
-/** Badge colours for a notification label, the same for every row of it. */
-const BADGES: Array<[string, string]> = [
-  ["#fbe4ee", "#8f1d55"],
-  ["#e9e7fd", "#3c3489"],
-  ["#dff4ec", "#0f5c47"],
-  ["#fdf0d9", "#7a4a06"],
-  ["#e3eefb", "#0c447c"],
-  ["#fbe9e3", "#7a2e14"],
-];
-function badgeFor(label: string): [string, string] {
+/** Badge colour (a `tone-N` class in mini.html, light and dark) for a
+ * notification label, the same for every row of it. */
+const TONES = 6;
+function toneFor(label: string): string {
   let h = 0;
   for (const ch of label) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
-  return BADGES[h % BADGES.length];
+  return `tone-${h % TONES}`;
 }
 
 function tick() {
@@ -180,11 +174,8 @@ function renderNeeds(view: View) {
     row.type = "button";
     row.className = "need";
     row.title = need.body;
-    const [bg, fg] = badgeFor(need.label);
     const badge = document.createElement("span");
-    badge.className = "badge";
-    badge.style.background = bg;
-    badge.style.color = fg;
+    badge.className = `badge ${toneFor(need.label)}`;
     badge.textContent = (need.label.trim()[0] ?? "•").toUpperCase();
     const txt = document.createElement("span");
     txt.className = "txt";
@@ -226,10 +217,7 @@ function renderSummary(view: View) {
   box.hidden = view.unread === 0 || view.summary.length === 0;
   for (const kind of view.summary.slice(0, 4)) {
     const chip = document.createElement("span");
-    chip.className = "chip";
-    const [bg, fg] = badgeFor(kind.label);
-    chip.style.background = bg;
-    chip.style.color = fg;
+    chip.className = `chip ${toneFor(kind.label)}`;
     chip.textContent = `${kind.label} ${kind.count}`;
     box.appendChild(chip);
   }

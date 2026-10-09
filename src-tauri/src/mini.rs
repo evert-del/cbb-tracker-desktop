@@ -198,8 +198,19 @@ fn put_tracker_away<R: Runtime>(app: &AppHandle<R>) {
     }
 }
 
-/// Show the tracker windows the panel put away, as they were.
+/// The panel is floating only because a tracker window was minimised
+/// (minimised_to_panel): when the tracker comes back it goes away again.
+static FLOATED_FOR_MINIMISE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Show the tracker windows the panel put away, as they were. A mini timer
+/// that only floated for a minimise closes: it's the tracker or the timer.
 pub(crate) fn bring_tracker_back<R: Runtime>(app: &AppHandle<R>) {
+    if FLOATED_FOR_MINIMISE.swap(false, std::sync::atomic::Ordering::Relaxed) {
+        PINNED.store(false, std::sync::atomic::Ordering::Relaxed);
+        set_compact(app, false);
+        hide(app);
+        push(app);
+    }
     let labels = PUT_AWAY.lock().map(|mut away| std::mem::take(&mut *away)).unwrap_or_default();
     if labels.is_empty() {
         return;
@@ -257,6 +268,7 @@ pub(crate) fn minimised_to_panel<R: Runtime>(app: &AppHandle<R>, label: &str) {
     let newly_pinned = !is_pinned();
     if newly_pinned {
         PINNED.store(true, std::sync::atomic::Ordering::Relaxed);
+        FLOATED_FOR_MINIMISE.store(true, std::sync::atomic::Ordering::Relaxed);
         set_compact(app, true);
     }
     if let Some(mini) = app.get_webview_window("mini") {
@@ -669,6 +681,8 @@ pub(crate) fn mini_hide<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
 #[tauri::command]
 pub(crate) fn mini_pin<R: Runtime>(app: AppHandle<R>, pinned: bool) -> Result<(), String> {
     PINNED.store(pinned, std::sync::atomic::Ordering::Relaxed);
+    // Pinned or unpinned by hand: the person's choice now, not the minimise's.
+    FLOATED_FOR_MINIMISE.store(false, std::sync::atomic::Ordering::Relaxed);
     if pinned {
         // A floating timer is for working in the tracker: bring it back.
         bring_tracker_back(&app);

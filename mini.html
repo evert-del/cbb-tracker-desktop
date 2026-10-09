@@ -102,6 +102,12 @@
       #pin-hint { font-size: 11px; opacity: 0.8; margin-top: 2px; }
       #timer { font-size: 34px; font-weight: 600; letter-spacing: 0.01em; line-height: 1.15; margin-top: 6px; font-variant-numeric: tabular-nums; }
       #today { font-size: 12px; opacity: 0.88; font-variant-numeric: tabular-nums; }
+      /* The tracker's greeting after a clock tap, for a few seconds. */
+      #greeting, #c-greeting { font-size: 12px; font-weight: 600; margin-top: 4px; animation: greet-in 0.25s ease-out; }
+      #c-greeting { font-size: 11.5px; margin-top: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      #mood-greeting { margin: 0 0 6px; font-size: 12.5px; font-weight: 600; color: var(--pink-ink); }
+      @keyframes greet-in { from { opacity: 0; transform: translateY(-2px); } to { opacity: 1; transform: none; } }
+      @media (prefers-reduced-motion: reduce) { #greeting, #c-greeting { animation: none; } }
 
       #actions { display: flex; gap: 8px; padding: 12px 14px; }
       .act {
@@ -262,6 +268,7 @@
           </div>
           <div id="timer">0:00</div>
           <div id="today"></div>
+          <div id="greeting" role="status" hidden></div>
           <div id="pin-hint" hidden>Pinned. Drag here to move it.</div>
         </div>
         <div id="actions"></div>
@@ -334,10 +341,12 @@
           </button>
         </div>
         <div id="c-summary"></div>
+        <div id="c-greeting" role="status" hidden></div>
       </div>
 
       <div id="mood-view" hidden>
         <div id="mood-ask">
+          <p id="mood-greeting" hidden></p>
           <h2 id="mood-question">How are you feeling today?</h2>
           <p class="hint">Kept without your name. HR only sees totals for groups of 5 or more.</p>
           <div id="mood-scale" role="radiogroup" aria-label="From 1, very low, to 10, great"></div>

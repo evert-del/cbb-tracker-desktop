@@ -111,9 +111,11 @@ pub(crate) fn plan(clock: Option<&Clock>) -> Plan {
 /// The script that clocks from the tray, through the page's own session.
 /// After a call in or wrap the clock answers with the card; when the company
 /// asks how people are (`mood`) and this moment hasn't been asked today, it
-/// leaves `{moment}` on `window.__cbbMoodAsk` for `take_mood_ask`,
+/// leaves `{moment}` on `window.__cbbMoodAsk` for `take_after_tap`,
 /// and the quick panel asks (mini.rs). Only these taps ever ask: the
-/// person's own, never an idle-prompt answer.
+/// person's own, never an idle-prompt answer. The tracker may also send a
+/// friendly `greeting` line ("Good morning, Sam. Have a good day."); it is
+/// left on `window.__cbbGreeting` for the same pick-up.
 pub(crate) fn action_script(action: &str) -> String {
     format!(
         r#"(function () {{
@@ -127,6 +129,10 @@ pub(crate) fn action_script(action: &str) -> String {
       if (moment && mood && mood.askedKey !== mood.today + '|' + moment) {{
         window.__cbbMoodAsk = JSON.stringify({{ moment: moment }});
       }}
+      var greeting = x.b && x.b.greeting;
+      if (typeof greeting === 'string' && greeting.trim()) {{
+        window.__cbbGreeting = greeting.trim().slice(0, 200);
+      }}
       window.dispatchEvent(new CustomEvent('cbb:clock-changed'));
     }})
     .catch(function () {{ window.__cbbClockError = 'The tracker could not be reached.'; }});
@@ -134,9 +140,9 @@ pub(crate) fn action_script(action: &str) -> String {
     )
 }
 
-/// Returns and clears a pending mood question ("" when none).
-const TAKE_MOOD_ASK_JS: &str =
-    "(function () { var v = window.__cbbMoodAsk || ''; window.__cbbMoodAsk = ''; return v; })()";
+/// Returns and clears what the last clock tap left: the mood question (`m`)
+/// and the greeting (`g`), each "" when none.
+const TAKE_AFTER_TAP_JS: &str = "(function () { var v = JSON.stringify({ m: window.__cbbMoodAsk || '', g: window.__cbbGreeting || '' }); window.__cbbMoodAsk = ''; window.__cbbGreeting = ''; return v; })()";
 
 /// A mood question the last clock tap left (see `action_script`).
 #[derive(Debug, serde::Deserialize, PartialEq)]
@@ -144,16 +150,42 @@ pub(crate) struct MoodAsk {
     pub moment: String,
 }
 
-/// Picks up a pending mood question and has the quick panel ask it.
-fn take_mood_ask<R: Runtime>(app: &AppHandle<R>) {
+/// What the last clock tap left behind for the app to show.
+#[derive(Debug, Default, PartialEq)]
+pub(crate) struct AfterTap {
+    pub mood: Option<String>,
+    pub greeting: Option<String>,
+}
+
+/// Reads `TAKE_AFTER_TAP_JS`'s answer.
+pub(crate) fn parse_after_tap(raw: &str) -> AfterTap {
+    #[derive(serde::Deserialize, Default)]
+    #[serde(default)]
+    struct Left {
+        m: String,
+        g: String,
+    }
+    let json: String = serde_json::from_str(raw).unwrap_or_default();
+    let left: Left = serde_json::from_str(&json).unwrap_or_default();
+    let mood = serde_json::from_str::<MoodAsk>(&left.m)
+        .ok()
+        .map(|ask| ask.moment)
+        .filter(|moment| moment == "IN" || moment == "WRAP");
+    let greeting: String = left.g.trim().chars().take(200).collect();
+    AfterTap { mood, greeting: (!greeting.is_empty()).then_some(greeting) }
+}
+
+/// Picks up what the last tap left: the quick panel asks the mood question
+/// (with the greeting above it), or shows the greeting on its own.
+fn take_after_tap<R: Runtime>(app: &AppHandle<R>) {
     let Some(window) = on_tracker(app) else { return };
     let app = app.clone();
-    let _ = window.eval_with_callback(TAKE_MOOD_ASK_JS, move |raw| {
-        let json: String = serde_json::from_str(&raw).unwrap_or_default();
-        if let Ok(ask) = serde_json::from_str::<MoodAsk>(&json) {
-            if ask.moment == "IN" || ask.moment == "WRAP" {
-                crate::mini::ask_mood(&app, &ask.moment);
-            }
+    let _ = window.eval_with_callback(TAKE_AFTER_TAP_JS, move |raw| {
+        let after = parse_after_tap(&raw);
+        match (after.mood, after.greeting) {
+            (Some(moment), greeting) => crate::mini::ask_mood(&app, &moment, greeting.as_deref()),
+            (None, Some(greeting)) => crate::mini::greet(&app, &greeting),
+            (None, None) => {}
         }
     });
 }
@@ -308,15 +340,16 @@ pub(crate) fn act<R: Runtime>(app: &AppHandle<R>, action: &str) {
     }
     let _ = window.eval(action_script(action));
     // Read the result back shortly, rather than waiting for the next tick,
-    // and ask how they are if the clock said to (a call in or wrap).
+    // ask how they are if the clock said to (a call in or wrap) and show
+    // the tracker's greeting.
     let app = app.clone();
     std::thread::spawn(move || {
         std::thread::sleep(Duration::from_millis(1500));
         refresh(&app);
-        take_mood_ask(&app);
+        take_after_tap(&app);
         std::thread::sleep(Duration::from_millis(1500));
         refresh(&app);
-        take_mood_ask(&app);
+        take_after_tap(&app);
     });
 }
 
@@ -530,6 +563,31 @@ mod mood_ask_tests {
         let ask: MoodAsk = serde_json::from_str(r#"{"moment":"WRAP"}"#).unwrap();
         assert_eq!(ask, MoodAsk { moment: "WRAP".into() });
         assert!(!js.contains("support"));
+    }
+
+    #[test]
+    fn a_tap_leaves_the_greeting() {
+        let js = action_script("break");
+        assert!(js.contains("window.__cbbGreeting"));
+        assert!(js.contains("typeof greeting === 'string'"));
+    }
+
+    #[test]
+    fn reads_what_the_tap_left() {
+        let raw = |m: &str, g: &str| serde_json::to_string(&serde_json::json!({ "m": m, "g": g }).to_string()).unwrap();
+        assert_eq!(
+            parse_after_tap(&raw(r#"{"moment":"IN"}"#, "Good morning, Sam. Have a good day.")),
+            AfterTap { mood: Some("IN".into()), greeting: Some("Good morning, Sam. Have a good day.".into()) }
+        );
+        assert_eq!(
+            parse_after_tap(&raw("", "  Have a good weekend, Sam. ")),
+            AfterTap { mood: None, greeting: Some("Have a good weekend, Sam.".into()) }
+        );
+        assert_eq!(parse_after_tap(&raw(r#"{"moment":"BREAK"}"#, "")), AfterTap::default());
+        assert_eq!(parse_after_tap(&raw("", "")), AfterTap::default());
+        for bad in ["", "null", "\"x\"", "{}"] {
+            assert_eq!(parse_after_tap(bad), AfterTap::default(), "{bad}");
+        }
     }
 }
 

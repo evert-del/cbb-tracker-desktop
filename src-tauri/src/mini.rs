@@ -29,6 +29,9 @@ pub(crate) struct View {
     pub needs: Vec<NeedRow>,
     /// Unread notifications by kind, most first ("3 Approval · 2 Phase").
     pub summary: Vec<crate::notify::LabelCount>,
+    /// Unread walkie messages, and the conversations they are in (walkie.rs).
+    pub walkie_unread: u32,
+    pub chats: Vec<crate::walkie::ChatRow>,
     pub version: String,
     pub autostart: bool,
     /// Closing the main window quits the app (close.rs) instead of hiding it.
@@ -98,6 +101,8 @@ pub(crate) fn plan(
             })
             .collect(),
         summary: Vec::new(),
+        walkie_unread: 0,
+        chats: Vec::new(),
         version: env!("CARGO_PKG_VERSION").into(),
         autostart: false,
         close_quits: false,
@@ -129,6 +134,8 @@ pub(crate) fn push<R: Runtime>(app: &AppHandle<R>) {
     view.pinned = is_pinned();
     view.compact = is_compact();
     view.summary = summary;
+    view.walkie_unread = crate::walkie::unread(app);
+    view.chats = crate::walkie::chats(app);
     let Ok(payload) = serde_json::to_string(&view) else { return };
     if let Some(mini) = app.get_webview_window("mini") {
         let script = format!("window.__cbbMiniShow && window.__cbbMiniShow({payload})");

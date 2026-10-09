@@ -498,12 +498,22 @@ fn tick_title<R: Runtime>(app: &AppHandle<R>, last: &mut String) {
         .filter(|c| c.available && (c.state == "in" || c.state == "break"))
         .and_then(|c| elapsed_since(&c.since_iso, unix_now()))
         .map(tray_title);
-    let next = text.unwrap_or_default();
+    let next = with_walkie(text.unwrap_or_default(), crate::walkie::unread(app));
     if next != *last {
         *last = next.clone();
         if let Some(tray) = app.tray_by_id(crate::TRAY_ID) {
             let _ = tray.set_title(if next.is_empty() { None } else { Some(next) });
         }
+    }
+}
+
+/// The menu-bar title with unread walkie messages beside the timer
+/// ("7:03 · 2 new"), so a message waiting is seen without opening anything.
+pub(crate) fn with_walkie(timer: String, walkie_unread: u32) -> String {
+    match (timer.is_empty(), walkie_unread) {
+        (_, 0) => timer,
+        (true, n) => format!("{n} new"),
+        (false, n) => format!("{timer} · {n} new"),
     }
 }
 
@@ -603,6 +613,14 @@ mod tests {
         assert_eq!(tray_title(7 * 3600 + 3 * 60), "7:03");
         assert_eq!(tray_title(24 * 60), "0:24");
         assert_eq!(tray_title(0), "0:00");
+    }
+
+    #[test]
+    fn walkie_messages_sit_beside_the_timer() {
+        assert_eq!(with_walkie("7:03".into(), 0), "7:03");
+        assert_eq!(with_walkie("7:03".into(), 2), "7:03 · 2 new");
+        assert_eq!(with_walkie(String::new(), 1), "1 new");
+        assert_eq!(with_walkie(String::new(), 0), "");
     }
 
     #[test]

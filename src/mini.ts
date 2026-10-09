@@ -8,6 +8,15 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 type Need = { label: string; body: string; href: string };
 type ClockAction = { id: string; label: string };
 type LabelCount = { label: string; count: number };
+type ChatRow = {
+  key: string;
+  kind: string;
+  name: string;
+  preview: string;
+  unread: number;
+  last_at: string;
+  ringing: string | null;
+};
 type View = {
   state: string;
   status: string;
@@ -18,6 +27,8 @@ type View = {
   unread: number;
   needs: Need[];
   summary: LabelCount[];
+  walkie_unread: number;
+  chats: ChatRow[];
   version: string;
   autostart: boolean;
   close_quits: boolean;
@@ -75,19 +86,13 @@ function fmtSpan(mins: number): string {
   return h > 0 ? `${h}h ${String(m % 60).padStart(2, "0")}m` : `${m}m`;
 }
 
-/** Badge colours for a notification label, the same for every row of it. */
-const BADGES: Array<[string, string]> = [
-  ["#fbe4ee", "#8f1d55"],
-  ["#e9e7fd", "#3c3489"],
-  ["#dff4ec", "#0f5c47"],
-  ["#fdf0d9", "#7a4a06"],
-  ["#e3eefb", "#0c447c"],
-  ["#fbe9e3", "#7a2e14"],
-];
-function badgeFor(label: string): [string, string] {
+/** Badge colour (a `tone-N` class in mini.html, light and dark) for a
+ * notification label, the same for every row of it. */
+const TONES = 6;
+function toneFor(label: string): string {
   let h = 0;
   for (const ch of label) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
-  return BADGES[h % BADGES.length];
+  return `tone-${h % TONES}`;
 }
 
 function tick() {
@@ -169,11 +174,8 @@ function renderNeeds(view: View) {
     row.type = "button";
     row.className = "need";
     row.title = need.body;
-    const [bg, fg] = badgeFor(need.label);
     const badge = document.createElement("span");
-    badge.className = "badge";
-    badge.style.background = bg;
-    badge.style.color = fg;
+    badge.className = `badge ${toneFor(need.label)}`;
     badge.textContent = (need.label.trim()[0] ?? "•").toUpperCase();
     const txt = document.createElement("span");
     txt.className = "txt";
@@ -215,10 +217,7 @@ function renderSummary(view: View) {
   box.hidden = view.unread === 0 || view.summary.length === 0;
   for (const kind of view.summary.slice(0, 4)) {
     const chip = document.createElement("span");
-    chip.className = "chip";
-    const [bg, fg] = badgeFor(kind.label);
-    chip.style.background = bg;
-    chip.style.color = fg;
+    chip.className = `chip ${toneFor(kind.label)}`;
     chip.textContent = `${kind.label} ${kind.count}`;
     box.appendChild(chip);
   }
@@ -248,7 +247,7 @@ function renderMode(view: View) {
   if (compact) {
     el("main-view").hidden = true;
     el("settings").hidden = true;
-  } else if (el("settings").hidden && !mood) {
+  } else if (el("settings").hidden && !mood && !chat) {
     el("main-view").hidden = false;
   }
   el("shrink").hidden = !view.pinned;
@@ -282,6 +281,7 @@ window.__cbbMiniShow = (view) => {
   renderActions(view);
   renderNeeds(view);
   renderSummary(view);
+  renderChats(view);
   renderCompactAction(view);
   restClockButtons();
   renderMode(view);
@@ -427,8 +427,224 @@ declare global {
 window.__cbbMiniMood = (ask) => openMood(ask.moment);
 window.__cbbMiniMoodResult = (r) => moodResult(r);
 
+// ── Walkie quick chat (walkie.rs). What people say is only drawn here: never
+// stored, logged or counted. Opening a conversation marks it read, so Back
+// without replying clears it too.
+type Line = { id: string; body: string; author: string; mine: boolean; createdAt: string; call: boolean; file: boolean };
+type ChatResult = {
+  ok: boolean;
+  op?: "open" | "send";
+  seq?: number;
+  channelId?: string;
+  name?: string;
+  lines?: Line[];
+  error?: string;
+};
+
+let chat: {
+  key: string;
+  kind: string;
+  name: string;
+  channelId: string | null;
+  lines: Line[];
+  busy: "open" | "send" | null;
+  seq: number;
+} | null = null;
+let chatSeq = 0;
+/** Unsent replies by conversation, while the app runs. */
+const drafts = new Map<string, string>();
+
+/** "just now", "12m", "3h", "2d" (the tracker's sinceLabel). */
+function sinceLabel(iso: string): string {
+  const at = Date.parse(iso);
+  if (Number.isNaN(at)) return "";
+  const minutes = Math.round((Date.now() - at) / 60_000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours}h`;
+  return `${Math.round(hours / 24)}d`;
+}
+
+function initials(name: string): string {
+  const words = name.trim().split(/\s+/).filter(Boolean);
+  const letters = words.length > 1 ? [words[0][0], words[words.length - 1][0]] : [name.trim()[0] ?? "•"];
+  return letters.join("").toUpperCase();
+}
+
+function renderChats(view: View) {
+  const list = el("chats");
+  list.replaceChildren();
+  el("walkie").hidden = view.chats.length === 0;
+  el("walkie-label").textContent = view.walkie_unread > 0 ? `Walkie · ${view.walkie_unread}` : "Walkie";
+  for (const row of view.chats) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "chat-row";
+    btn.classList.toggle("ringing", row.ringing !== null);
+    const face = document.createElement("span");
+    face.className = "face";
+    face.textContent = initials(row.name);
+    const txt = document.createElement("span");
+    txt.className = "txt";
+    const top = document.createElement("span");
+    top.className = "top";
+    const name = document.createElement("span");
+    name.className = "name";
+    name.textContent = row.name;
+    const when = document.createElement("span");
+    when.className = "when";
+    when.textContent = sinceLabel(row.last_at);
+    top.append(name, when);
+    const preview = document.createElement("div");
+    preview.className = "preview";
+    preview.textContent = row.ringing !== null ? `${row.ringing || "Someone"} is calling` : row.preview;
+    txt.append(top, preview);
+    btn.append(face, txt);
+    if (row.unread > 0) {
+      const pill = document.createElement("span");
+      pill.className = "pill";
+      pill.textContent = row.unread > 99 ? "99+" : String(row.unread);
+      btn.appendChild(pill);
+    }
+    btn.addEventListener("click", () => openChat(row));
+    list.appendChild(btn);
+  }
+  const count = el("c-walkie-count");
+  el("c-walkie").hidden = view.walkie_unread === 0 || view.chats.length === 0;
+  count.textContent = view.walkie_unread > 99 ? "99+" : String(view.walkie_unread);
+  el("c-walkie").title = `${view.walkie_unread} unread on the walkie`;
+}
+
+function renderChat() {
+  if (!chat) return;
+  const c = chat;
+  el("chat-name").textContent = c.name;
+  const box = el("chat-lines");
+  box.replaceChildren();
+  if (c.lines.length === 0) {
+    const note = document.createElement("p");
+    note.id = "chat-note";
+    note.textContent = c.busy === "open" ? "Loading…" : c.channelId ? "Nothing said yet." : "";
+    box.appendChild(note);
+  }
+  const group = c.kind !== "DIRECT";
+  let previous: Line | null = null;
+  for (const line of c.lines) {
+    const row = document.createElement("div");
+    row.className = "line";
+    if (line.call) {
+      row.classList.add("call");
+      row.textContent = line.mine ? "You sent a call alert" : `${line.author || "Someone"} sent a call alert`;
+    } else {
+      row.classList.toggle("mine", line.mine);
+      if (group && !line.mine && (previous === null || previous.call || previous.mine || previous.author !== line.author)) {
+        const who = document.createElement("span");
+        who.className = "who";
+        who.textContent = line.author;
+        row.appendChild(who);
+      }
+      const bubble = document.createElement("div");
+      bubble.className = "bubble";
+      if (line.body) bubble.textContent = line.body;
+      else {
+        bubble.classList.add("file");
+        bubble.textContent = "Sent a file";
+      }
+      bubble.title = new Date(line.createdAt).toLocaleString();
+      row.appendChild(bubble);
+    }
+    box.appendChild(row);
+    previous = line;
+  }
+  box.scrollTop = box.scrollHeight;
+  el<HTMLButtonElement>("chat-send").disabled = c.busy !== null || c.channelId === null;
+  el<HTMLTextAreaElement>("chat-input").disabled = c.channelId === null && c.busy === "open";
+}
+
+function showChatError(text: string | null) {
+  el("chat-error").textContent = text ?? "";
+  el("chat-error").hidden = text === null;
+}
+
+function growInput() {
+  const input = el<HTMLTextAreaElement>("chat-input");
+  input.style.height = "auto";
+  input.style.height = `${Math.min(input.scrollHeight, 96)}px`;
+}
+
+function openChat(row: Pick<ChatRow, "key" | "kind" | "name">) {
+  if (mood) return;
+  chatSeq += 1;
+  chat = { key: row.key, kind: row.kind, name: row.name, channelId: null, lines: [], busy: "open", seq: chatSeq };
+  const input = el<HTMLTextAreaElement>("chat-input");
+  input.value = drafts.get(row.key) ?? "";
+  growInput();
+  showChatError(null);
+  el("main-view").hidden = true;
+  el("settings").hidden = true;
+  el("compact-view").hidden = true;
+  el("chat-view").hidden = false;
+  renderChat();
+  invoke("mini_walkie_open", { key: row.key, seq: chatSeq }).catch((error) =>
+    chatResult({ ok: false, op: "open", seq: chat?.seq, error: String(error) }));
+}
+
+function closeChat() {
+  if (!chat) return;
+  const draft = el<HTMLTextAreaElement>("chat-input").value;
+  if (draft.trim()) drafts.set(chat.key, draft);
+  else drafts.delete(chat.key);
+  chat = null;
+  el("chat-view").hidden = true;
+  el("main-view").hidden = false;
+  if (current) renderMode(current);
+}
+
+function sendReply() {
+  if (!chat || chat.busy !== null || chat.channelId === null) return;
+  const body = el<HTMLTextAreaElement>("chat-input").value.trim();
+  if (!body) return;
+  chatSeq += 1;
+  chat.seq = chatSeq;
+  chat.busy = "send";
+  showChatError(null);
+  renderChat();
+  invoke("mini_walkie_send", { channelId: chat.channelId, body, seq: chatSeq }).catch((error) =>
+    chatResult({ ok: false, op: "send", seq: chat?.seq, error: String(error) }));
+}
+
+function chatResult(r: ChatResult) {
+  if (!chat || r.seq !== chat.seq) return;
+  const op = chat.busy;
+  chat.busy = null;
+  if (!r.ok) {
+    showChatError(r.error || (op === "send" ? "That didn't send. Try again." : "Couldn't open that chat."));
+    renderChat();
+    return;
+  }
+  chat.channelId = r.channelId ?? chat.channelId;
+  if (r.name) chat.name = r.name;
+  chat.lines = r.lines ?? [];
+  if (r.op === "send") {
+    el<HTMLTextAreaElement>("chat-input").value = "";
+    drafts.delete(chat.key);
+    growInput();
+  }
+  showChatError(null);
+  renderChat();
+  el<HTMLTextAreaElement>("chat-input").focus();
+}
+
+declare global {
+  interface Window {
+    __cbbMiniWalkieResult?: (r: ChatResult) => void;
+  }
+}
+window.__cbbMiniWalkieResult = (r) => chatResult(r);
+
 function showSettings(open: boolean) {
-  if (!el("compact-view").hidden || mood) return;
+  if (!el("compact-view").hidden || mood || chat) return;
   el("main-view").hidden = open;
   el("settings").hidden = !open;
 }
@@ -479,6 +695,27 @@ window.addEventListener("DOMContentLoaded", () => {
   click("grow", () => void invoke("mini_compact", { compact: false }));
   click("c-unpin", () => void invoke("mini_pin", { pinned: false }));
   click("c-bell", () => void invoke("mini_expand_notifications"));
+  // The mini timer's walkie: grow to the full panel on the newest conversation.
+  click("c-walkie", () => {
+    const first = current?.chats[0];
+    if (!first) return;
+    invoke("mini_compact", { compact: false }).finally(() => openChat(first));
+  });
+  click("chat-back", () => closeChat());
+  click("chat-full", () => void invoke("mini_open", { href: "/walkie" }));
+  el("chat-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    sendReply();
+  });
+  const input = el<HTMLTextAreaElement>("chat-input");
+  input.addEventListener("input", growInput);
+  // Enter sends, Shift+Enter starts a new line (as in the tracker's walkie).
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+      e.preventDefault();
+      sendReply();
+    }
+  });
   click("c-action", () => {
     const action = el("c-action").dataset.action;
     if (action) tapClock(action, "mini_timer");
@@ -497,6 +734,7 @@ window.addEventListener("DOMContentLoaded", () => {
   window.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;
     if (mood) { if (mood.sent === null) closeMood(); return; }
+    if (chat) { closeChat(); return; }
     if (!el("settings").hidden) showSettings(false);
     else void invoke("mini_hide");
   });
@@ -504,6 +742,9 @@ window.addEventListener("DOMContentLoaded", () => {
   // isn't answered or skipped: like closing the web clock's panel.
   window.addEventListener("blur", () => {
     if (mood && mood.sent === null && !current?.pinned) closeMood();
+    // Like the rest of the panel, the next opening starts on the main view;
+    // an unsent reply is kept for when the conversation is opened again.
+    if (chat && !current?.pinned) closeChat();
     showSettings(false);
   });
 });

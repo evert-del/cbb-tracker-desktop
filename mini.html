@@ -23,6 +23,14 @@
         --head-in: #dd347c;
         --head-break: #c77d0a;
         --head-out: #3a3644;
+        --walkie-bg: #fbe4ee;
+        --walkie-fg: #8f1d55;
+        --tone-0-bg: #fbe4ee; --tone-0-fg: #8f1d55;
+        --tone-1-bg: #e9e7fd; --tone-1-fg: #3c3489;
+        --tone-2-bg: #dff4ec; --tone-2-fg: #0f5c47;
+        --tone-3-bg: #fdf0d9; --tone-3-fg: #7a4a06;
+        --tone-4-bg: #e3eefb; --tone-4-fg: #0c447c;
+        --tone-5-bg: #fbe9e3; --tone-5-fg: #7a2e14;
         /* Geometry and type per system (data-platform, set from Rust):
            macOS menus/popovers, Windows 11 Fluent flyouts (8px containers,
            4px controls, Segoe UI Variable), GNOME/Adwaita (12px, Adwaita Sans). */
@@ -46,6 +54,14 @@
           --danger-bg: #3a1c21;
           --danger-fg: #ff8f98;
           --head-out: #2d2934;
+          --walkie-bg: #4a1f33;
+          --walkie-fg: #ffb3d3;
+          --tone-0-bg: #4a1f33; --tone-0-fg: #ffb3d3;
+          --tone-1-bg: #2f2a5c; --tone-1-fg: #c9c3ff;
+          --tone-2-bg: #173d33; --tone-2-fg: #9fe3c9;
+          --tone-3-bg: #45330f; --tone-3-fg: #f5cf8a;
+          --tone-4-bg: #1b3352; --tone-4-fg: #a9cdf5;
+          --tone-5-bg: #4a2519; --tone-5-fg: #f6b9a3;
           color-scheme: dark;
         }
       }
@@ -111,6 +127,12 @@
       .need svg { color: var(--faint); }
       #summary { display: flex; flex-wrap: wrap; gap: 6px; padding: 2px 16px 8px; }
       .chip { font-size: 11.5px; font-weight: 600; padding: 3px 8px; border-radius: 99px; font-variant-numeric: tabular-nums; }
+      .tone-0 { background: var(--tone-0-bg); color: var(--tone-0-fg); }
+      .tone-1 { background: var(--tone-1-bg); color: var(--tone-1-fg); }
+      .tone-2 { background: var(--tone-2-bg); color: var(--tone-2-fg); }
+      .tone-3 { background: var(--tone-3-bg); color: var(--tone-3-fg); }
+      .tone-4 { background: var(--tone-4-bg); color: var(--tone-4-fg); }
+      .tone-5 { background: var(--tone-5-bg); color: var(--tone-5-fg); }
       #empty { padding: 10px 16px 14px; color: var(--muted); font-size: 12.5px; }
       #see-all { display: flex; align-items: center; gap: 6px; padding: 9px 16px; color: var(--pink-ink); font-weight: 600; border-top: 0.5px solid var(--rule); }
       #see-all:hover { background: var(--tile); }
@@ -183,6 +205,41 @@
       .mood-actions button:disabled { opacity: 0.5; cursor: default; }
       #mood-error { margin: 0; color: var(--danger-fg); font-size: 12.5px; }
       #mood-done { margin: auto 0; text-align: center; font-weight: 600; }
+      /* Walkie (walkie.rs): unread conversations, and the quick chat. */
+      #lists { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; }
+      #chats { display: flex; flex-direction: column; }
+      .chat-row { display: flex; align-items: center; gap: 10px; padding: 8px 16px; text-align: left; border-top: 0.5px solid var(--rule); }
+      .chat-row:hover { background: var(--tile); }
+      .face { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; font-weight: 700; font-size: 11.5px; flex: none; background: var(--walkie-bg); color: var(--walkie-fg); }
+      .chat-row .txt { min-width: 0; flex: 1; }
+      .chat-row .top { display: flex; gap: 6px; align-items: baseline; }
+      .chat-row .name { flex: 1; min-width: 0; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .chat-row .when { font-size: 11px; color: var(--faint); font-variant-numeric: tabular-nums; flex: none; }
+      .chat-row .preview { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .chat-row.ringing .preview { color: var(--pink-ink); font-weight: 600; }
+      .pill { min-width: 18px; height: 18px; padding: 0 5px; box-sizing: border-box; border-radius: 99px; background: var(--pink); color: #fff; font-size: 11px; font-weight: 700; display: grid; place-items: center; flex: none; font-variant-numeric: tabular-nums; }
+      #c-walkie { position: relative; display: grid; place-items: center; width: 30px; height: 28px; border-radius: var(--r-ctl); background: rgba(255,255,255,0.14); color: #fff; }
+      #c-walkie:hover { background: rgba(255,255,255,0.26); }
+      #c-walkie-count { position: absolute; top: -5px; right: -6px; min-width: 16px; height: 16px; padding: 0 4px; box-sizing: border-box; border-radius: 99px; background: #fff; color: var(--pink-ink); font-size: 10.5px; font-weight: 700; display: grid; place-items: center; }
+      #chat-view { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+      #chat-head { display: flex; align-items: center; gap: 8px; padding: 10px 10px 10px 12px; border-bottom: 0.5px solid var(--rule); }
+      #chat-name { flex: 1; min-width: 0; font-weight: 600; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      #chat-lines { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; padding: 12px 12px 8px; user-select: text; -webkit-user-select: text; cursor: auto; }
+      .line { max-width: 80%; align-self: flex-start; display: flex; flex-direction: column; gap: 2px; }
+      .line.mine { align-self: flex-end; align-items: flex-end; }
+      .line .who { font-size: 11px; color: var(--faint); margin: 6px 0 0 10px; }
+      .bubble { padding: 7px 10px; border-radius: 14px; background: var(--tile); white-space: pre-wrap; overflow-wrap: anywhere; }
+      .line.mine .bubble { background: var(--pink); color: #fff; }
+      .bubble.file { font-style: italic; }
+      .line.call { align-self: center; max-width: 100%; font-size: 12px; color: var(--pink-ink); font-weight: 600; padding: 4px 0; }
+      #chat-note { margin: auto; color: var(--muted); font-size: 12.5px; text-align: center; }
+      #chat-error { margin: 0 12px 6px; color: var(--danger-fg); font-size: 12.5px; }
+      #chat-form { display: flex; align-items: flex-end; gap: 8px; padding: 8px 10px 10px 12px; border-top: 0.5px solid var(--rule); }
+      #chat-input { flex: 1; min-height: 34px; max-height: 96px; box-sizing: border-box; resize: none; font: inherit; color: var(--fg); background: var(--tile); border: 0.5px solid var(--rule); border-radius: 17px; padding: 7px 12px; user-select: text; -webkit-user-select: text; }
+      #chat-input:focus { outline: 2px solid var(--pink); outline-offset: -1px; }
+      #chat-send { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 50%; background: var(--pink); color: #fff; flex: none; }
+      #chat-send:hover { background: var(--pink-ink); }
+      #chat-send:disabled { opacity: 0.5; cursor: default; }
       @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
     </style>
   </head>
@@ -210,6 +267,11 @@
         <div id="actions"></div>
         <div id="no-sheet" hidden>The time sheet isn't switched on for you.</div>
 
+        <div id="lists">
+        <div id="walkie" hidden>
+          <div class="section" id="walkie-label">Walkie</div>
+          <div id="chats"></div>
+        </div>
         <div class="section" id="needs-label">Needs you</div>
         <div id="summary"></div>
         <div id="needs"></div>
@@ -218,6 +280,7 @@
           <span id="see-all-text">See all notifications</span>
           <svg viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
         </button>
+        </div>
 
         <div id="shortcuts">
           <button class="tile" id="open-tracker" type="button">
@@ -261,6 +324,10 @@
         <div id="c-mid">
           <span id="c-timer">0:00</span>
           <button id="c-action" type="button" hidden></button>
+          <button id="c-walkie" type="button" hidden aria-label="Walkie messages" title="Walkie messages">
+            <svg viewBox="0 0 24 24"><rect x="6" y="7" width="12" height="15" rx="2"/><path d="M9 7V2M9 11h6M9 14h6"/></svg>
+            <span id="c-walkie-count"></span>
+          </button>
           <button id="c-bell" type="button" aria-label="Notifications" title="Notifications">
             <svg viewBox="0 0 24 24"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9M10.3 21a1.9 1.9 0 0 0 3.4 0"/></svg>
             <span id="c-count" hidden></span>
@@ -291,6 +358,26 @@
           <button type="button" class="primary" id="mood-save" disabled>Save</button>
           <button type="button" id="mood-skip">Not now</button>
         </div>
+      </div>
+
+      <div id="chat-view" hidden>
+        <div id="chat-head">
+          <button class="icon-btn" id="chat-back" type="button" aria-label="Back" title="Back">
+            <svg viewBox="0 0 24 24"><path d="M19 12H5M11 18l-6-6 6-6"/></svg>
+          </button>
+          <span id="chat-name"></span>
+          <button class="icon-btn" id="chat-full" type="button" aria-label="Open in the tracker" title="Open in the tracker">
+            <svg viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg>
+          </button>
+        </div>
+        <div id="chat-lines" role="log" aria-live="polite"></div>
+        <p id="chat-error" hidden></p>
+        <form id="chat-form">
+          <textarea id="chat-input" rows="1" maxlength="2000" placeholder="Reply…" aria-label="Reply"></textarea>
+          <button id="chat-send" type="submit" aria-label="Send" title="Send (Enter)">
+            <svg viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+          </button>
+        </form>
       </div>
 
       <div id="settings" hidden>

@@ -37,8 +37,10 @@ mod offline;
 mod session;
 mod system_open;
 mod tabs;
+mod theme;
 mod title_buttons;
 mod updater;
+mod walkie;
 
 /// Tray icon id, so the poller can update its tooltip.
 const TRAY_ID: &str = "main-tray";
@@ -383,6 +385,11 @@ pub(crate) fn build_tracker_window<R: Runtime>(
     let idle_supported = idle::supported();
     let download_handle = app.clone();
     let handed_off = std::sync::Mutex::new(false);
+    // macOS: the tracker dark when the Mac is (theme.rs, dark.js).
+    #[cfg(target_os = "macos")]
+    let dark_script = theme::init_script();
+    #[cfg(not(target_os = "macos"))]
+    let dark_script = String::new();
     let builder = WebviewWindowBuilder::new(app, label, WebviewUrl::External(start))
     .title("CoolerBox Tracker")
     // Lets the tracker know it is inside the app (it hides "Get the
@@ -409,6 +416,7 @@ pub(crate) fn build_tracker_window<R: Runtime>(
     // macOS: navigator.geolocation for the tracker's pages, answered
     // by Core Location through cbb-geo:// hand-overs (location.rs).
     .initialization_script(if cfg!(target_os = "macos") { include_str!("geo_bridge.js") } else { "" })
+    .initialization_script(&dark_script)
     // Location for the time sheet: the tracker's own pages only
     // (location.rs). Windows and Linux; macOS uses geo_bridge.js.
     .on_permission_request(|webview, kind| {
@@ -714,6 +722,10 @@ pub fn run() {
     if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
         std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
     }
+    // Windows: the tracker in dark mode when Windows is (theme.rs). Also
+    // before any webview starts.
+    #[cfg(windows)]
+    theme::apply_at_launch();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -825,6 +837,14 @@ pub fn run() {
                     tabs::show_tab_bar(&tracker);
                 }
             }
+            // Windows: the theme changed while open; the tracker switches on
+            // the next launch (theme.rs).
+            #[cfg(windows)]
+            if let tauri::WindowEvent::ThemeChanged(theme) = event {
+                if window.label() == "main" {
+                    theme::theme_changed(window.app_handle(), *theme == tauri::Theme::Dark);
+                }
+            }
             if matches!(event, tauri::WindowEvent::Destroyed) && is_extra_tracker_window(window.label()) {
                 drop_dock_icon_if_alone(window.app_handle(), window.label());
             }
@@ -853,7 +873,9 @@ pub fn run() {
             mini::mini_pin,
             mini::mini_compact,
             mini::mini_mood,
-            mini::mini_mood_done
+            mini::mini_mood_done,
+            walkie::mini_walkie_open,
+            walkie::mini_walkie_send
         ])
         .setup(|app| {
             #[cfg(target_os = "linux")]
@@ -985,6 +1007,7 @@ pub fn run() {
             app.manage(clock::Net::default());
             app.manage(notify::Unread(std::sync::Mutex::new(0)));
             app.manage(notify::Snapshot::default());
+            app.manage(walkie::Walkie::default());
             app.manage(notify::InboxItems {
                 rows: [inbox_1, inbox_2, inbox_3],
                 hrefs: std::sync::Mutex::new([None, None, None]),
@@ -1092,6 +1115,9 @@ pub fn run() {
                 .build(app)?;
 
             notify::start(app.handle().clone());
+            walkie::start(app.handle().clone());
+            #[cfg(target_os = "macos")]
+            theme::start(app.handle().clone());
             idle::start(app.handle().clone());
             clock::start(app.handle().clone());
             updater::start(app.handle().clone());

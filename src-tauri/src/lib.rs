@@ -417,6 +417,9 @@ pub(crate) fn build_tracker_window<R: Runtime>(
     // by Core Location through cbb-geo:// hand-overs (location.rs).
     .initialization_script(if cfg!(target_os = "macos") { include_str!("geo_bridge.js") } else { "" })
     .initialization_script(&dark_script)
+    // Walkie at once (walkie_bridge.js): when the tracker's dock reloads its
+    // walkie list, the app takes the same answer (cbb-walkie://rail).
+    .initialization_script(include_str!("walkie_bridge.js"))
     // Location for the time sheet: the tracker's own pages only
     // (location.rs). Windows and Linux; macOS uses geo_bridge.js.
     .on_permission_request(|webview, kind| {
@@ -482,6 +485,11 @@ pub(crate) fn build_tracker_window<R: Runtime>(
                     location::request(&opener_handle, &own_label, id);
                 }
             }
+            return false;
+        }
+        // walkie_bridge.js: the tracker's walkie list just arrived.
+        if url.scheme() == "cbb-walkie" {
+            walkie::take_from(&opener_handle, &own_label);
             return false;
         }
         // "Show me" in the one-time quick-panel tip.

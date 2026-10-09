@@ -255,6 +255,33 @@ pub(crate) fn refresh<R: Runtime>(app: &AppHandle<R>) {
     });
 }
 
+/// walkie_bridge.js saw the tracker's own walkie list arrive in `label`'s
+/// window (its dock reloads it the moment something is said): take it now,
+/// rather than on the next poll.
+pub(crate) fn take_from<R: Runtime>(app: &AppHandle<R>, label: &str) {
+    let app = app.clone();
+    let label = label.to_string();
+    // Off the navigation handler, so the page is never asked from inside it.
+    std::thread::spawn(move || {
+        if !crate::session::signed_in() {
+            return;
+        }
+        let Some(window) = app
+            .get_webview_window(&label)
+            .filter(|window| window.url().is_ok_and(|url| url.host_str() == Some(crate::APP_HOST)))
+        else {
+            return;
+        };
+        let app_for_cb = app.clone();
+        let _ = window.eval_with_callback(TAKE_JS, move |raw| {
+            let raw: String = serde_json::from_str(&raw).unwrap_or_default();
+            if let Some(rail) = parse(&raw) {
+                apply(&app_for_cb, &rail);
+            }
+        });
+    });
+}
+
 /// Start the background poller. Does nothing while the main window is off the
 /// tracker (e.g. mid sign-in).
 pub(crate) fn start<R: Runtime>(app: AppHandle<R>) {
@@ -505,6 +532,17 @@ mod tests {
         assert!(reply_body("   ").is_err());
         assert!(reply_body(&"x".repeat(2000)).is_ok());
         assert!(reply_body(&"x".repeat(2001)).is_err());
+    }
+
+    #[test]
+    fn the_bridge_only_watches_the_walkie_list_and_sends_nothing() {
+        let js = include_str!("walkie_bridge.js");
+        assert!(js.contains("url.pathname === '/api/walkie/channels'"));
+        assert!(js.contains("url.origin === location.origin"));
+        assert!(js.contains("r.clone()"), "the page still gets its own answer");
+        assert!(js.contains("location.href = 'cbb-walkie://rail'"));
+        assert_eq!(js.matches("pageFetch.apply").count(), 1, "no fetch of its own");
+        assert!(!js.contains("localStorage") && !js.contains("console."));
     }
 
     #[test]

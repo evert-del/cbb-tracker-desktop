@@ -683,10 +683,9 @@ pub(crate) fn mini_pin<R: Runtime>(app: AppHandle<R>, pinned: bool) -> Result<()
     PINNED.store(pinned, std::sync::atomic::Ordering::Relaxed);
     // Pinned or unpinned by hand: the person's choice now, not the minimise's.
     FLOATED_FOR_MINIMISE.store(false, std::sync::atomic::Ordering::Relaxed);
-    if pinned {
-        // A floating timer is for working in the tracker: bring it back.
-        bring_tracker_back(&app);
-    } else {
+    // Pinning only floats the panel where it is: the tracker stays as it
+    // is, and only Open tracker brings it back.
+    if !pinned {
         // The drop-down is always the full panel.
         set_compact(&app, false);
         if let Some(mini) = app.get_webview_window("mini") {

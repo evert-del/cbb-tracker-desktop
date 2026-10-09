@@ -236,6 +236,41 @@ pub(crate) fn show<R: Runtime>(app: &AppHandle<R>) {
     }
 }
 
+/// A tracker window was minimised: instead of sitting in the Dock / taskbar
+/// it is put away (as the drop-down puts it away) and the panel floats as the
+/// mini timer, so the timer and clock buttons stay in reach. Open tracker
+/// brings it back (bring_tracker_back). An already pinned panel keeps its
+/// size and place.
+pub(crate) fn minimised_to_panel<R: Runtime>(app: &AppHandle<R>, label: &str) {
+    if !crate::session::signed_in() {
+        return;
+    }
+    let Some(window) = app.get_webview_window(label) else { return };
+    {
+        let Ok(mut away) = PUT_AWAY.lock() else { return };
+        if away.iter().any(|l| l == label) {
+            return;
+        }
+        away.push(label.to_string());
+    }
+    let _ = window.hide();
+    let newly_pinned = !is_pinned();
+    if newly_pinned {
+        PINNED.store(true, std::sync::atomic::Ordering::Relaxed);
+        set_compact(app, true);
+    }
+    if let Some(mini) = app.get_webview_window("mini") {
+        if newly_pinned {
+            place_under_tray(&mini);
+        }
+        let _ = mini.show();
+    }
+    push(app);
+    if newly_pinned {
+        crate::analytics::panel_mode(app, true, true);
+    }
+}
+
 /// Drop the panel down from the tray icon.
 fn place_under_tray<R: Runtime>(mini: &tauri::WebviewWindow<R>) {
     use tauri_plugin_positioner::{Position, WindowExt};

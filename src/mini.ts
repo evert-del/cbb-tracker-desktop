@@ -451,7 +451,94 @@ window.__cbbMiniMoodResult = (r) => moodResult(r);
 // ── Walkie quick chat (walkie.rs). What people say is only drawn here: never
 // stored, logged or counted. Opening a conversation marks it read, so Back
 // without replying clears it too.
-type Line = { id: string; body: string; author: string; mine: boolean; createdAt: string; call: boolean; file: boolean };
+type Reaction = { key: StickerKey; count: number; mine: boolean; who: string[] };
+type Line = {
+  id: string; body: string; author: string; mine: boolean; createdAt: string; call: boolean; file: boolean;
+  fileName?: string; fileGone?: boolean; reactions?: Reaction[];
+};
+
+// The tracker's walkie stickers (its walkie-reactions.tsx): drawn, never
+// Unicode emoji, a black ink line over a brand-colour fill slipped a little
+// off-register. Same shapes, colours and order, so the panel matches the web.
+type StickerKey = "THUMBS_UP" | "HEART" | "FIRE" | "KISS" | "CRYING" | "FROWN" | "THINKING";
+const INK = 'fill="none" stroke="#000" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"';
+const FACE = "M12 3.6a8.4 8.4 0 1 1 0 16.8a8.4 8.4 0 1 1 0-16.8z";
+const STICKERS: Record<StickerKey, { label: string; shape: string; fill: string; detail: string }> = {
+  THUMBS_UP: {
+    label: "Thumbs up", fill: "#0777BF", detail: "",
+    shape: "M7.4 10.8l3.3-5.3c.6-.9 2-.5 2 .6v3.4h4.5c1.2 0 2 1.1 1.8 2.2l-1.2 5.6c-.2 1-1.1 1.7-2.1 1.7H7.4zM3.9 10.8h3.5v8.2H3.9z",
+  },
+  HEART: {
+    label: "Heart", fill: "#DD347C",
+    shape: "M12 20s-7.8-4.6-7.8-10.2A4.2 4.2 0 0 1 12 7.3a4.2 4.2 0 0 1 7.8 2.5C19.8 15.4 12 20 12 20z",
+    detail: `<path d="M7.4 9.4a2 2 0 0 1 1.7-1.6" ${INK} stroke-width="1.1"/>`,
+  },
+  FIRE: {
+    label: "Fire", fill: "url(#GRAD)",
+    shape: "M12 21c-3.9 0-6.6-2.7-6.6-6.3 0-3.4 2.7-5.3 3.5-8.4 1.4 1.2 2 2.6 2 4.1 1.1-.9 1.7-2.7 1.4-4.8 3.4 2 6.3 5.3 6.3 9.1 0 3.6-2.7 6.3-6.6 6.3z",
+    detail: '<path d="M12 21c-1.6 0-2.8-1.1-2.8-2.7 0-1.6 1.3-2.5 2-3.8 1.9 1.1 3.6 2.4 3.6 4 0 1.5-1.2 2.5-2.8 2.5z" fill="#E4BED0" stroke="#000" stroke-width="1.2" stroke-linejoin="round"/>',
+  },
+  KISS: {
+    label: "Kiss", fill: "#E4BED0", shape: FACE,
+    detail: `<path d="M8.3 10.3q1.3 1.1 2.6 0" ${INK}/><circle cx="14.8" cy="10.1" r="1" fill="#000"/>`
+      + `<path d="M11.6 13.9q2 .5.2 1.3q2 .5.2 1.4" ${INK} stroke-width="1.4"/>`
+      + '<path d="M18.6 3.4s-2.2-1.3-2.2-2.9a1.1 1.1 0 0 1 2.2-.4a1.1 1.1 0 0 1 2.2.4c0 1.6-2.2 2.9-2.2 2.9z" transform="translate(1.2 1.6)" fill="#DD347C" stroke="#000" stroke-width="1" stroke-linejoin="round"/>',
+  },
+  CRYING: {
+    label: "Crying", fill: "#98D4EA", shape: FACE,
+    detail: `<path d="M8.2 10.6q1.3-1 2.6 0M13.2 10.6q1.3-1 2.6 0" ${INK}/><path d="M9.4 16.3q2.6-2.2 5.2 0" ${INK}/>`
+      + '<path d="M16.2 12.3s-1.5 2-1.5 3a1.5 1.5 0 0 0 3 0c0-1-1.5-3-1.5-3z" fill="#0777BF" stroke="#000" stroke-width="1.1" stroke-linejoin="round"/>',
+  },
+  FROWN: {
+    label: "Frown", fill: "#D9B3F5", shape: FACE,
+    detail: `<path d="M7.7 8.2l2.6.9M16.3 8.2l-2.6.9" ${INK}/><circle cx="9.3" cy="10.9" r="1" fill="#000"/>`
+      + `<circle cx="14.7" cy="10.9" r="1" fill="#000"/><path d="M9 16.4q3-2.7 6 0" ${INK}/>`,
+  },
+  THINKING: {
+    label: "Thinking", fill: "#D9B3F5", shape: "M11 5.6a7.6 7.6 0 1 1 0 15.2a7.6 7.6 0 1 1 0-15.2z",
+    detail: `<path d="M12.6 8.9q1.3-.9 2.6 0" ${INK}/><circle cx="8.6" cy="11.8" r="1" fill="#000"/>`
+      + `<circle cx="13.6" cy="11.4" r="1" fill="#000"/><path d="M9.2 16.1l3.8-.7" ${INK}/>`
+      + '<circle cx="19.4" cy="5.6" r="1.4" fill="#A64EA6" stroke="#000" stroke-width="1"/><circle cx="21.7" cy="2.6" r=".9" fill="#A64EA6" stroke="#000" stroke-width="1"/>',
+  },
+};
+
+let stickerIds = 0;
+/** One sticker as an SVG element (constant markup only, no message text). */
+function sticker(key: StickerKey, size = 16): Element {
+  const s = STICKERS[key];
+  const grad = `fire-${++stickerIds}`;
+  const holder = document.createElement("span");
+  holder.innerHTML =
+    `<svg class="sticker" viewBox="0 0 24 24" width="${size}" height="${size}" aria-hidden="true" overflow="visible">`
+    + (key === "FIRE" ? `<defs><linearGradient id="${grad}" x1="0" y1="1" x2="0" y2="0"><stop offset="0" stop-color="#DD347C"/><stop offset="1" stop-color="#A64EA6"/></linearGradient></defs>` : "")
+    + `<path d="${s.shape}" fill="${s.fill.replace("GRAD", grad)}" transform="translate(1.3 1.2)"/>`
+    + `<path d="${s.shape}" ${INK}/>${s.detail}</svg>`;
+  return holder.firstElementChild as Element;
+}
+
+/** The stickers on a message, as chips: the sticker, how many, and who. */
+function reactionChips(reactions: Reaction[], mine: boolean): HTMLElement | null {
+  const known = reactions.filter((r) => r.key in STICKERS && r.count > 0);
+  if (known.length === 0) return null;
+  const bar = document.createElement("div");
+  bar.className = "reactions";
+  bar.classList.toggle("mine", mine);
+  for (const r of known) {
+    const chip = document.createElement("span");
+    chip.className = "chip-react";
+    chip.classList.toggle("yours", r.mine);
+    chip.title = `${STICKERS[r.key].label}: ${r.who.join(", ")}`;
+    chip.setAttribute("aria-label", chip.title);
+    chip.appendChild(sticker(r.key));
+    if (r.count > 1) {
+      const n = document.createElement("span");
+      n.textContent = String(r.count);
+      chip.appendChild(n);
+    }
+    bar.appendChild(chip);
+  }
+  return bar;
+}
 type ChatResult = {
   ok: boolean;
   op?: "open" | "send";
@@ -568,12 +655,17 @@ function renderChat() {
       const bubble = document.createElement("div");
       bubble.className = "bubble";
       if (line.body) bubble.textContent = line.body;
-      else {
-        bubble.classList.add("file");
-        bubble.textContent = "Sent a file";
+      if (line.file || line.fileGone) {
+        const file = document.createElement("span");
+        file.className = "file-name";
+        file.textContent = line.fileGone ? "File removed" : line.fileName || "A file";
+        if (!line.body) bubble.classList.add("file");
+        bubble.appendChild(file);
       }
       bubble.title = new Date(line.createdAt).toLocaleString();
       row.appendChild(bubble);
+      const chips = reactionChips(line.reactions ?? [], line.mine);
+      if (chips) row.appendChild(chips);
     }
     box.appendChild(row);
     previous = line;

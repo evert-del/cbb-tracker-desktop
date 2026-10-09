@@ -853,6 +853,25 @@ pub fn run() {
                     theme::theme_changed(window.app_handle(), *theme == tauri::Theme::Dark);
                 }
             }
+            // Minimising a tracker window floats the quick panel as the mini
+            // timer instead (mini::minimised_to_panel). There's no minimise
+            // event: it shows as a resize (Windows) or a lost focus (macOS),
+            // so look once the minimise animation is done.
+            if matches!(event, tauri::WindowEvent::Resized(_) | tauri::WindowEvent::Focused(false))
+                && (window.label() == "main" || is_extra_tracker_window(window.label()))
+            {
+                let app = window.app_handle().clone();
+                let label = window.label().to_string();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(400));
+                    let minimised = app
+                        .get_webview_window(&label)
+                        .is_some_and(|tracker| tracker.is_minimized().unwrap_or(false));
+                    if minimised {
+                        mini::minimised_to_panel(&app, &label);
+                    }
+                });
+            }
             if matches!(event, tauri::WindowEvent::Destroyed) && is_extra_tracker_window(window.label()) {
                 drop_dock_icon_if_alone(window.app_handle(), window.label());
             }

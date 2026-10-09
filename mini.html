@@ -237,6 +237,13 @@
       .bubble { padding: 7px 10px; border-radius: 14px; background: var(--tile); white-space: pre-wrap; overflow-wrap: anywhere; }
       .line.mine .bubble { background: var(--pink); color: #fff; }
       .bubble.file { font-style: italic; }
+      .bubble .file-name { display: block; font-size: 12px; font-weight: 600; overflow-wrap: anywhere; }
+      .bubble .file-name:not(:first-child) { margin-top: 4px; }
+      .reactions { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 2px; }
+      .reactions.mine { justify-content: flex-end; }
+      .chip-react { display: inline-flex; align-items: center; gap: 3px; height: 22px; padding: 0 7px 0 5px; border-radius: 99px; background: var(--tile); font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; }
+      .chip-react.yours { box-shadow: inset 0 0 0 1.5px var(--pink); }
+      .chip-react .sticker { flex: none; }
       .line.call { align-self: center; max-width: 100%; font-size: 12px; color: var(--pink-ink); font-weight: 600; padding: 4px 0; }
       #chat-note { margin: auto; color: var(--muted); font-size: 12.5px; text-align: center; }
       #chat-error { margin: 0 12px 6px; color: var(--danger-fg); font-size: 12.5px; }

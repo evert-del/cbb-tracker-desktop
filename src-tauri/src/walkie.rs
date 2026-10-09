@@ -342,6 +342,7 @@ pub(crate) fn reply_body(body: &str) -> Result<String, &'static str> {
 /// `window.__cbbWalkieResult`.
 const CHAT_JS: &str = r#"(function (a) {
   window.__cbbWalkieResult = '';
+  var STICKERS = ['THUMBS_UP', 'HEART', 'FIRE', 'KISS', 'CRYING', 'FROWN', 'THINKING'];
   function done(x) { x.op = a.op; x.seq = a.seq; window.__cbbWalkieResult = JSON.stringify(x); }
   function json(r) { return r.json().catch(function () { return {}; }).then(function (b) { return { ok: r.ok, b: b || {} }; }); }
   function post(url, body) {
@@ -353,7 +354,11 @@ const CHAT_JS: &str = r#"(function (a) {
       if (!m.ok) return done({ ok: false, error: m.b.error || "Couldn't read that chat." });
       return post(base + '/read').catch(function () {}).then(function () {
         done({ ok: true, channelId: id, name: name, lines: (m.b.messages || []).slice(-20).map(function (l) {
-          return { id: String(l.id), body: l.body || '', author: l.author || '', mine: !!l.mine, createdAt: l.createdAt || '', call: l.kind === 'call', file: !!l.file };
+          return { id: String(l.id), body: l.body || '', author: l.author || '', mine: !!l.mine, createdAt: l.createdAt || '', call: l.kind === 'call', file: !!l.file,
+            fileName: l.file && l.file.filename ? String(l.file.filename).slice(0, 200) : '', fileGone: !!l.fileGone,
+            reactions: (Array.isArray(l.reactions) ? l.reactions : []).filter(function (r) { return r && STICKERS.indexOf(r.key) >= 0 && r.count > 0; }).map(function (r) {
+              return { key: r.key, count: Math.min(Number(r.count) || 0, 999), mine: !!r.mine, who: (Array.isArray(r.who) ? r.who : []).slice(0, 12).map(String) };
+            }) };
         }) });
       });
     });

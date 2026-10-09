@@ -41,6 +41,7 @@ mod theme;
 mod title_buttons;
 mod updater;
 mod walkie;
+mod whats_new;
 
 /// Tray icon id, so the poller can update its tooltip.
 const TRAY_ID: &str = "main-tray";
@@ -569,6 +570,11 @@ pub(crate) fn build_tracker_window<R: Runtime>(
                 let cookies: String = serde_json::from_str(&cookies_json).unwrap_or_default();
                 if probe.label() == "main" {
                     session::update(probe.app_handle(), has_session_cookie(&cookies));
+                    // Signed in on the dashboard (where the app opens): what's
+                    // new after an update, once (whats_new.rs).
+                    if has_session_cookie(&cookies) {
+                        whats_new::maybe_show(probe.app_handle());
+                    }
                 }
                 if !has_session_cookie(&cookies) {
                     if let Ok(sign_in) = START_URL.parse::<url::Url>() {
@@ -583,6 +589,8 @@ pub(crate) fn build_tracker_window<R: Runtime>(
         if page.path() != "/sign-in" {
             if window.label() == "main" {
                 mini::maybe_introduce(window.app_handle());
+                // After an update: what's new, once (whats_new.rs).
+                whats_new::maybe_show(window.app_handle());
             } else if is_extra_tracker_window(window.label()) {
                 // A second tracker window: how to compare side by side, once.
                 tabs::maybe_explain(window.app_handle(), window.label());
@@ -746,7 +754,6 @@ pub fn run() {
                 .build(),
         )
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(tauri_plugin_positioner::init())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
@@ -856,6 +863,7 @@ pub fn run() {
             if window.label() == "mini"
                 && matches!(event, tauri::WindowEvent::Focused(false))
                 && !mini::is_pinned()
+                && !mini::held_open()
             {
                 mini::hide(window.app_handle());
             }
@@ -877,6 +885,8 @@ pub fn run() {
             mini::mini_compact,
             mini::mini_mood,
             mini::mini_mood_done,
+            mini::mini_whats_new,
+            mini::mini_whats_new_done,
             walkie::mini_walkie_open,
             walkie::mini_walkie_send
         ])
@@ -1104,9 +1114,6 @@ pub fn run() {
                     _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {
-                    // Remember where the icon is (on click, hover and move),
-                    // so the panel drops down under it (mini::place_under_tray).
-                    tauri_plugin_positioner::on_tray_event(tray.app_handle(), &event);
                     // Menu-bar-app feel: left-click toggles the mini panel.
                     // The full menu (with Show Tracker) is on right-click.
                     if let TrayIconEvent::Click {

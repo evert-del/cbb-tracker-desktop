@@ -285,28 +285,19 @@ pub(crate) fn minimised_to_panel<R: Runtime>(app: &AppHandle<R>, label: &str) {
     }
 }
 
-/// Drop the panel down from the tray icon.
+/// Drop the panel down by the tray: the top-right of the main screen on
+/// macOS (under the menu bar, where the icon is), bottom-right above the
+/// taskbar on Windows, top-right on Linux. Worked out here rather than from
+/// the tray icon's reported place, which comes out wrong when screens differ
+/// in density (a Retina laptop beside a plain monitor) and isn't known until
+/// the icon has been clicked or hovered.
 fn place_under_tray<R: Runtime>(mini: &tauri::WebviewWindow<R>) {
-    use tauri_plugin_positioner::{Position, WindowExt};
-    // macOS: the menu bar is at the top, so the panel drops down from the
-    // icon. Windows: the taskbar is usually at the bottom, so it rises above
-    // the icon. Linux reports no tray position (or clicks: there the panel
-    // opens from the tray menu or the shortcut), so it sits in the top-right
-    // corner, where most panels keep the tray. Tray positions also fail until
-    // the icon has reported where it is; the corner covers that too.
-    let at = if cfg!(target_os = "macos") {
-        Position::TrayBottomCenter
-    } else {
-        Position::TrayCenter
-    };
-    if mini.move_window(at).is_err() {
-        place_in_main_screen_corner(mini);
-    }
+    place_in_main_screen_corner(mini);
 }
 
-/// Before the tray icon has reported where it is: the corner by the tray on
-/// the main screen (the one with the menu bar / taskbar). Not the panel's own
-/// "current" screen, which with a second monitor can be the other one.
+/// The corner by the tray on the main screen (the one with the menu bar /
+/// taskbar). Not the panel's own "current" screen, which with a second
+/// monitor can be the other one.
 fn place_in_main_screen_corner<R: Runtime>(mini: &tauri::WebviewWindow<R>) {
     let Some(screen) = mini.primary_monitor().ok().flatten() else { return };
     let Ok(size) = mini.outer_size() else { return };
@@ -612,7 +603,69 @@ pub(crate) fn mini_mood<R: Runtime>(app: AppHandle<R>, request: serde_json::Valu
 /// The check-in is over: a mini timer it grew goes back to its small size.
 #[tauri::command]
 pub(crate) fn mini_mood_done<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
-    if MOOD_SHRINK_AFTER.swap(false, std::sync::atomic::Ordering::Relaxed) && is_pinned() {
+    if MOOD_SHRINK_AFTER.swap(false, std::sync::atomic::Ordering::Relaxed) {
+        set_compact(&app, true);
+        push(&app);
+    }
+    Ok(())
+}
+
+// ── what's new after an update (whats_new.rs) ──
+
+/// Whether the one-time panel tip was shown: the app was used before.
+pub(crate) fn was_introduced<R: Runtime>(app: &AppHandle<R>) -> bool {
+    crate::close::flag(app, INTRODUCED)
+}
+
+/// A mini timer that grew to show what's new: shrink it back after.
+static WHATS_NEW_SHRINK_AFTER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// While "What's new" is showing the panel stays open (it doesn't hide on
+/// losing focus) until "Got it": it can appear while someone is busy elsewhere.
+static HOLD_OPEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub(crate) fn held_open() -> bool {
+    HOLD_OPEN.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Open the panel (full size) on the "New in <version>" page, beside the
+/// tracker (it isn't put away).
+pub(crate) fn show_whats_new<R: Runtime>(app: &AppHandle<R>, version: &str, items: &[crate::whats_new::Item]) {
+    if !crate::session::signed_in() {
+        return;
+    }
+    HOLD_OPEN.store(true, std::sync::atomic::Ordering::Relaxed);
+    if is_compact() {
+        WHATS_NEW_SHRINK_AFTER.store(true, std::sync::atomic::Ordering::Relaxed);
+        set_compact(app, false);
+    }
+    if let Some(mini) = app.get_webview_window("mini") {
+        if !mini.is_visible().unwrap_or(false) {
+            if !is_pinned() {
+                place_under_tray(&mini);
+            }
+            let _ = mini.show();
+        }
+        push(app);
+        let page = serde_json::json!({ "version": version, "items": items });
+        let _ = mini.eval(format!("window.__cbbMiniWhatsNew && window.__cbbMiniWhatsNew({page})"));
+        let _ = mini.set_focus();
+    }
+}
+
+/// Settings ▸ What's new.
+#[tauri::command]
+pub(crate) fn mini_whats_new<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
+    crate::whats_new::show_now(&app);
+    Ok(())
+}
+
+/// "Got it": a mini timer that grew for it goes back to its small size.
+#[tauri::command]
+pub(crate) fn mini_whats_new_done<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
+    HOLD_OPEN.store(false, std::sync::atomic::Ordering::Relaxed);
+    crate::whats_new::mark_seen(&app);
+    if WHATS_NEW_SHRINK_AFTER.swap(false, std::sync::atomic::Ordering::Relaxed) {
         set_compact(&app, true);
         push(&app);
     }

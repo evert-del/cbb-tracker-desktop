@@ -247,7 +247,7 @@ function renderMode(view: View) {
   if (compact) {
     el("main-view").hidden = true;
     el("settings").hidden = true;
-  } else if (el("settings").hidden && !mood && !chat) {
+  } else if (el("settings").hidden && !mood && !chat && !whatsNew) {
     el("main-view").hidden = false;
   }
 }
@@ -393,6 +393,39 @@ function greet(text: string) {
   }, 6000);
 }
 
+// What's new after an update (whats_new.rs): its own page, until "Got it".
+let whatsNew = false;
+function openWhatsNew(page: { version: string; items: { title: string; how: string }[] }) {
+  if (mood || chat) return;
+  whatsNew = true;
+  el("whats-new-title").textContent = `New in ${page.version}`;
+  el("whats-new-items").replaceChildren(...page.items.map((item) => {
+    const li = document.createElement("li");
+    const t = document.createElement("span");
+    t.className = "t";
+    t.textContent = item.title;
+    const h = document.createElement("span");
+    h.className = "h";
+    h.textContent = item.how;
+    li.append(t, h);
+    return li;
+  }));
+  el("main-view").hidden = true;
+  el("settings").hidden = true;
+  el("compact-view").hidden = true;
+  el("whats-new-view").hidden = false;
+  el("whats-new-view").scrollTop = 0;
+  el<HTMLButtonElement>("whats-new-done").focus({ preventScroll: true });
+}
+
+function closeWhatsNew() {
+  if (!whatsNew) return;
+  whatsNew = false;
+  el("whats-new-view").hidden = true;
+  el("main-view").hidden = false;
+  void invoke("mini_whats_new_done");
+}
+
 function openMood(moment: "IN" | "WRAP", greeting?: string | null) {
   mood = { moment, stage: "ask", score: null, word: null, ownWords: false, cause: null, sent: null };
   el("mood-greeting").textContent = greeting ?? "";
@@ -447,11 +480,13 @@ declare global {
   interface Window {
     __cbbMiniMood?: (ask: { moment: "IN" | "WRAP"; greeting?: string | null }) => void;
     __cbbMiniGreet?: (text: string) => void;
+    __cbbMiniWhatsNew?: (page: { version: string; items: { title: string; how: string }[] }) => void;
     __cbbMiniMoodResult?: (r: { ok: boolean; offerTalk?: boolean; told?: string[]; error?: string }) => void;
   }
 }
 window.__cbbMiniMood = (ask) => openMood(ask.moment, ask.greeting);
 window.__cbbMiniGreet = (text) => greet(text);
+window.__cbbMiniWhatsNew = (page) => openWhatsNew(page);
 window.__cbbMiniMoodResult = (r) => moodResult(r);
 
 // ── Walkie quick chat (walkie.rs). What people say is only drawn here: never
@@ -763,7 +798,7 @@ declare global {
 window.__cbbMiniWalkieResult = (r) => chatResult(r);
 
 function showSettings(open: boolean) {
-  if (!el("compact-view").hidden || mood || chat) return;
+  if (!el("compact-view").hidden || mood || chat || whatsNew) return;
   el("main-view").hidden = open;
   el("settings").hidden = !open;
 }
@@ -781,6 +816,8 @@ window.addEventListener("DOMContentLoaded", () => {
   click("open-offline", () => menu("offline"));
   click("new-window", () => menu("new-window"));
   click("update", () => menu("update"));
+  click("whats-new-row", () => { showSettings(false); void invoke("mini_whats_new"); });
+  click("whats-new-done", closeWhatsNew);
   click("update-row", () => menu("update"));
   click("diagnostics-row", () => menu("diagnostics"));
   click("autostart-row", () => menu("autostart"));
@@ -857,6 +894,7 @@ window.addEventListener("DOMContentLoaded", () => {
   });
   window.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;
+    if (whatsNew) { closeWhatsNew(); return; }
     if (mood) { if (mood.sent === null) closeMood(); return; }
     if (chat) { closeChat(); return; }
     if (!el("settings").hidden) showSettings(false);

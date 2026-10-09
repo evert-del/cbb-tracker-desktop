@@ -193,6 +193,13 @@
       #compact-view .head-btn { width: 24px; height: 24px; flex: none; }
       #c-count { position: absolute; top: -5px; right: -6px; min-width: 16px; height: 16px; padding: 0 4px; box-sizing: border-box; border-radius: 99px; background: #fff; color: var(--pink-ink); font-size: 10.5px; font-weight: 700; display: grid; place-items: center; }
       /* Mood check-in (mini.rs ask_mood), the web clock card's in the panel. */
+      #whats-new-view { display: flex; flex-direction: column; gap: 10px; flex: 1; padding: 16px; overflow-y: auto; }
+      #whats-new-view h2 { margin: 0; font-size: 16px; font-weight: 600; }
+      #whats-new-view .hint { margin: -4px 0 0; color: var(--muted); font-size: 12px; }
+      #whats-new-items { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 12px; }
+      #whats-new-items li { padding-left: 12px; border-left: 2px solid var(--pink); }
+      #whats-new-items .t { display: block; font-weight: 600; font-size: 13px; }
+      #whats-new-items .h { display: block; margin-top: 2px; font-size: 12px; color: var(--muted); line-height: 1.4; }
       #mood-view { display: flex; flex-direction: column; gap: 10px; flex: 1; padding: 16px; overflow-y: auto; }
       #mood-view h2 { margin: 0; font-size: 16px; font-weight: 600; }
       #mood-view .hint { margin: -4px 0 0; color: var(--muted); font-size: 12px; }
@@ -352,6 +359,15 @@
         </button>
       </div>
 
+      <div id="whats-new-view" hidden>
+        <h2 id="whats-new-title">What's new</h2>
+        <p class="hint">Here's what changed in this update, and how to use it.</p>
+        <ul id="whats-new-items"></ul>
+        <div class="mood-actions">
+          <button type="button" class="primary" id="whats-new-done">Got it</button>
+        </div>
+      </div>
+
       <div id="mood-view" hidden>
         <div id="mood-ask">
           <p id="mood-greeting" hidden></p>
@@ -415,6 +431,9 @@
           <button type="button" class="seg" id="close-keep" role="radio" aria-checked="true">Keep running</button>
           <button type="button" class="seg" id="close-quit" role="radio" aria-checked="false">Quit the app</button>
         </div>
+        <button class="set-row" id="whats-new-row" type="button">
+          <span class="txt">What's new<span class="hint" style="display:block">What changed in this version, and how to use it.</span></span>
+        </button>
         <button class="set-row" id="update-row" type="button">
           <span class="txt">Check for updates<span class="hint" id="version-hint" style="display:block"></span></span>
         </button>

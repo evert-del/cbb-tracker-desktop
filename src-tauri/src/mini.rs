@@ -464,10 +464,27 @@ pub(crate) fn mood_script(body: &serde_json::Value) -> String {
 const TAKE_MOOD_RESULT_JS: &str =
     "(function () { var v = window.__cbbMoodResult || ''; window.__cbbMoodResult = ''; return v; })()";
 
+/// Shows the tracker's greeting after a clock tap ("Good morning, Sam.
+/// Have a good day."): a line in the panel when it is showing, otherwise
+/// a desktop notification (a tray or shortcut tap).
+pub(crate) fn greet<R: Runtime>(app: &AppHandle<R>, greeting: &str) {
+    let mini = app
+        .get_webview_window("mini")
+        .filter(|mini| mini.is_visible().unwrap_or(false));
+    if let Some(mini) = mini {
+        let text = serde_json::Value::from(greeting);
+        let _ = mini.eval(format!("window.__cbbMiniGreet && window.__cbbMiniGreet({text})"));
+        return;
+    }
+    use tauri_plugin_notification::NotificationExt;
+    let _ = app.notification().builder().title("CoolerBox Tracker").body(greeting).show();
+}
+
 /// Ask how they are, in the panel: `moment` is "IN" or "WRAP". Opens the
 /// panel (full size) when it isn't showing. Support stays inside the
 /// company: the only route is the "someone to check in" request to HR.
-pub(crate) fn ask_mood<R: Runtime>(app: &AppHandle<R>, moment: &str) {
+/// The tap's greeting, if any, sits above the question.
+pub(crate) fn ask_mood<R: Runtime>(app: &AppHandle<R>, moment: &str, greeting: Option<&str>) {
     if is_compact() {
         MOOD_SHRINK_AFTER.store(true, std::sync::atomic::Ordering::Relaxed);
         set_compact(app, false);
@@ -481,7 +498,7 @@ pub(crate) fn ask_mood<R: Runtime>(app: &AppHandle<R>, moment: &str) {
         show(app);
     }
     if let Some(mini) = app.get_webview_window("mini") {
-        let ask = serde_json::json!({ "moment": moment });
+        let ask = serde_json::json!({ "moment": moment, "greeting": greeting });
         let _ = mini.eval(format!("window.__cbbMiniMood && window.__cbbMiniMood({ask})"));
         let _ = mini.set_focus();
     }

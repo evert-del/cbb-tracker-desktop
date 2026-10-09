@@ -370,8 +370,27 @@ function renderMood() {
   el<HTMLButtonElement>("mood-skip").disabled = m.sent !== null;
 }
 
-function openMood(moment: "IN" | "WRAP") {
+// The tracker's greeting after a clock tap: under the timer, or in place of
+// the summary line in the mini timer, for a few seconds.
+let greetTimer = 0;
+function greet(text: string) {
+  window.clearTimeout(greetTimer);
+  el("greeting").textContent = text;
+  el("c-greeting").textContent = text;
+  el("greeting").hidden = false;
+  el("c-greeting").hidden = false;
+  el("c-summary").hidden = true;
+  greetTimer = window.setTimeout(() => {
+    el("greeting").hidden = true;
+    el("c-greeting").hidden = true;
+    el("c-summary").hidden = false;
+  }, 6000);
+}
+
+function openMood(moment: "IN" | "WRAP", greeting?: string | null) {
   mood = { moment, stage: "ask", score: null, word: null, ownWords: false, cause: null, sent: null };
+  el("mood-greeting").textContent = greeting ?? "";
+  el("mood-greeting").hidden = !greeting;
   el<HTMLTextAreaElement>("mood-note").value = "";
   el("mood-error").hidden = true;
   el("main-view").hidden = true;
@@ -420,11 +439,13 @@ function moodResult(r: { ok: boolean; offerTalk?: boolean; told?: string[]; erro
 
 declare global {
   interface Window {
-    __cbbMiniMood?: (ask: { moment: "IN" | "WRAP" }) => void;
+    __cbbMiniMood?: (ask: { moment: "IN" | "WRAP"; greeting?: string | null }) => void;
+    __cbbMiniGreet?: (text: string) => void;
     __cbbMiniMoodResult?: (r: { ok: boolean; offerTalk?: boolean; told?: string[]; error?: string }) => void;
   }
 }
-window.__cbbMiniMood = (ask) => openMood(ask.moment);
+window.__cbbMiniMood = (ask) => openMood(ask.moment, ask.greeting);
+window.__cbbMiniGreet = (text) => greet(text);
 window.__cbbMiniMoodResult = (r) => moodResult(r);
 
 // ── Walkie quick chat (walkie.rs). What people say is only drawn here: never

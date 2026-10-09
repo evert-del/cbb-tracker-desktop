@@ -300,9 +300,31 @@ fn place_under_tray<R: Runtime>(mini: &tauri::WebviewWindow<R>) {
         Position::TrayCenter
     };
     if mini.move_window(at).is_err() {
-        let fallback = if cfg!(target_os = "windows") { Position::BottomRight } else { Position::TopRight };
-        let _ = mini.move_window(fallback);
+        place_in_main_screen_corner(mini);
     }
+}
+
+/// Before the tray icon has reported where it is: the corner by the tray on
+/// the main screen (the one with the menu bar / taskbar). Not the panel's own
+/// "current" screen, which with a second monitor can be the other one.
+fn place_in_main_screen_corner<R: Runtime>(mini: &tauri::WebviewWindow<R>) {
+    let Some(screen) = mini.primary_monitor().ok().flatten() else { return };
+    let Ok(size) = mini.outer_size() else { return };
+    // In points: the screens can differ in density (a Retina laptop beside a
+    // plain monitor), and the panel's pixels follow the screen it is on now.
+    let size = size.to_logical::<f64>(mini.scale_factor().unwrap_or(1.0));
+    let scale = screen.scale_factor();
+    let origin = screen.position().to_logical::<f64>(scale);
+    let area = screen.size().to_logical::<f64>(scale);
+    // Clear of the menu bar on macOS; the panel's own shadow room is margin
+    // enough at the sides. Windows: above the taskbar, bottom-right.
+    let x = origin.x + area.width - size.width - 8.0;
+    let y = if cfg!(target_os = "windows") {
+        origin.y + area.height - size.height - 48.0
+    } else {
+        origin.y + 30.0
+    };
+    let _ = mini.set_position(tauri::LogicalPosition::new(x, y));
 }
 
 /// Toggle the panel (tray click, tray menu, Cmd+Shift+M / Ctrl+Alt+M).
@@ -688,10 +710,12 @@ pub(crate) fn mini_pin<R: Runtime>(app: AppHandle<R>, pinned: bool) -> Result<()
     // Pinning only floats the panel where it is: the tracker stays as it
     // is, and only Open tracker brings it back.
     if !pinned {
-        // The drop-down is always the full panel.
+        // The drop-down is always the full panel, focused so it stays until
+        // the next click elsewhere (it hides on losing focus).
         set_compact(&app, false);
         if let Some(mini) = app.get_webview_window("mini") {
             place_under_tray(&mini);
+            let _ = mini.set_focus();
         }
     }
     push(&app);

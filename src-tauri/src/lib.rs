@@ -1104,6 +1104,9 @@ pub fn run() {
                     _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {
+                    // Remember where the icon is (on click, hover and move),
+                    // so the panel drops down under it (mini::place_under_tray).
+                    tauri_plugin_positioner::on_tray_event(tray.app_handle(), &event);
                     // Menu-bar-app feel: left-click toggles the mini panel.
                     // The full menu (with Show Tracker) is on right-click.
                     if let TrayIconEvent::Click {

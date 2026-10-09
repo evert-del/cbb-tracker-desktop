@@ -321,8 +321,6 @@ pub(crate) fn hide<R: Runtime>(app: &AppHandle<R>) {
         }
         let _ = mini.hide();
     }
-    // Nothing left on screen (the tracker was put away): a pure menu-bar app.
-    crate::drop_dock_icon_if_alone(app, "mini");
 }
 
 /// Signed out: the panel closes, unpinned and full size (session.rs). The

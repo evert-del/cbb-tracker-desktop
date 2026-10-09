@@ -264,8 +264,7 @@ fn has_session_cookie(cookies: &str) -> bool {
 }
 
 /// Bring the main window forward, with any tracker tabs / windows the quick
-/// panel put away (mini.rs). Restores the dock icon on macOS (see the close
-/// handler: a hidden app is a pure menu-bar app, like Toggl).
+/// panel put away (mini.rs).
 pub(crate) fn show_main<R: Runtime>(app: &AppHandle<R>) {
     mini::bring_tracker_back(app);
     #[cfg(target_os = "macos")]
@@ -325,29 +324,10 @@ pub(crate) fn toggle_autostart<R: Runtime>(app: &AppHandle<R>) -> bool {
     }
 }
 
-/// Hide a window; the app keeps running in the menu bar / tray. With the
-/// last visible window gone the dock icon goes too (pure menu-bar app). It
-/// returns in show_main / show_library, so there is never a dead dock icon.
+/// Hide a window; the app keeps running in the menu bar / tray, and on macOS
+/// in the Dock, whose icon brings the tracker back (RunEvent::Reopen).
 pub(crate) fn hide_to_tray<R: Runtime>(window: &tauri::Window<R>) {
     let _ = window.hide();
-    drop_dock_icon_if_alone(window.app_handle(), window.label());
-}
-
-/// macOS: with no window but `gone` showing (main, extra tracker windows,
-/// the library, the panel), the app becomes a pure menu-bar app again.
-#[allow(unused_variables)]
-pub(crate) fn drop_dock_icon_if_alone<R: Runtime>(app: &AppHandle<R>, gone: &str) {
-    #[cfg(target_os = "macos")]
-    {
-        let any_other = app
-            .webview_windows()
-            .iter()
-            .filter(|(label, _)| label.as_str() != gone)
-            .any(|(_, window)| window.is_visible().unwrap_or(false));
-        if !any_other {
-            let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
-        }
-    }
 }
 
 /// Bring the Saved-for-offline library forward.
@@ -815,10 +795,9 @@ pub fn run() {
                 .build(),
         )
         // Closing a window hides it; the app keeps running in the tray /
-        // menu bar so notifications keep arriving. On macOS the dock icon
-        // goes away with the last visible window (pure menu-bar app, like
-        // Toggl) and comes back in show_main/show_library — so there is
-        // never a dead dock icon. Quit is in the tray menu (or Cmd+Q).
+        // menu bar so notifications keep arriving. On macOS it stays in the
+        // Dock too, and clicking the Dock icon brings the tracker back
+        // (RunEvent::Reopen below). Quit is in the tray menu (or Cmd+Q).
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 match window.label() {
@@ -871,9 +850,6 @@ pub fn run() {
                         mini::minimised_to_panel(&app, &label);
                     }
                 });
-            }
-            if matches!(event, tauri::WindowEvent::Destroyed) && is_extra_tracker_window(window.label()) {
-                drop_dock_icon_if_alone(window.app_handle(), window.label());
             }
             // Drop-down behaviour: the quick panel hides when it loses focus,
             // unless it is pinned as a floating timer.
@@ -1156,6 +1132,17 @@ pub fn run() {
             // Remember the tracker window's place for next time (session.rs).
             if let tauri::RunEvent::Exit = event {
                 session::save(app);
+            }
+            // macOS: clicking the Dock icon brings the tracker back after it
+            // was closed (hidden) or minimised to the mini timer.
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { .. } = event {
+                let hidden = app
+                    .get_webview_window("main")
+                    .is_some_and(|main| !main.is_visible().unwrap_or(true));
+                if hidden {
+                    show_main(app);
+                }
             }
         });
 }

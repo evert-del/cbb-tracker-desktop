@@ -109,6 +109,11 @@ pub(crate) fn plan(clock: Option<&Clock>) -> Plan {
 }
 
 /// The script that clocks from the tray, through the page's own session.
+/// After a call in or wrap the clock answers with the card; when the company
+/// asks how people are (`mood`) and this moment hasn't been asked today, it
+/// leaves `{moment}` on `window.__cbbMoodAsk` for `take_mood_ask`,
+/// and the quick panel asks (mini.rs). Only these taps ever ask: the
+/// person's own, never an idle-prompt answer.
 pub(crate) fn action_script(action: &str) -> String {
     format!(
         r#"(function () {{
@@ -117,11 +122,40 @@ pub(crate) fn action_script(action: &str) -> String {
     .then(function (r) {{ return r.json().then(function (b) {{ return {{ ok: r.ok, b: b }}; }}); }})
     .then(function (x) {{
       if (!x.ok) {{ window.__cbbClockError = (x.b && x.b.error) || 'That did not save.'; return; }}
+      var moment = {action:?} === 'in' ? 'IN' : {action:?} === 'wrap' ? 'WRAP' : null;
+      var mood = x.b && x.b.mood;
+      if (moment && mood && mood.askedKey !== mood.today + '|' + moment) {{
+        window.__cbbMoodAsk = JSON.stringify({{ moment: moment }});
+      }}
       window.dispatchEvent(new CustomEvent('cbb:clock-changed'));
     }})
     .catch(function () {{ window.__cbbClockError = 'The tracker could not be reached.'; }});
 }})()"#
     )
+}
+
+/// Returns and clears a pending mood question ("" when none).
+const TAKE_MOOD_ASK_JS: &str =
+    "(function () { var v = window.__cbbMoodAsk || ''; window.__cbbMoodAsk = ''; return v; })()";
+
+/// A mood question the last clock tap left (see `action_script`).
+#[derive(Debug, serde::Deserialize, PartialEq)]
+pub(crate) struct MoodAsk {
+    pub moment: String,
+}
+
+/// Picks up a pending mood question and has the quick panel ask it.
+fn take_mood_ask<R: Runtime>(app: &AppHandle<R>) {
+    let Some(window) = on_tracker(app) else { return };
+    let app = app.clone();
+    let _ = window.eval_with_callback(TAKE_MOOD_ASK_JS, move |raw| {
+        let json: String = serde_json::from_str(&raw).unwrap_or_default();
+        if let Ok(ask) = serde_json::from_str::<MoodAsk>(&json) {
+            if ask.moment == "IN" || ask.moment == "WRAP" {
+                crate::mini::ask_mood(&app, &ask.moment);
+            }
+        }
+    });
 }
 
 /// Opens the tracker's own clock (for the notice, which is read there).
@@ -273,13 +307,16 @@ pub(crate) fn act<R: Runtime>(app: &AppHandle<R>, action: &str) {
         return;
     }
     let _ = window.eval(action_script(action));
-    // Read the result back shortly, rather than waiting for the next tick.
+    // Read the result back shortly, rather than waiting for the next tick,
+    // and ask how they are if the clock said to (a call in or wrap).
     let app = app.clone();
     std::thread::spawn(move || {
         std::thread::sleep(Duration::from_millis(1500));
         refresh(&app);
+        take_mood_ask(&app);
         std::thread::sleep(Duration::from_millis(1500));
         refresh(&app);
+        take_mood_ask(&app);
     });
 }
 
@@ -467,6 +504,22 @@ fn tick_title<R: Runtime>(app: &AppHandle<R>, last: &mut String) {
         if let Some(tray) = app.tray_by_id(crate::TRAY_ID) {
             let _ = tray.set_title(if next.is_empty() { None } else { Some(next) });
         }
+    }
+}
+
+#[cfg(test)]
+mod mood_ask_tests {
+    use super::*;
+
+    #[test]
+    fn a_call_in_or_wrap_leaves_the_mood_question() {
+        let js = action_script("in");
+        assert!(js.contains("source: 'DESKTOP'"));
+        assert!(js.contains("window.__cbbMoodAsk"));
+        assert!(js.contains("mood.askedKey !== mood.today + '|' + moment"));
+        let ask: MoodAsk = serde_json::from_str(r#"{"moment":"WRAP"}"#).unwrap();
+        assert_eq!(ask, MoodAsk { moment: "WRAP".into() });
+        assert!(!js.contains("support"));
     }
 }
 

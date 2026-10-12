@@ -126,7 +126,7 @@ fn unique_path(dir: &Path, name: &str, taken: impl Fn(&Path) -> bool) -> PathBuf
         .expect("an unused name exists")
 }
 
-fn remember(path: &Path) {
+pub(crate) fn remember(path: &Path) {
     if let Ok(mut saved) = SAVED.lock() {
         saved.retain(|p| p != path);
         saved.push(path.to_path_buf());

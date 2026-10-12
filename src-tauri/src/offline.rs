@@ -160,6 +160,30 @@ pub(crate) async fn offline_save_pdf<R: Runtime>(
     url: String,
     label: String,
 ) -> Result<OfflineItem, String> {
+    start_save(&app, pending.inner(), &url, &label)
+}
+
+/// Whether a save is in flight (one at a time).
+pub(crate) fn busy<R: Runtime>(app: &AppHandle<R>) -> bool {
+    app.try_state::<PendingState>()
+        .and_then(|pending| pending.inner().lock().ok().map(|slot| slot.is_some()))
+        .unwrap_or(true)
+}
+
+/// The source URLs already saved for offline.
+pub(crate) fn saved_sources<R: Runtime>(app: &AppHandle<R>) -> Vec<String> {
+    read_index(app).into_iter().map(|item| item.source_url).collect()
+}
+
+/// Start saving `url` for offline under `label` (the Library's Save, and
+/// the call sheets saved ahead of set days, schedule.rs).
+pub(crate) fn start_save<R: Runtime>(
+    app: &AppHandle<R>,
+    pending: &PendingState,
+    url: &str,
+    label: &str,
+) -> Result<OfflineItem, String> {
+    let app = app.clone();
     let parsed = url.parse::<url::Url>().map_err(|_| "not a valid URL")?;
     if !is_savable_pdf_url(&parsed) {
         return Err(
@@ -286,7 +310,17 @@ pub(crate) fn finish_regular_download<R: Runtime>(
         .and_then(|p| p.file_name())
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| "File".to_string());
-    notify(app, "Download complete", &format!("{name} was saved to Downloads."));
+    // Clicking it shows the file in its folder (banner.rs).
+    let target = match path {
+        Some(path) => {
+            // The webview's own downloads land here too: remember them, so
+            // "Show in folder" may reveal them (download.rs only reveals its own).
+            crate::download::remember(&path);
+            crate::banner::Target::Reveal(path.to_string_lossy().into_owned())
+        }
+        None => crate::banner::Target::Library,
+    };
+    crate::banner::show(app, "Download complete", &format!("{name} was saved to Downloads."), target);
 }
 
 /// Called from the `on_download` Finished event. Finalizes a captured save.

@@ -30,6 +30,8 @@ pub(crate) enum Target {
     Panel,
     /// The Saved for offline window.
     Library,
+    /// A downloaded file, shown in its folder.
+    Reveal(String),
 }
 
 /// What the person did with a banner.
@@ -100,6 +102,7 @@ fn act<R: Runtime>(app: &AppHandle<R>, target: &Target, click: Click) {
         (Target::Walkie { key, kind, name }, Click::Open) => crate::mini::open_chat(app, key, kind, name),
         (Target::Panel, _) => crate::mini::show(app),
         (Target::Library, _) => crate::show_library(app),
+        (Target::Reveal(path), _) => crate::download::reveal(app, path),
     }
     crate::analytics::action(app, "banner_click", "banner");
 }

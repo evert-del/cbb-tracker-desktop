@@ -38,6 +38,7 @@ mod mini;
 mod notify;
 mod offline;
 mod quiet;
+mod schedule;
 mod search;
 mod session;
 mod system_open;
@@ -910,6 +911,7 @@ pub fn run() {
             mini::mini_mood_done,
             mini::mini_dnd,
             search::mini_search,
+            mini::mini_open_map,
             mini::mini_whats_new,
             mini::mini_whats_new_done,
             walkie::mini_walkie_open,
@@ -1054,6 +1056,7 @@ pub fn run() {
             app.manage(notify::Unread(std::sync::Mutex::new(0)));
             app.manage(notify::Snapshot::default());
             app.manage(walkie::Walkie::default());
+            app.manage(schedule::Schedule::default());
             app.manage(notify::InboxItems {
                 rows: [inbox_1, inbox_2, inbox_3],
                 hrefs: std::sync::Mutex::new([None, None, None]),
@@ -1162,6 +1165,7 @@ pub fn run() {
 
             notify::start(app.handle().clone());
             walkie::start(app.handle().clone());
+            schedule::start(app.handle().clone());
             #[cfg(target_os = "macos")]
             theme::start(app.handle().clone());
             idle::start(app.handle().clone());

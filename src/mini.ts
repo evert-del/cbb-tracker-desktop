@@ -8,6 +8,19 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 type Need = { label: string; body: string; href: string };
 type ClockAction = { id: string; label: string };
 type LabelCount = { label: string; count: number };
+/** The next booking not yet over (schedule.rs). */
+type NextCall = {
+  starts_at: string;
+  ends_at: string;
+  day: string;
+  title: string;
+  project: string;
+  place: string | null;
+  map_url: string | null;
+  pencilled: boolean;
+  sheet_href: string | null;
+};
+
 /** Which notifications pop up, and the tracker's do-not-disturb (quiet.rs). */
 type Quiet = { tracker: boolean; walkie: boolean; channel1: boolean; dnd_until: string };
 
@@ -33,6 +46,8 @@ type View = {
   walkie_unread: number;
   chats: ChatRow[];
   quiet: Quiet;
+  next_call: NextCall | null;
+  auto_offline: boolean;
   version: string;
   autostart: boolean;
   close_quits: boolean;
@@ -284,6 +299,8 @@ window.__cbbMiniShow = (view) => {
     : `Stays in the ${place} so your timer, reminders and notifications keep going.`;
   renderPin(view.pinned);
   renderQuiet(view.quiet);
+  renderNext(view.next_call);
+  el("auto-offline").setAttribute("aria-checked", String(view.auto_offline));
   renderActions(view);
   renderNeeds(view);
   renderSummary(view);
@@ -302,6 +319,46 @@ function quietTime(iso: string): string {
   return at.toDateString() === new Date().toDateString()
     ? time
     : `${at.toLocaleDateString([], { weekday: "short" })} ${time}`;
+}
+
+// Times and days as the tracker says them: Johannesburg, 24-hour.
+const TRACKER_TZ = "Africa/Johannesburg";
+const TRACKER_DAY = new Intl.DateTimeFormat("en-CA", { timeZone: TRACKER_TZ });
+const TRACKER_TIME = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: TRACKER_TZ });
+
+/** "Today", "Tomorrow", or "Wed 14 Oct" for a business day (yyyy-mm-dd). */
+function nextDayLabel(day: string): string {
+  const today = TRACKER_DAY.format(new Date());
+  const tomorrow = TRACKER_DAY.format(new Date(Date.parse(`${today}T12:00:00Z`) + 86_400_000));
+  if (day === today) return "Today";
+  if (day === tomorrow) return "Tomorrow";
+  const at = new Date(`${day}T12:00:00Z`);
+  return Number.isNaN(at.getTime())
+    ? day
+    : at.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", timeZone: "UTC" });
+}
+
+function renderNext(next: NextCall | null) {
+  el("next").hidden = next === null;
+  if (!next) return;
+  el("next-day").textContent = nextDayLabel(next.day);
+  const starts = new Date(next.starts_at);
+  const ends = new Date(next.ends_at);
+  el("next-time").textContent = Number.isNaN(starts.getTime())
+    ? ""
+    : Number.isNaN(ends.getTime())
+      ? TRACKER_TIME.format(starts)
+      : `${TRACKER_TIME.format(starts)}–${TRACKER_TIME.format(ends)}`;
+  el("next-pencil").hidden = !next.pencilled;
+  el("next-title").textContent = [next.project, next.title].filter(Boolean).join(" · ");
+  el("next-title").title = el("next-title").textContent ?? "";
+  const place = el<HTMLButtonElement>("next-place");
+  place.hidden = !next.place;
+  place.disabled = !next.map_url;
+  place.title = next.map_url ? "Open in Maps" : "";
+  el("next-place-text").textContent = next.place ?? "";
+  el("next-place-text").classList.toggle("plain", !next.map_url);
+  el("next-sheet").hidden = !next.sheet_href;
 }
 
 /** The do-not-disturb choice last made here (the tracker only says when it ends). */
@@ -1029,6 +1086,15 @@ window.addEventListener("DOMContentLoaded", () => {
   click("banners-tracker", () => menu("banners-tracker"));
   click("banners-walkie", () => menu("banners-walkie"));
   click("banners-channel1", () => menu("banners-channel1"));
+  click("auto-offline", () => menu("auto-offline"));
+  click("next-place", () => {
+    const url = current?.next_call?.map_url;
+    if (url) void invoke("mini_open_map", { url });
+  });
+  click("next-sheet", () => {
+    const href = current?.next_call?.sheet_href;
+    if (href) void invoke("mini_open", { href });
+  });
   document.querySelectorAll<HTMLButtonElement>("#dnd-choice .seg").forEach((seg) => {
     seg.addEventListener("click", () => setDnd(seg.dataset.dnd ?? "off"));
   });

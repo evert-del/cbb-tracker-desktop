@@ -34,6 +34,10 @@ pub(crate) struct View {
     pub chats: Vec<crate::walkie::ChatRow>,
     /// Which notifications raise banners, and do-not-disturb (quiet.rs).
     pub quiet: crate::quiet::Prefs,
+    /// The next booking not yet over, from the tracker (schedule.rs).
+    pub next_call: Option<crate::schedule::NextCall>,
+    /// The next days' call sheets are saved for offline (schedule.rs).
+    pub auto_offline: bool,
     pub version: String,
     pub autostart: bool,
     /// Closing the main window quits the app (close.rs) instead of hiding it.
@@ -106,6 +110,8 @@ pub(crate) fn plan(
         walkie_unread: 0,
         chats: Vec::new(),
         quiet: crate::quiet::Prefs::default(),
+        next_call: None,
+        auto_offline: true,
         version: env!("CARGO_PKG_VERSION").into(),
         autostart: false,
         close_quits: false,
@@ -140,6 +146,8 @@ pub(crate) fn push<R: Runtime>(app: &AppHandle<R>) {
     view.walkie_unread = crate::walkie::unread(app);
     view.chats = crate::walkie::chats(app);
     view.quiet = crate::quiet::prefs(app, crate::clock::unix_now());
+    view.next_call = crate::schedule::next(app);
+    view.auto_offline = crate::schedule::auto_save(app);
     let Ok(payload) = serde_json::to_string(&view) else { return };
     if let Some(mini) = app.get_webview_window("mini") {
         let script = format!("window.__cbbMiniShow && window.__cbbMiniShow({payload})");
@@ -816,6 +824,18 @@ fn is_menu_item(item: &str) -> bool {
         item,
         "offline" | "new-window" | "update" | "diagnostics" | "autostart" | "close-keep" | "close-quit" | "quit"
     ) || crate::quiet::is_toggle(item)
+        || item == "auto-offline"
+}
+
+/// The next call's place, in the browser: Google Maps links only.
+#[tauri::command]
+pub(crate) fn mini_open_map<R: Runtime>(app: AppHandle<R>, url: String) -> Result<(), String> {
+    if !crate::schedule::is_map_url(&url) {
+        return Err("Unknown place.".into());
+    }
+    crate::system_open::open_url(&app, &url);
+    crate::analytics::action(&app, "next_call_map", "panel");
+    Ok(())
 }
 
 /// Do-not-disturb from the panel: the tracker's own setting (quiet.rs), so
@@ -884,6 +904,11 @@ pub(crate) fn mini_menu<R: Runtime>(app: AppHandle<R>, item: String) -> Result<(
             crate::analytics::setting_changed(&app, "close_quits", quits);
         }
         "quit" => app.exit(0),
+        "auto-offline" => {
+            let on = crate::schedule::toggle_auto_save(&app);
+            crate::analytics::setting_changed(&app, "auto_offline", on);
+            push(&app);
+        }
         item if crate::quiet::is_toggle(item) => {
             if let Some((name, on)) = crate::quiet::toggle(&app, item) {
                 crate::analytics::setting_changed(&app, name, on);
@@ -1063,7 +1088,7 @@ mod tests {
     fn only_known_menu_items_pass() {
         for item in [
             "offline", "new-window", "update", "diagnostics", "autostart", "close-keep", "close-quit", "quit",
-            "banners-tracker", "banners-walkie", "banners-channel1",
+            "banners-tracker", "banners-walkie", "banners-channel1", "auto-offline",
         ] {
             assert!(is_menu_item(item), "{item}");
         }

@@ -21,7 +21,8 @@
 //!   from: panel | tray_menu
 //! - `desktop_panel_mode`    pinned, compact (booleans)
 //! - `desktop_setting_changed` setting: launch_at_login | close_quits |
-//!   banners_tracker | banners_walkie | banners_channel1 | do_not_disturb; value
+//!   banners_tracker | banners_walkie | banners_channel1 | do_not_disturb |
+//!   auto_offline; value
 
 use serde_json::{json, Value};
 use tauri::{AppHandle, Manager, Runtime};

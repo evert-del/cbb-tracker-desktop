@@ -568,6 +568,30 @@ pub(crate) fn ask_mood<R: Runtime>(app: &AppHandle<R>, moment: &str, greeting: O
     }
 }
 
+/// A clicked walkie banner (banner.rs): the panel, full size, open on that
+/// conversation's quick chat.
+pub(crate) fn open_chat<R: Runtime>(app: &AppHandle<R>, key: &str, kind: &str, name: &str) {
+    if !crate::walkie::valid_key(key) {
+        return show(app);
+    }
+    if is_compact() {
+        set_compact(app, false);
+        push(app);
+    }
+    let visible = app
+        .get_webview_window("mini")
+        .and_then(|mini| mini.is_visible().ok())
+        .unwrap_or(false);
+    if !visible {
+        show(app);
+    }
+    if let Some(mini) = app.get_webview_window("mini") {
+        let row = serde_json::json!({ "key": key, "kind": kind, "name": name });
+        let _ = mini.eval(format!("window.__cbbMiniOpenChat && window.__cbbMiniOpenChat({row})"));
+        let _ = mini.set_focus();
+    }
+}
+
 /// The panel's check-in: answer, skip ("Not now") or the chat offer.
 #[tauri::command]
 pub(crate) fn mini_mood<R: Runtime>(app: AppHandle<R>, request: serde_json::Value) -> Result<(), String> {

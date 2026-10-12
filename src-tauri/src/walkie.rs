@@ -20,7 +20,6 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, Runtime};
-use tauri_plugin_notification::NotificationExt;
 
 const POLL_EVERY: Duration = Duration::from_secs(15);
 
@@ -106,6 +105,16 @@ pub(crate) struct Banner {
     pub body: String,
     /// Message or call alert, and where it was said (quiet.rs decides).
     pub kind: crate::quiet::Kind,
+    /// The conversation clicking it opens (none for a burst summary).
+    pub chat: Option<ChatRef>,
+}
+
+/// A conversation to open from a banner: its key, kind and name.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ChatRef {
+    pub key: String,
+    pub kind: String,
+    pub name: String,
 }
 
 /// What was last seen of each conversation, to tell what is new.
@@ -164,12 +173,14 @@ pub(crate) fn plan(state: &mut State, rail: &Rail) -> Vec<Banner> {
                 title: format!("{from} is calling"),
                 body: format!("Call alert on {}", channel.name),
                 kind: crate::quiet::Kind::Call,
+                chat: Some(chat_ref(channel)),
             });
         } else if said {
             fresh.push(Banner {
                 title: channel.name.clone(),
                 body: channel.sub.clone(),
                 kind: crate::quiet::Kind::Walkie { company: channel.kind == "COMPANY" },
+                chat: Some(chat_ref(channel)),
             });
         }
         seen.insert(channel.key.clone(), now);
@@ -215,11 +226,16 @@ pub(crate) fn deliverable(fresh: Vec<Banner>, allow: impl Fn(crate::quiet::Kind)
                 title: "Walkie".into(),
                 body: format!("New messages in {} conversations", said.len()),
                 kind: crate::quiet::Kind::Walkie { company: false },
+                chat: None,
             });
         }
         return out;
     }
     shown
+}
+
+fn chat_ref(channel: &Channel) -> ChatRef {
+    ChatRef { key: channel.key.clone(), kind: channel.kind.clone(), name: channel.name.clone() }
 }
 
 /// Forget everything (signed out): the next sign-in seeds afresh.
@@ -240,7 +256,12 @@ fn apply<R: Runtime>(app: &AppHandle<R>, rail: &Rail) {
     let now = crate::clock::unix_now();
     let prefs = crate::quiet::prefs(app, now);
     for banner in deliverable(fresh, |kind| crate::quiet::allows(&prefs, kind, now)) {
-        let _ = app.notification().builder().title(banner.title).body(banner.body).show();
+        // Clicking it opens the conversation in the panel (banner.rs).
+        let target = match banner.chat {
+            Some(chat) => crate::banner::Target::Walkie { key: chat.key, kind: chat.kind, name: chat.name },
+            None => crate::banner::Target::Panel,
+        };
+        crate::banner::show(app, &banner.title, &banner.body, target);
     }
     crate::notify::set_badge(app);
     crate::mini::push(app);
@@ -410,6 +431,15 @@ const CHAT_JS: &str = r#"(function (a) {
         if (!s.ok) return done({ ok: false, error: s.b.error || "That didn't send. Try again." });
         return lines(a.channelId, '');
       })
+    : a.op === 'reply'
+    // A reply typed into a banner (banner.rs): open the conversation, then send.
+    ? post('/api/walkie/open', { key: a.key }).then(function (o) {
+        if (!o.ok || !o.b.channelId) return done({ ok: false, error: o.b.error || "Couldn't open that chat." });
+        return post('/api/walkie/' + encodeURIComponent(o.b.channelId) + '/send', { body: a.body }).then(function (s) {
+          if (!s.ok) return done({ ok: false, error: s.b.error || "That didn't send. Try again." });
+          return lines(o.b.channelId, o.b.name || '');
+        });
+      })
     : post('/api/walkie/open', { key: a.key }).then(function (o) {
         if (!o.ok || !o.b.channelId) return done({ ok: false, error: o.b.error || "Couldn't open that chat." });
         return lines(o.b.channelId, o.b.name || '');
@@ -444,6 +474,42 @@ fn run<R: Runtime>(app: AppHandle<R>, args: serde_json::Value) -> Result<(), Str
         refresh(&app);
     });
     Ok(())
+}
+
+/// macOS: a reply typed into a walkie banner (banner.rs). Sent through the
+/// tracker page like the panel's replies; if it doesn't go, a banner says so
+/// and opens the conversation, so the words can be sent from there.
+pub(crate) fn reply_from_banner<R: Runtime>(app: &AppHandle<R>, key: &str, text: &str) {
+    let (Ok(body), true) = (reply_body(text), valid_key(key)) else { return };
+    let failed = |app: &AppHandle<R>| {
+        crate::banner::show(
+            app,
+            "Your reply didn't send",
+            "Click to open the conversation and try again.",
+            crate::banner::Target::Walkie { key: key.to_string(), kind: String::new(), name: String::new() },
+        );
+    };
+    let Some(window) = tracker_window(app) else { return failed(app) };
+    let args = serde_json::json!({ "op": "reply", "seq": 0, "key": key, "body": body });
+    if window.eval(chat_script(&args)).is_err() {
+        return failed(app);
+    }
+    crate::analytics::action(app, "walkie_reply", "banner");
+    let (app, key) = (app.clone(), key.to_string());
+    std::thread::spawn(move || {
+        let sent = collect(&window, TAKE_RESULT_JS, 33)
+            .and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok())
+            .is_some_and(|result| result.get("ok").and_then(|ok| ok.as_bool()) == Some(true));
+        if !sent {
+            crate::banner::show(
+                &app,
+                "Your reply didn't send",
+                "Click to open the conversation and try again.",
+                crate::banner::Target::Walkie { key, kind: String::new(), name: String::new() },
+            );
+        }
+        refresh(&app);
+    });
 }
 
 /// Open a conversation in the panel: its last lines, marked read.
@@ -518,7 +584,12 @@ mod tests {
         let banners = plan(&mut state, &rail(&payload(&[channel("a", 1, "2026-10-09T08:05:00.000Z")], 1)));
         assert_eq!(
             banners,
-            vec![Banner { title: "Name a".into(), body: "said a".into(), kind: Kind::Walkie { company: false } }]
+            vec![Banner {
+                title: "Name a".into(),
+                body: "said a".into(),
+                kind: Kind::Walkie { company: false },
+                chat: Some(ChatRef { key: "a".into(), kind: "DIRECT".into(), name: "Name a".into() }),
+            }]
         );
     }
 
@@ -540,7 +611,12 @@ mod tests {
         let banners = plan(&mut state, &rail(&payload(&[ringing.to_string()], 1)));
         assert_eq!(
             banners,
-            vec![Banner { title: "Michelle is calling".into(), body: "Call alert on Channel 1".into(), kind: Kind::Call }]
+            vec![Banner {
+                title: "Michelle is calling".into(),
+                body: "Call alert on Channel 1".into(),
+                kind: Kind::Call,
+                chat: Some(ChatRef { key: "company".into(), kind: "COMPANY".into(), name: "Channel 1".into() }),
+            }]
         );
         assert_eq!(state.chats[0].ringing.as_deref(), Some("Michelle"));
     }
@@ -574,8 +650,8 @@ mod tests {
         assert_eq!(titles, ["Sam is calling", "Name dm"]);
         // Even with the walkie muted, the call still rings.
         let fresh = vec![
-            Banner { title: "Sam is calling".into(), body: String::new(), kind: Kind::Call },
-            Banner { title: "Name dm".into(), body: String::new(), kind: Kind::Walkie { company: false } },
+            Banner { title: "Sam is calling".into(), body: String::new(), kind: Kind::Call, chat: None },
+            Banner { title: "Name dm".into(), body: String::new(), kind: Kind::Walkie { company: false }, chat: None },
         ];
         let muted = crate::quiet::Prefs { walkie: false, ..prefs };
         let shown = deliverable(fresh, |kind| crate::quiet::allows(&muted, kind, 0));
@@ -586,9 +662,9 @@ mod tests {
     #[test]
     fn a_burst_keeps_its_calls_apart() {
         let mut fresh: Vec<Banner> = (0..4)
-            .map(|i| Banner { title: format!("c{i}"), body: String::new(), kind: Kind::Walkie { company: false } })
+            .map(|i| Banner { title: format!("c{i}"), body: String::new(), kind: Kind::Walkie { company: false }, chat: None })
             .collect();
-        fresh.push(Banner { title: "Sam is calling".into(), body: String::new(), kind: Kind::Call });
+        fresh.push(Banner { title: "Sam is calling".into(), body: String::new(), kind: Kind::Call, chat: None });
         let shown = deliverable(fresh, |_| true);
         assert_eq!(shown.len(), 2);
         assert_eq!(shown[0].title, "Sam is calling");

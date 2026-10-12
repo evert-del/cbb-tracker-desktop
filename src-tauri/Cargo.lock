@@ -451,6 +451,8 @@ name = "cbb-tracker-desktop"
 version = "0.2.18"
 dependencies = [
  "gtk",
+ "mac-notification-sys",
+ "notify-rust",
  "objc2",
  "percent-encoding",
  "reqwest",
@@ -467,6 +469,7 @@ dependencies = [
  "tauri-plugin-single-instance",
  "tauri-plugin-store",
  "tauri-plugin-updater",
+ "tauri-winrt-notification",
  "url",
  "windows-sys 0.61.2",
 ]

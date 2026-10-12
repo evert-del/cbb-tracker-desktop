@@ -23,6 +23,7 @@ use tauri::{
 use tauri_plugin_deep_link::DeepLinkExt;
 
 mod analytics;
+mod banner;
 mod clock;
 mod close;
 mod desktop_entry;

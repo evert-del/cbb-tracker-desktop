@@ -18,7 +18,6 @@ use std::{
 
 use serde::Deserialize;
 use tauri::{AppHandle, Manager, Runtime};
-use tauri_plugin_notification::NotificationExt;
 
 const POLL_EVERY: Duration = Duration::from_secs(45);
 
@@ -241,15 +240,9 @@ fn apply<R: Runtime>(app: &AppHandle<R>, state: &Mutex<State>, poll: &Poll) {
     // panel and the badge below still update.
     let banners = if crate::quiet::allowed(app, crate::quiet::Kind::Tracker) { banners } else { Vec::new() };
     for banner in banners {
-        let _ = app
-            .notification()
-            .builder()
-            .title(banner.title)
-            .body(banner.body)
-            .show();
-        // NOTE: tauri-plugin-notification v2 has no reliable banner-click
-        // callback on macOS (notify-rust backend), so the click path is the
-        // tray inbox below, not the banner itself.
+        // Clicking it opens the item's page and marks it read (banner.rs).
+        let target = crate::banner::page_target(banner.href.as_deref(), &banner.id);
+        crate::banner::show(app, &banner.title, &banner.body, target);
     }
 
     // Refresh the tray inbox rows (label truncated, href stored for click).
@@ -343,6 +336,13 @@ pub(crate) fn open_inbox<R: Runtime>(app: &AppHandle<R>, index: usize) {
             (href, id)
         })
         .unwrap_or((None, None));
+    open_item(app, href, id);
+}
+
+/// Open a notification's page in the main window (tracker paths only, else
+/// the notifications list), mark it read as the bell does, and bring the
+/// window forward. From the tray inbox and from a clicked banner.
+pub(crate) fn open_item<R: Runtime>(app: &AppHandle<R>, href: Option<String>, id: Option<String>) {
     let path = href.filter(|h| h.starts_with('/')).unwrap_or_else(|| "/notifications".into());
     if let Some(window) = app.get_webview_window("main") {
         if let Ok(url) = format!("{}{}", crate::APP_ORIGIN, path).parse::<url::Url>() {

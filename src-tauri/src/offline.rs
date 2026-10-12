@@ -21,7 +21,6 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, Runtime, State};
-use tauri_plugin_notification::NotificationExt;
 
 use crate::webview_may_load;
 
@@ -387,7 +386,8 @@ pub(crate) fn finish_download<R: Runtime>(app: &AppHandle<R>, url: &url::Url, su
 /// alongside every call site is the reliable channel, the toast is garnish
 /// (headless CI and permission-denied machines must not fail a save).
 fn notify<R: Runtime>(app: &AppHandle<R>, title: &str, body: &str) {
-    let _ = app.notification().builder().title(title).body(body).show();
+    // Clicking it opens the Saved for offline window (banner.rs).
+    crate::banner::show(app, title, body, crate::banner::Target::Library);
 }
 
 #[tauri::command]

@@ -862,9 +862,17 @@ function chatResult(r: ChatResult) {
 declare global {
   interface Window {
     __cbbMiniWalkieResult?: (r: ChatResult) => void;
+    __cbbMiniOpenChat?: (row: { key: string; kind: string; name: string }) => void;
   }
 }
 window.__cbbMiniWalkieResult = (r) => chatResult(r);
+// A clicked walkie banner opens its conversation here (mini.rs open_chat).
+window.__cbbMiniOpenChat = (row) => {
+  if (mood) return;
+  if (whatsNew) closeWhatsNew();
+  el("settings").hidden = true;
+  openChat({ key: row.key, kind: row.kind, name: row.name || "Walkie" });
+};
 
 function showSettings(open: boolean) {
   if (!el("compact-view").hidden || mood || chat || whatsNew) return;

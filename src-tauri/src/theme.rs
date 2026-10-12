@@ -202,6 +202,9 @@ mod tests {
         let js = include_str!("dark.js");
         assert!(js.contains("html.cbb-dark{filter:invert(.92) hue-rotate(180deg)"));
         assert!(js.contains(".gd-header"));
+        // The file viewer is a modal dialog, outside <html>'s flip.
+        assert!(js.contains("html.cbb-dark :is(dialog:modal,:popover-open){filter:invert(.92) hue-rotate(180deg)}"));
+        assert!(js.contains("html.cbb-dark :fullscreen"));
         assert!(js.contains("window.__cbbSetDark = set"));
         assert!(!js.contains("localStorage"));
     }

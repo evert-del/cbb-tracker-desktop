@@ -50,6 +50,9 @@ gtk = "0.18"
 # same version wry already uses.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
+# The Dock menu (dock.rs): the menu crate Tauri already uses, so its clicks
+# arrive with the tray's.
+muda = { version = "0.20", default-features = false }
 
 # Clickable notifications (banner.rs): the crates tauri-plugin-notification
 # already uses underneath, at the versions it locks, so nothing new is built.

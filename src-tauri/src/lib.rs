@@ -27,6 +27,8 @@ mod banner;
 mod clock;
 mod close;
 mod desktop_entry;
+#[cfg(target_os = "macos")]
+mod dock;
 mod diagnostics;
 mod download;
 mod google_sign_in;
@@ -923,7 +925,8 @@ pub fn run() {
             walkie::mini_walkie_open,
             walkie::mini_walkie_send,
             hourly::mini_hourly,
-            hourly::mini_hourly_idle
+            hourly::mini_hourly_idle,
+            hourly::mini_hourly_file
         ])
         .setup(|app| {
             #[cfg(target_os = "linux")]
@@ -1053,6 +1056,8 @@ pub fn run() {
                 ],
             )?;
             app.manage(clock_items);
+            // The project timer's submenu, at the top while someone has one.
+            app.manage(hourly::TrayMenu::new(app.handle(), &tray_menu)?);
             // Rows that change with signing in (session.rs).
             app.manage(session::TrayRows {
                 show: tray_show.clone(),
@@ -1156,6 +1161,8 @@ pub fn run() {
                         analytics::setting_changed(app, "launch_at_login", on);
                     }
                     "tray-quit" => app.exit(0),
+                    // The project timer, from the tray or the Dock (dock.rs).
+                    id if hourly::is_menu_id(id) => hourly::menu_action(app, id),
                     _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {
@@ -1175,7 +1182,9 @@ pub fn run() {
             notify::start(app.handle().clone());
             walkie::start(app.handle().clone());
             schedule::start(app.handle().clone());
-            hourly::start(app.handle().clone());
+            hourly::start_polling(app.handle().clone());
+            #[cfg(target_os = "macos")]
+            dock::install();
             #[cfg(target_os = "macos")]
             theme::start(app.handle().clone());
             idle::start(app.handle().clone());

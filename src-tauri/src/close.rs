@@ -33,6 +33,22 @@ pub(crate) fn set_flag<R: Runtime>(app: &AppHandle<R>, key: &str, on: bool) {
     }
 }
 
+/// A whole-number setting in `settings.json`, or `default` when unset.
+pub(crate) fn number<R: Runtime>(app: &AppHandle<R>, key: &str, default: u64) -> u64 {
+    app.store(STORE)
+        .ok()
+        .and_then(|store| store.get(key))
+        .and_then(|value| value.as_u64())
+        .unwrap_or(default)
+}
+
+pub(crate) fn set_number<R: Runtime>(app: &AppHandle<R>, key: &str, value: u64) {
+    if let Ok(store) = app.store(STORE) {
+        store.set(key, value);
+        let _ = store.save();
+    }
+}
+
 pub(crate) fn quits<R: Runtime>(app: &AppHandle<R>) -> bool {
     flag(app, QUITS)
 }

@@ -581,10 +581,11 @@ pub(crate) fn ask_mood<R: Runtime>(app: &AppHandle<R>, moment: &str, greeting: O
     }
 }
 
-/// Back from time away with a project timer running (hourly.rs): the panel,
-/// full size, asks whether to keep it, cut the time away or stop it when
-/// they left. It only asks; nothing changes until they answer.
-pub(crate) fn ask_hourly_idle<R: Runtime>(app: &AppHandle<R>, question: &serde_json::Value) {
+/// The project timer asks something in the panel (hourly.rs), opening it
+/// full size: about idle time (`__cbbMiniHourlyIdle`), or which project an
+/// unfiled stretch was for, with what happened (`__cbbMiniHourlyAfter`).
+/// It only asks; nothing changes until they answer.
+pub(crate) fn ask_hourly<R: Runtime>(app: &AppHandle<R>, callback: &str, question: &serde_json::Value) {
     if is_compact() {
         set_compact(app, false);
         push(app);
@@ -597,7 +598,7 @@ pub(crate) fn ask_hourly_idle<R: Runtime>(app: &AppHandle<R>, question: &serde_j
         show(app);
     }
     if let Some(mini) = app.get_webview_window("mini") {
-        let _ = mini.eval(format!("window.__cbbMiniHourlyIdle && window.__cbbMiniHourlyIdle({question})"));
+        let _ = mini.eval(format!("window.{callback} && window.{callback}({question})"));
         let _ = mini.set_focus();
     }
 }
@@ -851,6 +852,14 @@ fn is_menu_item(item: &str) -> bool {
         "offline" | "new-window" | "update" | "diagnostics" | "autostart" | "close-keep" | "close-quit" | "quit"
     ) || crate::quiet::is_toggle(item)
         || item == "auto-offline"
+        || idle_minutes_item(item).is_some()
+}
+
+/// Settings › "Ask about idle time after": `idle-10` is 10 minutes.
+fn idle_minutes_item(item: &str) -> Option<u64> {
+    item.strip_prefix("idle-")
+        .and_then(|minutes| minutes.parse().ok())
+        .filter(|minutes| crate::hourly::IDLE_CHOICES.contains(minutes))
 }
 
 /// The next call's place, in the browser: Google Maps links only.
@@ -930,6 +939,11 @@ pub(crate) fn mini_menu<R: Runtime>(app: AppHandle<R>, item: String) -> Result<(
             crate::analytics::setting_changed(&app, "close_quits", quits);
         }
         "quit" => app.exit(0),
+        item if idle_minutes_item(item).is_some() => {
+            if let Some(minutes) = idle_minutes_item(item) {
+                crate::hourly::set_idle_minutes(&app, minutes);
+            }
+        }
         "auto-offline" => {
             let on = crate::schedule::toggle_auto_save(&app);
             crate::analytics::setting_changed(&app, "auto_offline", on);
@@ -1114,11 +1128,11 @@ mod tests {
     fn only_known_menu_items_pass() {
         for item in [
             "offline", "new-window", "update", "diagnostics", "autostart", "close-keep", "close-quit", "quit",
-            "banners-tracker", "banners-walkie", "banners-channel1", "auto-offline",
+            "banners-tracker", "banners-walkie", "banners-channel1", "auto-offline", "idle-5", "idle-20",
         ] {
             assert!(is_menu_item(item), "{item}");
         }
-        for item in ["", "show", "quit;", "eval"] {
+        for item in ["", "show", "quit;", "eval", "idle-0", "idle-600", "idle-x"] {
             assert!(!is_menu_item(item), "{item}");
         }
     }

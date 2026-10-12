@@ -1,20 +1,29 @@
 //! The project timer, for the few people an admin set to bill by the hour.
 //! Only they get it, and only for their own time. They can time any project
 //! they're on; the project decides the billing (an hourly project is
-//! billable, a quoted one is tracked only), so nobody picks it per entry.
+//! "Billable", a quoted one "Tracked only"), so nobody picks it per entry.
+//! Time can also start with no project: "Not yet filed", not billable until
+//! it is filed.
 //!
-//! - The quick panel shows the running timer (project, Billable / Tracked,
-//!   elapsed, Stop) or one-tap starts for the projects timed most recently,
-//!   plus "Other…". Starting another project while one runs switches.
-//! - The menu bar shows the timer's elapsed time while it runs.
-//! - Back from time away with a timer running, the panel asks: keep it, cut
-//!   the time away, or stop when you left? It never decides.
+//! - Quick panel: the running timer (project, label, elapsed, Stop), or
+//!   one-tap starts for the projects timed most recently, "Just start, file
+//!   it later" and "Other…". Starting another project while one runs
+//!   switches.
+//! - Tray menu and (macOS) Dock menu: "Logo refresh · 1h 05m", Stop, Switch
+//!   to the recent projects, Just start, Open My Hours (dock.rs). The menu
+//!   bar title shows the elapsed time.
+//! - An unfiled timer that ends here (stopped, switched, or stopped for
+//!   idle time) asks right away "Which project was it for?" and files it
+//!   (`POST /api/me/project-time/file`). "New project" opens Hours on the
+//!   website, which can also add a client.
+//! - Idle: after the person's chosen minutes without keyboard or mouse
+//!   (10 by default) with a timer running, the panel asks on their return:
+//!   keep it, drop the idle time and keep going, or drop it and stop. With
+//!   no answer by 30 minutes into the idle time, the timer stops at the
+//!   moment idling began, and they're told when they're back. The app only
+//!   ever ends time at that moment; it never adds time.
 //! - Called in on the time sheet with no timer for half an hour: one gentle
 //!   "Working on something?" banner that opens the panel.
-//! - "Just start, file it later" starts a timer with no project ("Not yet
-//!   filed", never billable). When it ends (stopped, or switched to a
-//!   project) the tracker's Hours page opens on it to file it: filing
-//!   happens on the website.
 //!
 //! The timer also starts and stops on the website (the board's ▶, the
 //! header), so it is read every 90 s, on opening the panel and when the
@@ -24,13 +33,17 @@
 //! 404 (not shipped) or 403 (not hourly), everything here stays hidden and
 //! quiet. As elsewhere the page asks with its own session (`eval`), the
 //! answer is collected through a window variable, and the shell holds no
-//! credentials. Nothing here is stored on the computer.
+//! credentials. Nothing about the time is stored on the computer; only the
+//! idle minutes setting is (`settings.json`).
 
 use std::{sync::Mutex, time::Duration};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tauri::{AppHandle, Manager, Runtime};
+use tauri::{
+    menu::{Menu, MenuItem, PredefinedMenuItem, Submenu},
+    AppHandle, Manager, Runtime,
+};
 
 /// Evert's brief: every 60–120 s.
 const POLL_EVERY: Duration = Duration::from_secs(90);
@@ -39,8 +52,12 @@ const FIRST_AFTER: Duration = Duration::from_secs(30);
 /// Opening the panel reads again when the last read is older than this.
 const FRESH_FOR_SECS: u64 = 5;
 
-/// Time away shorter than this doesn't ask about the timer.
-pub(crate) const IDLE_ASK_SECS: u64 = 10 * 60;
+/// Minutes without input before the timer's idle time counts (Settings).
+const IDLE_MINUTES: &str = "hourly_idle_minutes";
+pub(crate) const IDLE_CHOICES: [u64; 4] = [5, 10, 15, 20];
+const IDLE_DEFAULT: u64 = 10;
+/// Unanswered this long into the idle time, the timer stops at its start.
+pub(crate) const AUTO_STOP_SECS: u64 = 30 * 60;
 /// Called in this long without a timer: one "Working on something?".
 pub(crate) const NUDGE_AFTER_SECS: u64 = 30 * 60;
 
@@ -58,6 +75,9 @@ const TAKE_JS: &str =
 
 const TAKE_RESULT_JS: &str =
     "(function () { var v = window.__cbbHourlyResult || ''; window.__cbbHourlyResult = ''; return v; })()";
+
+const TIMER_URL: &str = "/api/me/project-timer";
+const FILE_URL: &str = "/api/me/project-time/file";
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -90,6 +110,17 @@ pub(crate) struct Running {
     pub note: Option<String>,
 }
 
+impl Running {
+    pub(crate) fn unfiled(&self) -> bool {
+        self.project_id.is_none()
+    }
+
+    /// The project's name, or "Not yet filed".
+    pub(crate) fn label(&self) -> &str {
+        self.project_name.as_deref().filter(|name| !name.is_empty()).unwrap_or("Not yet filed")
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Info {
@@ -108,14 +139,7 @@ pub(crate) fn parse(raw: &str) -> Option<Info> {
     value.get("projects")?.as_array()?;
     let mut info: Info = serde_json::from_value(value).ok()?;
     info.projects.retain(|project| valid_id(&project.id));
-    info.running = info.running.filter(valid_running).map(|mut running| {
-        // Not yet filed is never billable, whatever the answer says.
-        if running.project_id.is_none() {
-            running.billable = false;
-            running.project_name = None;
-        }
-        running
-    });
+    info.running = info.running.filter(valid_running).map(unfiled_not_billable);
     Some(info)
 }
 
@@ -123,20 +147,24 @@ fn valid_running(running: &Running) -> bool {
     valid_id(&running.id) && running.project_id.as_deref().is_none_or(valid_id)
 }
 
-impl Running {
-    pub(crate) fn unfiled(&self) -> bool {
-        self.project_id.is_none()
+/// Not yet filed is never billable, whatever an answer says.
+fn unfiled_not_billable(mut running: Running) -> Running {
+    if running.project_id.is_none() {
+        running.billable = false;
+        running.project_name = None;
     }
-}
-
-/// The tracker's Hours page, open on an unfiled stretch to file it.
-pub(crate) fn file_href(entry_id: &str) -> Option<String> {
-    valid_id(entry_id).then(|| format!("/hours?entry={entry_id}&panel=file"))
+    running
 }
 
 /// The tracker's ids (uuid or cuid): nothing that could reach a script.
 pub(crate) fn valid_id(id: &str) -> bool {
     (1..=64).contains(&id.len()) && id.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+}
+
+/// Hours on the website, open on an unfiled stretch to file it under a new
+/// project (it can add the client too).
+pub(crate) fn new_project_href(entry_id: &str) -> Option<String> {
+    valid_id(entry_id).then(|| format!("/hours?entry={entry_id}&panel=new-project"))
 }
 
 /// The one-tap starts: the four projects timed most recently, leaving out
@@ -148,17 +176,18 @@ pub(crate) fn quick(info: &Info) -> Vec<Project> {
 
 /// What the panel shows.
 #[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct PanelView {
     pub running: Option<Running>,
     pub quick: Vec<Project>,
-    /// Every project they can time, for "Other…".
+    /// Every project they can time, for "Other…" and filing.
     pub projects: Vec<Project>,
-    /// A question about time away is waiting for an answer.
+    /// A question about idle time is waiting for an answer.
     pub asking: bool,
-}
-
-pub(crate) fn panel_view(info: &Info, asking: bool) -> PanelView {
-    PanelView { running: info.running.clone(), quick: quick(info), projects: info.projects.clone(), asking }
+    /// An unfiled stretch is waiting to be filed.
+    pub filing: bool,
+    /// Settings: minutes without input before idle time counts.
+    pub idle_minutes: u64,
 }
 
 /// A note as it is sent: trimmed, one line, at most 200 characters.
@@ -174,42 +203,55 @@ pub(crate) fn clean_note(note: Option<&str>) -> Option<String> {
     (!note.is_empty()).then_some(note)
 }
 
-/// The body for `POST /api/me/project-timer`, built only from what the
-/// tracker takes. A start names one of the person's own projects, or none
-/// ("Just start, file it later").
-pub(crate) fn timer_body(action: &str, project_id: Option<&str>, note: Option<&str>, info: &Info) -> Result<Value, &'static str> {
-    match action {
-        "start" => {
-            let mut body = json!({ "action": "start" });
-            if let Some(project_id) = project_id {
-                if !info.projects.iter().any(|project| project.id == project_id) {
-                    return Err("That project isn't one of yours.");
-                }
-                body["projectId"] = Value::String(project_id.to_string());
-            }
-            if let Some(note) = clean_note(note) {
-                body["note"] = Value::String(note);
-            }
-            Ok(body)
+/// The body for a start, built only from what the tracker takes: one of the
+/// person's own projects, or none ("Just start, file it later").
+pub(crate) fn start_body(project_id: Option<&str>, note: Option<&str>, info: &Info) -> Result<Value, &'static str> {
+    let mut body = json!({ "action": "start" });
+    if let Some(project_id) = project_id {
+        if !info.projects.iter().any(|project| project.id == project_id) {
+            return Err("That project isn't one of yours.");
         }
-        "stop" => Ok(json!({ "action": "stop" })),
-        _ => Err("Unknown action."),
+        body["projectId"] = Value::String(project_id.to_string());
+    }
+    if let Some(note) = clean_note(note) {
+        body["note"] = Value::String(note);
+    }
+    Ok(body)
+}
+
+/// A stop now, or at `at` (unix seconds: the moment idling began).
+pub(crate) fn stop_body(at: Option<u64>) -> Value {
+    match at {
+        Some(at) => json!({ "action": "stop", "at": iso_utc(at) }),
+        None => json!({ "action": "stop" }),
     }
 }
 
-/// Posts each body in turn through the page's own session, stopping at the
-/// first refusal, and leaves `{ ok, running }` or `{ ok: false, error }` on
-/// `window.__cbbHourlyResult`. `done` names what already happened when a
-/// later step is refused ("Stopped at 09:40, but…").
-pub(crate) fn timer_script(steps: &[Value], done: &str) -> String {
-    let steps = Value::Array(steps.to_vec());
+/// The body that files `entry_id` under one of the person's projects.
+pub(crate) fn file_body(entry_id: &str, project_id: &str, info: &Info) -> Result<Value, &'static str> {
+    if !valid_id(entry_id) {
+        return Err("Unknown time.");
+    }
+    if !info.projects.iter().any(|project| project.id == project_id) {
+        return Err("That project isn't one of yours.");
+    }
+    Ok(json!({ "entryId": entry_id, "projectId": project_id }))
+}
+
+/// Posts each `(url, body)` in turn through the page's own session,
+/// stopping at the first refusal, and leaves `{ ok, running }` (the last
+/// answer's) or `{ ok: false, error }` on `window.__cbbHourlyResult`.
+/// `done` names what already happened when a later step is refused
+/// ("Stopped at 09:40, but…").
+pub(crate) fn post_script(steps: &[(&str, Value)], done: &str) -> String {
+    let steps = Value::Array(steps.iter().map(|(url, body)| json!({ "url": url, "body": body })).collect());
     let done = Value::String(done.to_string());
     format!(
         r#"(function (steps, done) {{
   window.__cbbHourlyResult = '';
   function post(i, last) {{
     if (i >= steps.length) {{ window.__cbbHourlyResult = JSON.stringify({{ ok: true, running: last }}); return; }}
-    fetch('/api/me/project-timer', {{ method: 'POST', credentials: 'same-origin', headers: {{ 'Content-Type': 'application/json' }}, body: JSON.stringify(steps[i]) }})
+    fetch(steps[i].url, {{ method: 'POST', credentials: 'same-origin', headers: {{ 'Content-Type': 'application/json' }}, body: JSON.stringify(steps[i].body) }})
       .then(function (r) {{ return r.json().catch(function () {{ return {{}}; }}).then(function (b) {{ return {{ ok: r.ok, b: b || {{}} }}; }}); }})
       .then(function (x) {{
         if (!x.ok) {{
@@ -226,7 +268,7 @@ pub(crate) fn timer_script(steps: &[Value], done: &str) -> String {
     )
 }
 
-/// The result of a timer request, as the page left it.
+/// The result of a request, as the page left it.
 #[derive(Debug, Deserialize, PartialEq)]
 pub(crate) struct Outcome {
     pub ok: bool,
@@ -234,29 +276,6 @@ pub(crate) struct Outcome {
     pub running: Option<Running>,
     #[serde(default)]
     pub error: Option<String>,
-}
-
-// ── coming back from time away with a timer running ──
-
-/// A question waiting in the panel: the timer that was running, and the
-/// time away (unix seconds, `from` no earlier than the timer's start).
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct IdleAsk {
-    pub running: Running,
-    pub from: u64,
-    pub to: u64,
-}
-
-/// Whether time away should ask about `running`: long enough, and the timer
-/// was already running when they left (one started meanwhile, say from a
-/// phone, isn't theirs to cut).
-pub(crate) fn idle_ask(running: Option<&Running>, away: crate::idle::Away) -> Option<IdleAsk> {
-    let running = running?;
-    let started = crate::clock::parse_iso(&running.started_at)?;
-    if away.to.saturating_sub(away.from) < IDLE_ASK_SECS || started > away.from {
-        return None;
-    }
-    Some(IdleAsk { running: running.clone(), from: away.from, to: away.to })
 }
 
 /// `2026-10-12T09:40:00.000Z` for unix seconds (UTC).
@@ -281,15 +300,56 @@ pub(crate) fn iso_utc(secs: u64) -> String {
     )
 }
 
+// ── idle time ──
+
+/// What idle time means for the running timer.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum IdleCall {
+    /// Nothing: short, no timer, or a timer started after idling began
+    /// (from a phone, say: not this computer's to cut).
+    Nothing,
+    /// Ask on their return.
+    Ask,
+    /// 30 minutes in without an answer: stop it when idling began.
+    Stop,
+}
+
+/// Idle since `since` (unix seconds) until `now`, with `running`.
+pub(crate) fn idle_call(running: Option<&Running>, since: u64, now: u64, ask_after_secs: u64) -> IdleCall {
+    let Some(started) = running.and_then(|running| crate::clock::parse_iso(&running.started_at)) else {
+        return IdleCall::Nothing;
+    };
+    let idle = now.saturating_sub(since);
+    if started > since {
+        IdleCall::Nothing
+    } else if idle >= AUTO_STOP_SECS {
+        IdleCall::Stop
+    } else if idle >= ask_after_secs {
+        IdleCall::Ask
+    } else {
+        IdleCall::Nothing
+    }
+}
+
+/// A question waiting in the panel: the timer that was running, and when
+/// idling began and ended (unix seconds).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct IdleAsk {
+    pub running: Running,
+    pub from: u64,
+    pub to: u64,
+}
+
 /// The requests for an answer: "keep" sends nothing; "stop" stops the timer
-/// when they left; "cut" does that and starts the same project again now,
-/// with the same note, so the time away is the only gap.
+/// when idling began; "resume" does that and starts the same project (or an
+/// unfiled timer) again now, with the same note, so the idle time is the
+/// only gap. Time is only ever ended at the idle moment, never added.
 pub(crate) fn idle_steps(choice: &str, ask: &IdleAsk) -> Result<Vec<Value>, &'static str> {
-    let stop = json!({ "action": "stop", "endedAt": iso_utc(ask.from) });
+    let stop = stop_body(Some(ask.from));
     match choice {
         "keep" => Ok(Vec::new()),
         "stop" => Ok(vec![stop]),
-        "cut" => {
+        "resume" => {
             let mut start = json!({ "action": "start" });
             if let Some(project_id) = &ask.running.project_id {
                 start["projectId"] = Value::String(project_id.clone());
@@ -314,6 +374,160 @@ pub(crate) fn should_nudge(in_since: Option<u64>, last_timer_at: u64, nudged_for
     nudged_for != since && now.saturating_sub(since.max(last_timer_at)) >= NUDGE_AFTER_SECS
 }
 
+// ── the tray and Dock menus ──
+
+/// What the timer's menus show (the tray's "Project timer" submenu and the
+/// macOS Dock menu).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub(crate) struct MenuModel {
+    /// "Logo refresh · 1h 05m" while running, else "Project timer".
+    pub title: String,
+    pub running: bool,
+    /// `(menu id, label)` for the recent projects: "Switch to" or "Start".
+    pub projects: Vec<(String, String)>,
+}
+
+pub(crate) const MENU_STOP: &str = "hourly-stop";
+pub(crate) const MENU_LATER: &str = "hourly-later";
+pub(crate) const MENU_HOURS: &str = "hourly-hours";
+const MENU_START: &str = "hourly-start-";
+
+pub(crate) fn menu_model(info: &Info, now: u64) -> MenuModel {
+    let title = match &info.running {
+        Some(running) => {
+            let since = crate::clock::parse_iso(&running.started_at).unwrap_or(now);
+            format!("{} · {}", running.label(), crate::clock::fmt_span(now.saturating_sub(since) / 60))
+        }
+        None => "Project timer".into(),
+    };
+    let projects = quick(info)
+        .into_iter()
+        .map(|project| (format!("{MENU_START}{}", project.id), menu_label(&project)))
+        .collect();
+    MenuModel { title, running: info.running.is_some(), projects }
+}
+
+fn menu_label(project: &Project) -> String {
+    let name = if project.name.is_empty() { &project.project_number } else { &project.name };
+    let name: String = name.chars().take(48).collect();
+    format!("{name} ({})", if project.billable { "Billable" } else { "Tracked only" })
+}
+
+/// The project a menu id starts, if it's one of those menu ids.
+pub(crate) fn menu_project(id: &str) -> Option<&str> {
+    id.strip_prefix(MENU_START).filter(|project| valid_id(project))
+}
+
+pub(crate) fn is_menu_id(id: &str) -> bool {
+    matches!(id, MENU_STOP | MENU_LATER | MENU_HOURS) || menu_project(id).is_some()
+}
+
+/// The Dock menu's latest model (dock.rs builds the menu when asked).
+static DOCK: Mutex<Option<MenuModel>> = Mutex::new(None);
+
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn dock_model() -> Option<MenuModel> {
+    DOCK.lock().ok().and_then(|model| model.clone())
+}
+
+/// The tray menu's "Project timer" submenu, shown at the top of the tray
+/// menu only for someone with a timer.
+pub(crate) struct TrayMenu<R: Runtime> {
+    menu: Menu<R>,
+    sub: Submenu<R>,
+    separator: PredefinedMenuItem<R>,
+    shown: Mutex<Option<MenuModel>>,
+}
+
+impl<R: Runtime> TrayMenu<R> {
+    pub(crate) fn new(app: &AppHandle<R>, menu: &Menu<R>) -> tauri::Result<Self> {
+        Ok(Self {
+            menu: menu.clone(),
+            sub: Submenu::with_id(app, "hourly", "Project timer", true)?,
+            separator: PredefinedMenuItem::separator(app)?,
+            shown: Mutex::new(None),
+        })
+    }
+}
+
+/// Bring the tray and Dock menus up to date (cheap when nothing changed;
+/// called every second by the menu-bar ticker in clock.rs).
+pub(crate) fn refresh_menus<R: Runtime>(app: &AppHandle<R>) {
+    let now = crate::clock::unix_now();
+    let model = with(app, |inner| inner.info.as_ref().map(|info| menu_model(info, now))).flatten();
+    if let Ok(mut dock) = DOCK.lock() {
+        dock.clone_from(&model);
+    }
+    let Some(tray) = app.try_state::<TrayMenu<R>>() else { return };
+    let Ok(mut shown) = tray.shown.lock() else { return };
+    if *shown == model {
+        return;
+    }
+    match (&*shown, &model) {
+        (Some(_), None) => {
+            let _ = tray.menu.remove(&tray.sub);
+            let _ = tray.menu.remove(&tray.separator);
+        }
+        (None, Some(_)) => {
+            let _ = tray.menu.insert(&tray.sub, 0);
+            let _ = tray.menu.insert(&tray.separator, 1);
+        }
+        _ => {}
+    }
+    if let Some(model) = &model {
+        let _ = tray.sub.set_text(&model.title);
+        // The items change only when the projects or the running state do,
+        // not every minute with the title.
+        let items_changed = shown.as_ref().is_none_or(|old| old.running != model.running || old.projects != model.projects);
+        if items_changed {
+            let _ = fill_submenu(app, &tray.sub, model);
+        }
+    }
+    *shown = model;
+}
+
+fn fill_submenu<R: Runtime>(app: &AppHandle<R>, sub: &Submenu<R>, model: &MenuModel) -> tauri::Result<()> {
+    for item in sub.items()? {
+        sub.remove(&item)?;
+    }
+    if model.running {
+        sub.append(&MenuItem::with_id(app, MENU_STOP, "Stop", true, None::<&str>)?)?;
+    }
+    if !model.projects.is_empty() {
+        let label = if model.running { "Switch to" } else { "Start" };
+        let projects = Submenu::with_id(app, "hourly-projects", label, true)?;
+        for (id, text) in &model.projects {
+            projects.append(&MenuItem::with_id(app, id, text, true, None::<&str>)?)?;
+        }
+        sub.append(&projects)?;
+    }
+    sub.append(&MenuItem::with_id(app, MENU_LATER, "Just start, file it later", true, None::<&str>)?)?;
+    sub.append(&PredefinedMenuItem::separator(app)?)?;
+    sub.append(&MenuItem::with_id(app, MENU_HOURS, "Open My Hours", true, None::<&str>)?)?;
+    Ok(())
+}
+
+/// A click on one of the timer's tray or Dock items.
+pub(crate) fn menu_action<R: Runtime>(app: &AppHandle<R>, id: &str) {
+    let result = match id {
+        MENU_STOP => stop(app, "menu"),
+        MENU_LATER => start(app, None, None, "menu"),
+        MENU_HOURS => {
+            crate::mini::open_href(app, "/hours");
+            crate::analytics::action(app, "hourly_open_hours", "menu");
+            Ok(())
+        }
+        id => match menu_project(id) {
+            Some(project) => start(app, Some(project), None, "menu"),
+            None => Ok(()),
+        },
+    };
+    if let Err(error) = result {
+        use tauri_plugin_notification::NotificationExt;
+        let _ = app.notification().builder().title("Project timer").body(error).show();
+    }
+}
+
 // ── state ──
 
 #[derive(Default)]
@@ -321,6 +535,12 @@ struct Inner {
     info: Option<Info>,
     read_at: u64,
     ask: Option<IdleAsk>,
+    /// An unfiled stretch that ended here, waiting for its project.
+    to_file: Option<String>,
+    /// Said when they're back: the timer stopped while they were idle.
+    notice: Option<String>,
+    /// The timer already stopped for idle time (its id), so it's done once.
+    auto_stopped: Option<String>,
     last_timer_at: u64,
     nudged_for: u64,
 }
@@ -334,9 +554,40 @@ fn with<R: Runtime, T>(app: &AppHandle<R>, run: impl FnOnce(&mut Inner) -> T) ->
     Some(run(&mut inner))
 }
 
+pub(crate) fn idle_minutes<R: Runtime>(app: &AppHandle<R>) -> u64 {
+    let minutes = crate::close::number(app, IDLE_MINUTES, IDLE_DEFAULT);
+    if IDLE_CHOICES.contains(&minutes) {
+        minutes
+    } else {
+        IDLE_DEFAULT
+    }
+}
+
+/// Settings › "Ask about idle time after": 5, 10, 15 or 20 minutes.
+pub(crate) fn set_idle_minutes<R: Runtime>(app: &AppHandle<R>, minutes: u64) -> bool {
+    if !IDLE_CHOICES.contains(&minutes) {
+        return false;
+    }
+    crate::close::set_number(app, IDLE_MINUTES, minutes);
+    crate::mini::push(app);
+    true
+}
+
 /// The panel's view, or `None` (hidden) for someone without a timer.
 pub(crate) fn panel<R: Runtime>(app: &AppHandle<R>) -> Option<PanelView> {
-    with(app, |inner| inner.info.as_ref().map(|info| panel_view(info, inner.ask.is_some()))).flatten()
+    let idle_minutes = idle_minutes(app);
+    with(app, |inner| {
+        let info = inner.info.as_ref()?;
+        Some(PanelView {
+            running: info.running.clone(),
+            quick: quick(info),
+            projects: info.projects.clone(),
+            asking: inner.ask.is_some(),
+            filing: inner.to_file.is_some(),
+            idle_minutes,
+        })
+    })
+    .flatten()
 }
 
 /// When the running timer started (unix seconds), for the menu bar.
@@ -358,9 +609,13 @@ fn set_info<R: Runtime>(app: &AppHandle<R>, info: Option<Info>) {
         if inner.ask.as_ref().is_some_and(|ask| !still(ask)) {
             inner.ask = None;
         }
+        if info.is_none() {
+            inner.to_file = None;
+        }
         inner.info = info;
         inner.read_at = now;
     });
+    refresh_menus(app);
     crate::mini::push(app);
 }
 
@@ -380,6 +635,7 @@ fn set_running<R: Runtime>(app: &AppHandle<R>, running: Option<Running>) {
             info.running = running;
         }
     });
+    refresh_menus(app);
     crate::mini::push(app);
 }
 
@@ -391,7 +647,8 @@ fn read<R: Runtime>(app: &AppHandle<R>) {
     }
 }
 
-/// Read again soon if the last read is stale (the panel was opened).
+/// Read again soon if the last read is stale (the panel opened, or the
+/// tracker window came forward).
 pub(crate) fn refresh_if_stale<R: Runtime>(app: &AppHandle<R>) {
     let now = crate::clock::unix_now();
     let stale = with(app, |inner| now.saturating_sub(inner.read_at) > FRESH_FOR_SECS).unwrap_or(false);
@@ -401,33 +658,54 @@ pub(crate) fn refresh_if_stale<R: Runtime>(app: &AppHandle<R>) {
     }
 }
 
-/// Sends `steps` and hands the outcome to the state and the panel. When it
-/// worked and `file` names an unfiled stretch that just ended, the Hours
-/// page opens on it to be filed.
-fn send<R: Runtime>(app: &AppHandle<R>, steps: Vec<Value>, done: &str, file: Option<String>) -> Result<(), String> {
+/// One request at a time: they share the page's result variable.
+static SENDING: Mutex<()> = Mutex::new(());
+
+/// What to do once a request worked.
+enum Then {
+    /// Timer requests: the answer is the new running timer.
+    Timer {
+        /// An unfiled stretch that ended: ask which project it was for.
+        file: Option<String>,
+        /// Tell them this (the timer stopped while they were idle).
+        notice: Option<String>,
+    },
+    /// Filed: nothing more to ask.
+    Filed,
+}
+
+/// Sends `steps` through the page and hands the outcome on.
+fn send<R: Runtime>(app: &AppHandle<R>, steps: Vec<(&'static str, Value)>, done: &str, then: Then) -> Result<(), String> {
     let window = crate::walkie::tracker_window(app).ok_or("Open the tracker first.")?;
-    window
-        .eval(timer_script(&steps, done))
-        .map_err(|_| "The tracker could not be reached.".to_string())?;
+    let script = post_script(&steps, done);
     let app = app.clone();
     std::thread::spawn(move || {
+        let _one = SENDING.lock();
+        if window.eval(&script).is_err() {
+            return panel_error(&app, "The tracker could not be reached.");
+        }
         let outcome = crate::walkie::collect(&window, TAKE_RESULT_JS, 40)
             .and_then(|raw| serde_json::from_str::<Outcome>(&raw).ok());
-        match outcome {
-            Some(Outcome { ok: true, running, .. }) => {
-                let running = running.filter(valid_running);
-                set_running(&app, running);
-                if let Some(href) = file.as_deref().and_then(file_href) {
-                    let app_for_main = app.clone();
-                    let _ = app.run_on_main_thread(move || crate::mini::open_href(&app_for_main, &href));
-                    crate::analytics::action(&app, "hourly_file", "panel");
-                }
+        match (outcome, then) {
+            (Some(Outcome { ok: true, running, .. }), Then::Timer { file, notice }) => {
+                set_running(&app, running.filter(valid_running).map(unfiled_not_billable));
                 // The tracker's page shows the same timer: let it catch up.
-                if let Some(window) = crate::walkie::tracker_window(&app) {
-                    let _ = window.eval("window.dispatchEvent(new CustomEvent('cbb:hourly-changed'))");
+                let _ = window.eval("window.dispatchEvent(new CustomEvent('cbb:hourly-changed'))");
+                if file.is_some() || notice.is_some() {
+                    if file.is_some() {
+                        with(&app, |inner| inner.to_file.clone_from(&file));
+                    }
+                    crate::mini::push(&app);
+                    let after = json!({ "file": file.is_some(), "notice": notice });
+                    crate::mini::ask_hourly(&app, "__cbbMiniHourlyAfter", &after);
                 }
             }
-            other => {
+            (Some(Outcome { ok: true, .. }), Then::Filed) => {
+                with(&app, |inner| inner.to_file = None);
+                crate::mini::push(&app);
+                let _ = window.eval("window.dispatchEvent(new CustomEvent('cbb:hourly-changed'))");
+            }
+            (other, _) => {
                 let error = other
                     .and_then(|outcome| outcome.error)
                     .unwrap_or_else(|| "The tracker could not be reached.".into());
@@ -446,6 +724,39 @@ fn panel_error<R: Runtime>(app: &AppHandle<R>, error: &str) {
     }
 }
 
+fn current<R: Runtime>(app: &AppHandle<R>) -> Result<Info, String> {
+    with(app, |inner| inner.info.clone()).flatten().ok_or_else(|| "The project timer isn't on for you.".to_string())
+}
+
+/// The unfiled timer that a start or stop now ends, to file next.
+fn ends_unfiled(info: &Info) -> Option<String> {
+    info.running.as_ref().filter(|running| running.unfiled()).map(|running| running.id.clone())
+}
+
+/// Start (or switch to) a project, or an unfiled timer with `None`.
+fn start<R: Runtime>(app: &AppHandle<R>, project_id: Option<&str>, note: Option<&str>, from: &'static str) -> Result<(), String> {
+    let info = current(app)?;
+    let body = start_body(project_id, note, &info).map_err(str::to_string)?;
+    send(app, vec![(TIMER_URL, body)], "", Then::Timer { file: ends_unfiled(&info), notice: None })?;
+    let what = match (info.running.is_some(), project_id.is_some()) {
+        (true, _) => "hourly_switch",
+        (false, false) => "hourly_start_unfiled",
+        (false, true) => "hourly_start",
+    };
+    crate::analytics::action(app, what, from);
+    Ok(())
+}
+
+fn stop<R: Runtime>(app: &AppHandle<R>, from: &'static str) -> Result<(), String> {
+    let info = current(app)?;
+    if info.running.is_none() {
+        return Err("No timer is running.".into());
+    }
+    send(app, vec![(TIMER_URL, stop_body(None))], "", Then::Timer { file: ends_unfiled(&info), notice: None })?;
+    crate::analytics::action(app, "hourly_stop", from);
+    Ok(())
+}
+
 /// Start (or switch to) a project, or stop, from the panel.
 #[tauri::command]
 pub(crate) fn mini_hourly<R: Runtime>(
@@ -454,36 +765,30 @@ pub(crate) fn mini_hourly<R: Runtime>(
     project_id: Option<String>,
     note: Option<String>,
 ) -> Result<(), String> {
-    let info = with(&app, |inner| inner.info.clone()).flatten().ok_or("The project timer isn't on for you.")?;
-    let body = timer_body(&action, project_id.as_deref(), note.as_deref(), &info).map_err(str::to_string)?;
-    // An unfiled timer that ends here (stopped, or switched to a project)
-    // is filed next, on the Hours page.
-    let file = info.running.as_ref().filter(|running| running.unfiled()).map(|running| running.id.clone());
-    send(&app, vec![body], "", file)?;
-    let what = match (action.as_str(), info.running.is_some(), project_id.is_some()) {
-        ("start", true, _) => "hourly_switch",
-        ("start", false, false) => "hourly_start_unfiled",
-        ("start", false, true) => "hourly_start",
-        _ => "hourly_stop",
-    };
-    crate::analytics::action(&app, what, "panel");
-    Ok(())
+    match action.as_str() {
+        "start" => start(&app, project_id.as_deref(), note.as_deref(), "panel"),
+        "stop" => stop(&app, "panel"),
+        _ => Err("Unknown action.".into()),
+    }
 }
 
-/// The answer to "Keep, cut the time away, or stop when you left?".
+/// The answer to "Keep it / Drop the idle time and keep going / Drop it
+/// and stop" (`keep`, `resume`, `stop`).
 #[tauri::command]
 pub(crate) fn mini_hourly_idle<R: Runtime>(app: AppHandle<R>, choice: String) -> Result<(), String> {
     let ask = with(&app, |inner| inner.ask.take()).flatten().ok_or("That timer has already stopped.")?;
     let steps = idle_steps(&choice, &ask).map_err(str::to_string)?;
+    crate::mini::push(&app);
     if !steps.is_empty() {
         let left = crate::clock::fmt_hhmm_sast(ask.from);
-        // Stopped for good, an unfiled stretch is filed next; cut, the
-        // person is back at work and files it later from Hours.
-        let file = (choice == "stop" && ask.running.unfiled()).then(|| ask.running.id.clone());
-        send(&app, steps, &format!("Stopped at {left}, but it didn't start again:"), file)?;
+        // The unfiled stretch up to the idle moment is filed next, whether
+        // the timer stays stopped or starts again.
+        let file = ask.running.unfiled().then(|| ask.running.id.clone());
+        let steps = steps.into_iter().map(|body| (TIMER_URL, body)).collect();
+        send(&app, steps, &format!("Stopped at {left}, but it didn't start again:"), Then::Timer { file, notice: None })?;
     }
     let what = match choice.as_str() {
-        "cut" => "hourly_idle_cut",
+        "resume" => "hourly_idle_resume",
         "stop" => "hourly_idle_stop",
         _ => "hourly_idle_keep",
     };
@@ -491,20 +796,116 @@ pub(crate) fn mini_hourly_idle<R: Runtime>(app: AppHandle<R>, choice: String) ->
     Ok(())
 }
 
-/// Time away ended (idle.rs): with a timer running since before they left,
-/// the panel asks what to do with it.
-pub(crate) fn on_away<R: Runtime>(app: &AppHandle<R>, away: crate::idle::Away) {
+/// "Which project was it for?": `file` with a project, `new` (Hours on the
+/// website, to make a new project for it) or `later`.
+#[tauri::command]
+pub(crate) fn mini_hourly_file<R: Runtime>(app: AppHandle<R>, choice: String, project_id: Option<String>) -> Result<(), String> {
+    let entry = with(&app, |inner| inner.to_file.clone()).flatten().ok_or("That time is already filed.")?;
+    match choice.as_str() {
+        "file" => {
+            let info = current(&app)?;
+            let body = file_body(&entry, project_id.as_deref().unwrap_or_default(), &info).map_err(str::to_string)?;
+            send(&app, vec![(FILE_URL, body)], "", Then::Filed)?;
+            crate::analytics::action(&app, "hourly_file", "panel");
+        }
+        "new" => {
+            with(&app, |inner| inner.to_file = None);
+            if let Some(href) = new_project_href(&entry) {
+                crate::mini::open_href(&app, &href);
+            }
+            crate::analytics::action(&app, "hourly_file_new_project", "panel");
+        }
+        "later" => {
+            with(&app, |inner| inner.to_file = None);
+            crate::mini::push(&app);
+            crate::analytics::action(&app, "hourly_file_later", "panel");
+        }
+        _ => return Err("Unknown choice.".into()),
+    }
+    Ok(())
+}
+
+/// The first time a timer is stopped for idle time (once per timer).
+fn first_auto_stop<R: Runtime>(app: &AppHandle<R>, running: &Running) -> bool {
+    with(app, |inner| {
+        let first = inner.auto_stopped.as_deref() != Some(running.id.as_str());
+        inner.auto_stopped = Some(running.id.clone());
+        first
+    })
+    .unwrap_or(false)
+}
+
+/// Every idle poll (idle.rs): `idle` is the OS's seconds without input.
+/// Thirty minutes into idle time with the timer running since before it
+/// began, nobody has answered: stop it when idling began.
+pub(crate) fn on_idle<R: Runtime>(app: &AppHandle<R>, now: u64, idle: Option<u64>) {
+    let Some(idle) = idle else { return };
+    let since = now.saturating_sub(idle);
     let running = with(app, |inner| inner.info.as_ref().and_then(|info| info.running.clone())).flatten();
-    let Some(ask) = idle_ask(running.as_ref(), away) else { return };
-    with(app, |inner| inner.ask = Some(ask.clone()));
-    let question = json!({
-        "project": ask.running.project_name.as_deref().unwrap_or("Not yet filed"),
-        "unfiled": ask.running.unfiled(),
-        "billable": ask.running.billable,
-        "from": ask.from * 1000,
-        "to": ask.to * 1000,
-    });
-    crate::mini::ask_hourly_idle(app, &question);
+    let Some(running) = running else { return };
+    if idle_call(Some(&running), since, now, idle_minutes(app) * 60) == IdleCall::Stop && first_auto_stop(app, &running) {
+        auto_stop(app, &running, since, false);
+    }
+}
+
+/// Stops `running` at `at` (when idling began) and tells the person: now if
+/// they're `back`, else when they come back (on_away).
+fn auto_stop<R: Runtime>(app: &AppHandle<R>, running: &Running, at: u64, back: bool) {
+    let notice = format!(
+        "You were away, so your timer on {} stopped at {}, when you went idle.",
+        running.label(),
+        crate::clock::fmt_hhmm_sast(at)
+    );
+    let file = running.unfiled().then(|| running.id.clone());
+    let then = if back {
+        Then::Timer { file, notice: Some(notice) }
+    } else {
+        with(app, |inner| {
+            inner.notice = Some(notice);
+            inner.ask = None;
+            if file.is_some() {
+                inner.to_file.clone_from(&file);
+            }
+        });
+        Then::Timer { file: None, notice: None }
+    };
+    let _ = send(app, vec![(TIMER_URL, stop_body(Some(at)))], "", then);
+    crate::analytics::action(app, "hourly_idle_auto_stop", "idle");
+}
+
+/// Back from idle time (idle.rs).
+pub(crate) fn on_away<R: Runtime>(app: &AppHandle<R>, away: crate::idle::Away) {
+    // Stopped while they were away: say so, and ask for its project if it
+    // wasn't filed.
+    let (notice, filing) = with(app, |inner| (inner.notice.take(), inner.to_file.is_some())).unwrap_or((None, false));
+    if let Some(notice) = notice {
+        crate::mini::ask_hourly(app, "__cbbMiniHourlyAfter", &json!({ "file": filing, "notice": notice }));
+        return;
+    }
+    let running = with(app, |inner| inner.info.as_ref().and_then(|info| info.running.clone())).flatten();
+    let Some(running) = running else { return };
+    match idle_call(Some(&running), away.from, away.to, idle_minutes(app) * 60) {
+        IdleCall::Nothing => {}
+        // The computer slept through it: the same rule, now they're back.
+        IdleCall::Stop => {
+            if first_auto_stop(app, &running) {
+                auto_stop(app, &running, away.from, true);
+            }
+        }
+        IdleCall::Ask => {
+            let ask = IdleAsk { running: running.clone(), from: away.from, to: away.to };
+            with(app, |inner| inner.ask = Some(ask));
+            let question = json!({
+                "project": running.label(),
+                "billable": running.billable,
+                "unfiled": running.unfiled(),
+                "from": away.from * 1000,
+                "to": away.to * 1000,
+            });
+            crate::mini::push(app);
+            crate::mini::ask_hourly(app, "__cbbMiniHourlyIdle", &question);
+        }
+    }
 }
 
 fn maybe_nudge<R: Runtime>(app: &AppHandle<R>) {
@@ -515,8 +916,7 @@ fn maybe_nudge<R: Runtime>(app: &AppHandle<R>) {
         .filter(|clock| clock.available && clock.state == "in")
         .and_then(|clock| crate::clock::parse_iso(&clock.since_iso));
     let nudge = with(app, |inner| {
-        let timing = inner.info.as_ref().is_some_and(|info| info.running.is_some());
-        let eligible = inner.info.is_some() && !timing;
+        let eligible = inner.info.as_ref().is_some_and(|info| info.running.is_none() && !info.projects.is_empty());
         if eligible && should_nudge(in_since, inner.last_timer_at, inner.nudged_for, now) {
             inner.nudged_for = in_since.unwrap_or_default();
             true
@@ -537,7 +937,7 @@ fn maybe_nudge<R: Runtime>(app: &AppHandle<R>) {
 }
 
 /// Start the background reader for the app's life.
-pub(crate) fn start<R: Runtime>(app: AppHandle<R>) {
+pub(crate) fn start_polling<R: Runtime>(app: AppHandle<R>) {
     std::thread::spawn(move || {
         std::thread::sleep(FIRST_AFTER);
         loop {
@@ -546,6 +946,7 @@ pub(crate) fn start<R: Runtime>(app: AppHandle<R>) {
                 maybe_nudge(&app);
             } else {
                 with(&app, |inner| *inner = Inner::default());
+                refresh_menus(&app);
             }
             std::thread::sleep(POLL_EVERY);
         }
@@ -555,7 +956,6 @@ pub(crate) fn start<R: Runtime>(app: AppHandle<R>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::idle::Away;
 
     const ANSWER: &str = r#"{"rateCents":65000,"currency":"ZAR","projects":[
         {"id":"p1","name":"Con Spirito S1","projectNumber":"CB-0412","clientName":"Spirit Films","billable":true},
@@ -569,6 +969,9 @@ mod tests {
     fn info() -> Info {
         parse(ANSWER).expect("a real answer")
     }
+
+    // 2026-10-12T07:00:00Z, when the running timer started.
+    const STARTED: u64 = 1_791_788_400;
 
     #[test]
     fn only_a_real_answer_shows_the_timer() {
@@ -592,28 +995,40 @@ mod tests {
     }
 
     #[test]
-    fn starts_name_one_of_your_projects_and_carry_only_what_the_tracker_takes() {
+    fn starts_name_one_of_your_projects_or_none_and_carry_only_what_the_tracker_takes() {
         let info = info();
         assert_eq!(
-            timer_body("start", Some("p1"), Some("  Edit\nv2  "), &info),
+            start_body(Some("p1"), Some("  Edit\nv2  "), &info),
             Ok(json!({ "action": "start", "projectId": "p1", "note": "Edit v2" }))
         );
-        assert_eq!(timer_body("start", Some("p1"), Some("   "), &info), Ok(json!({ "action": "start", "projectId": "p1" })));
-        assert_eq!(timer_body("stop", Some("p1"), Some("x"), &info), Ok(json!({ "action": "stop" })));
-        assert!(timer_body("start", Some("someone-elses"), None, &info).is_err());
+        assert_eq!(start_body(Some("p1"), Some("   "), &info), Ok(json!({ "action": "start", "projectId": "p1" })));
         // Just start, file it later.
-        assert_eq!(timer_body("start", None, Some("Call"), &info), Ok(json!({ "action": "start", "note": "Call" })));
-        assert!(timer_body("delete", Some("p1"), None, &info).is_err());
+        assert_eq!(start_body(None, Some("Call"), &info), Ok(json!({ "action": "start", "note": "Call" })));
+        assert!(start_body(Some("someone-elses"), None, &info).is_err());
         let long = "x".repeat(500);
-        let body = timer_body("start", Some("p1"), Some(&long), &info).unwrap();
+        let body = start_body(Some("p1"), Some(&long), &info).unwrap();
         assert_eq!(body["note"].as_str().map(str::len), Some(200));
+        assert_eq!(stop_body(None), json!({ "action": "stop" }));
+        assert_eq!(stop_body(Some(STARTED)), json!({ "action": "stop", "at": "2026-10-12T07:00:00.000Z" }));
     }
 
     #[test]
-    fn the_script_posts_each_step_to_the_tracker_and_stops_at_a_refusal() {
-        let js = timer_script(&[json!({ "action": "stop" }), json!({ "action": "start", "projectId": "p1" })], "Stopped.");
-        assert!(js.contains("fetch('/api/me/project-timer', { method: 'POST'"));
-        assert!(js.ends_with(r#"})([{"action":"stop"},{"action":"start","projectId":"p1"}], "Stopped.")"#));
+    fn filing_names_the_entry_and_one_of_your_projects() {
+        let info = info();
+        assert_eq!(file_body("t9", "p3", &info), Ok(json!({ "entryId": "t9", "projectId": "p3" })));
+        assert!(file_body("t9", "someone-elses", &info).is_err());
+        assert!(file_body("t9'", "p3", &info).is_err());
+        assert_eq!(new_project_href("t9").as_deref(), Some("/hours?entry=t9&panel=new-project"));
+        assert_eq!(new_project_href("x&panel=evil"), None);
+    }
+
+    #[test]
+    fn the_script_posts_each_step_and_stops_at_a_refusal() {
+        let js = post_script(&[(TIMER_URL, json!({ "action": "stop" })), (FILE_URL, json!({ "entryId": "t", "projectId": "p" }))], "Stopped.");
+        assert!(js.contains("fetch(steps[i].url, { method: 'POST', credentials: 'same-origin'"));
+        assert!(js.ends_with(
+            r#"})([{"body":{"action":"stop"},"url":"/api/me/project-timer"},{"body":{"entryId":"t","projectId":"p"},"url":"/api/me/project-time/file"}], "Stopped.")"#
+        ));
         assert!(js.contains("if (!x.ok)"));
         assert!(!js.contains("localStorage") && !js.contains("console."));
     }
@@ -626,37 +1041,52 @@ mod tests {
         assert_eq!(refused.error.as_deref(), Some("That project is closed."));
     }
 
-    // 2026-10-12T07:00:00Z, when the running timer started.
-    const STARTED: u64 = 1_791_788_400;
-
     #[test]
-    fn time_away_asks_only_about_a_timer_running_before_you_left() {
-        let info = info();
-        let running = info.running.as_ref();
-        let long = Away { from: STARTED + 3600, to: STARTED + 3600 + 25 * 60 };
-        let ask = idle_ask(running, long).expect("asks");
-        assert_eq!((ask.from, ask.to), (long.from, long.to));
-        // Too short.
-        assert_eq!(idle_ask(running, Away { from: STARTED + 3600, to: STARTED + 3600 + 9 * 60 }), None);
-        // The timer started while they were away (from a phone, say).
-        assert_eq!(idle_ask(running, Away { from: STARTED - 600, to: STARTED + 1200 }), None);
-        // No timer.
-        assert_eq!(idle_ask(None, long), None);
+    fn an_unfiled_timer_is_never_billable() {
+        let raw = r#"{"projects":[],"running":{"id":"t9","projectId":null,"projectName":"x","billable":true,"startedAt":"2026-10-12T07:00:00.000Z","note":null}}"#;
+        let running = parse(raw).and_then(|info| info.running).expect("an unfiled timer");
+        assert!(running.unfiled());
+        assert!(!running.billable);
+        assert_eq!(running.label(), "Not yet filed");
+        // A bad project id drops the timer rather than showing it as unfiled.
+        let bad = r#"{"projects":[],"running":{"id":"t9","projectId":"a b","startedAt":"2026-10-12T07:00:00.000Z"}}"#;
+        assert_eq!(parse(bad).and_then(|info| info.running), None);
     }
 
     #[test]
-    fn answers_become_the_trackers_requests() {
+    fn idle_time_asks_after_the_chosen_minutes_and_stops_at_thirty() {
+        let info = info();
+        let running = info.running.as_ref();
+        let since = STARTED + 3600;
+        let ten = 10 * 60;
+        assert_eq!(idle_call(running, since, since + 9 * 60, ten), IdleCall::Nothing);
+        assert_eq!(idle_call(running, since, since + ten, ten), IdleCall::Ask);
+        assert_eq!(idle_call(running, since, since + 5 * 60, 5 * 60), IdleCall::Ask);
+        assert_eq!(idle_call(running, since, since + 29 * 60, ten), IdleCall::Ask);
+        assert_eq!(idle_call(running, since, since + 30 * 60, ten), IdleCall::Stop);
+        // The timer started after idling began (from a phone, say).
+        assert_eq!(idle_call(running, STARTED - 600, STARTED + 3600, ten), IdleCall::Nothing);
+        assert_eq!(idle_call(None, since, since + 7200, ten), IdleCall::Nothing);
+    }
+
+    #[test]
+    fn answers_only_ever_end_time_at_the_idle_moment() {
         let ask = IdleAsk { running: info().running.unwrap(), from: STARTED + 9600, to: STARTED + 11_400 };
         assert_eq!(idle_steps("keep", &ask), Ok(vec![]));
-        assert_eq!(idle_steps("stop", &ask), Ok(vec![json!({ "action": "stop", "endedAt": "2026-10-12T09:40:00.000Z" })]));
+        assert_eq!(idle_steps("stop", &ask), Ok(vec![json!({ "action": "stop", "at": "2026-10-12T09:40:00.000Z" })]));
         assert_eq!(
-            idle_steps("cut", &ask),
+            idle_steps("resume", &ask),
             Ok(vec![
-                json!({ "action": "stop", "endedAt": "2026-10-12T09:40:00.000Z" }),
+                json!({ "action": "stop", "at": "2026-10-12T09:40:00.000Z" }),
                 json!({ "action": "start", "projectId": "p2", "note": "Grade" }),
             ])
         );
         assert!(idle_steps("delete", &ask).is_err());
+        // An unfiled timer resumes unfiled.
+        let mut unfiled = ask.clone();
+        unfiled.running.project_id = None;
+        unfiled.running.note = None;
+        assert_eq!(idle_steps("resume", &unfiled).unwrap()[1], json!({ "action": "start" }));
     }
 
     #[test]
@@ -670,35 +1100,35 @@ mod tests {
     #[test]
     fn a_nudge_comes_once_per_call_in_after_half_an_hour_without_a_timer() {
         let since = STARTED;
-        // Not called in.
         assert!(!should_nudge(None, 0, 0, since + 7200));
-        // 29 minutes in.
         assert!(!should_nudge(Some(since), 0, 0, since + 29 * 60));
         assert!(should_nudge(Some(since), 0, 0, since + 30 * 60));
-        // Already nudged this stretch.
         assert!(!should_nudge(Some(since), 0, since, since + 7200));
-        // A timer stopped 10 minutes ago.
         assert!(!should_nudge(Some(since), since + 7200 - 600, 0, since + 7200));
         assert!(should_nudge(Some(since), since + 3600, 0, since + 3600 + 1800));
     }
 
     #[test]
-    fn an_unfiled_timer_is_never_billable_and_files_on_hours() {
-        let raw = r#"{"projects":[],"running":{"id":"t9","projectId":null,"projectName":null,"billable":true,"startedAt":"2026-10-12T07:00:00.000Z","note":null}}"#;
-        let running = parse(raw).and_then(|info| info.running).expect("an unfiled timer");
-        assert!(running.unfiled());
-        assert!(!running.billable);
-        assert_eq!(file_href(&running.id).as_deref(), Some("/hours?entry=t9&panel=file"));
-        assert_eq!(file_href("x&panel=evil"), None);
-        // A bad project id drops the timer rather than showing it as unfiled.
-        let bad = r#"{"projects":[],"running":{"id":"t9","projectId":"a b","startedAt":"2026-10-12T07:00:00.000Z"}}"#;
-        assert_eq!(parse(bad).and_then(|info| info.running), None);
-        // Cut restarts it unfiled too.
-        let ask = IdleAsk { running, from: STARTED + 600, to: STARTED + 1800 };
-        assert_eq!(
-            idle_steps("cut", &ask).unwrap()[1],
-            json!({ "action": "start" })
-        );
+    fn the_menus_show_the_timer_and_the_recent_projects() {
+        let model = menu_model(&info(), STARTED + 65 * 60);
+        assert_eq!(model.title, "Brand film · 1h 05m");
+        assert!(model.running);
+        assert_eq!(model.projects[0], ("hourly-start-p1".to_string(), "Con Spirito S1 (Billable)".to_string()));
+        assert_eq!(model.projects.len(), 4);
+        let mut stopped = info();
+        stopped.running = None;
+        assert_eq!(menu_model(&stopped, STARTED).title, "Project timer");
+        let mut unfiled = info();
+        unfiled.running.as_mut().unwrap().project_id = None;
+        unfiled.running.as_mut().unwrap().project_name = None;
+        assert_eq!(menu_model(&unfiled, STARTED + 600).title, "Not yet filed · 10m");
+        for id in [MENU_STOP, MENU_LATER, MENU_HOURS, "hourly-start-p1"] {
+            assert!(is_menu_id(id), "{id}");
+        }
+        assert_eq!(menu_project("hourly-start-p1"), Some("p1"));
+        for id in ["hourly-start-", "hourly-start-a b", "hourly-delete", "tray-quit"] {
+            assert!(!is_menu_id(id), "{id}");
+        }
     }
 
     #[test]

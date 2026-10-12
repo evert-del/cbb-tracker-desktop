@@ -28,7 +28,17 @@ type Quiet = { tracker: boolean; walkie: boolean; channel1: boolean; dnd_until: 
 type HourlyProject = { id: string; name: string; projectNumber: string; clientName: string | null; billable: boolean };
 /** `projectId` null: started with no project, "Not yet filed" (never billable). */
 type HourlyRunning = { id: string; projectId: string | null; projectName: string | null; billable: boolean; startedAt: string; note: string | null };
-type Hourly = { running: HourlyRunning | null; quick: HourlyProject[]; projects: HourlyProject[]; asking: boolean };
+type Hourly = {
+  running: HourlyRunning | null;
+  quick: HourlyProject[];
+  projects: HourlyProject[];
+  /** A question about idle time is waiting for an answer. */
+  asking: boolean;
+  /** An unfiled stretch is waiting for its project. */
+  filing: boolean;
+  /** Settings: minutes without input before idle time counts. */
+  idleMinutes: number;
+};
 
 type ChatRow = {
   key: string;
@@ -1074,7 +1084,7 @@ window.__cbbMiniSearchResult = (r) => searchResult(r);
 // ── the project timer (hourly.rs) ──
 
 /** "Other…" is open: every project, billed by the hour first, then quoted. */
-let hourlyPick = false;
+let hourlyPick: "start" | "file" | null = null;
 /** Back from time away with the timer running: the question being asked. */
 type HourlyIdleAsk = { project: string; billable: boolean; unfiled?: boolean; from: number; to: number };
 let hourlyIdle: HourlyIdleAsk | null = null;
@@ -1133,12 +1143,28 @@ function projectTitle(p: HourlyProject): string {
 
 const PLAY = "M8 5v14l11-7z";
 
+let hourlyInfoTimer = 0;
+
+/** A line about what happened (the timer stopped while they were idle). */
+function hourlyInfo(text: string | null) {
+  const box = el("hourly-info");
+  window.clearTimeout(hourlyInfoTimer);
+  box.textContent = text ?? "";
+  box.hidden = !text;
+  if (text) hourlyInfoTimer = window.setTimeout(() => hourlyInfo(null), 30000);
+}
+
 function renderHourly(h: Hourly | null) {
   el("hourly").hidden = h === null;
+  el("idle-settings").hidden = h === null;
   if (h === null) {
     if (hourlyPick) closeHourlyPick();
+    if (hourlyIdle) closeHourlyIdle();
     return;
   }
+  document.querySelectorAll<HTMLButtonElement>("#idle-choice .seg").forEach((seg) => {
+    seg.setAttribute("aria-checked", String(Number(seg.dataset.idle) === h.idleMinutes));
+  });
   const running = h.running;
   el("hourly-running").hidden = running === null;
   if (running) {
@@ -1189,9 +1215,11 @@ function renderHourly(h: Hourly | null) {
     other.type = "button";
     other.className = "h-chip other";
     other.textContent = "Other…";
-    other.addEventListener("click", openHourlyPick);
+    other.addEventListener("click", () => openHourlyPick("start"));
     quick.appendChild(other);
   }
+  // Filed meanwhile (on the website, say), or put off: nothing to ask.
+  if (hourlyPick === "file" && !h.filing) closeHourlyPick();
   if (hourlyPick) renderHourlyPick();
   // A question whose timer stopped meanwhile (on the website, say) is moot.
   if (hourlyIdle && !h.asking) closeHourlyIdle();
@@ -1219,7 +1247,8 @@ function renderHourlyPick() {
     for (const p of rows) {
       const row = document.createElement("button");
       row.type = "button";
-      const on = p.id === h.running?.projectId;
+      const filing = hourlyPick === "file";
+      const on = !filing && p.id === h.running?.projectId;
       row.className = on ? "h-row on" : "h-row";
       const t = document.createElement("span");
       t.className = "t";
@@ -1230,6 +1259,10 @@ function renderHourlyPick() {
       row.append(t);
       if (p.clientName) row.append(sub);
       row.addEventListener("click", () => {
+        if (filing) {
+          fileHourly("file", p.id);
+          return;
+        }
         if (!on) hourlyTap("start", p.id);
         closeHourlyPick();
       });
@@ -1246,8 +1279,24 @@ function renderHourlyPick() {
   restHourlyButtons();
 }
 
-function openHourlyPick() {
-  hourlyPick = true;
+/**
+ * "Other…" (`start`), or "Which project was it for?" (`file`) right after an
+ * unfiled timer ended, with what happened (`hint`).
+ */
+function openHourlyPick(mode: "start" | "file" = "start", hint: string | null = null) {
+  if (mode === "file") {
+    if (chat) closeChat();
+    showSettings(false);
+  }
+  hourlyPick = mode;
+  const filing = mode === "file";
+  el("hourly-pick-title").textContent = filing ? "Which project was it for?" : "Time a project";
+  el("hourly-pick-hint").textContent = hint ?? (filing ? "The time you just stopped isn't filed under a project yet." : "");
+  el("hourly-pick-hint").hidden = !filing && !hint;
+  el("hourly-pick-foot").hidden = !filing;
+  el("hourly-pick-back").hidden = filing;
+  el("hourly-pick-error").hidden = true;
+  setPickBusy(false);
   el<HTMLInputElement>("hourly-filter").value = "";
   renderHourlyPick();
   if (current) renderMode(current);
@@ -1255,25 +1304,49 @@ function openHourlyPick() {
 }
 
 function closeHourlyPick() {
-  hourlyPick = false;
+  hourlyPick = null;
   if (current) renderMode(current);
+}
+
+function setPickBusy(busy: boolean) {
+  document.querySelectorAll<HTMLButtonElement>("#hourly-pick-foot button").forEach((b) => (b.disabled = busy));
+  if (hourlyPick === "file") {
+    document.querySelectorAll<HTMLButtonElement>("#hourly-pick-list .h-row").forEach((b) => (b.disabled = busy));
+  }
+}
+
+/** File the stretch under a project, make a new project for it on the
+ * website, or leave it for later. */
+function fileHourly(choice: "file" | "new" | "later", projectId?: string) {
+  setPickBusy(true);
+  el("hourly-pick-error").hidden = true;
+  invoke("mini_hourly_file", { choice, projectId: projectId ?? null })
+    .then(() => {
+      // Filed when the tracker says so (the next push); the others are done.
+      if (choice !== "file") closeHourlyPick();
+    })
+    .catch((error) => {
+      setPickBusy(false);
+      el("hourly-pick-error").textContent = String(error);
+      el("hourly-pick-error").hidden = false;
+    });
 }
 
 function openHourlyIdle(ask: HourlyIdleAsk) {
   if (chat) closeChat();
   showSettings(false);
-  hourlyPick = false;
+  hourlyPick = null;
   hourlyIdle = ask;
   const from = new Date(ask.from);
   const to = new Date(ask.to);
   const left = TRACKER_TIME.format(from);
   const away = fmtSpan((ask.to - ask.from) / 60000);
   const timer = ask.unfiled
-    ? "your timer (not yet filed)"
-    : `your timer on ${ask.project} (${ask.billable ? "billable" : "tracked only"})`;
+    ? "Your timer (not yet filed)"
+    : `Your timer on ${ask.project} (${ask.billable ? "billable" : "tracked only"})`;
   el("hourly-idle-text").textContent =
-    `You were away ${away} (${left}–${TRACKER_TIME.format(to)}) and ${timer} kept running. What should it count?`;
-  el("hourly-idle-at").textContent = left;
+    `${timer} kept running while you were idle for ${away}, from ${left} to ${TRACKER_TIME.format(to)}. ` +
+    `Dropping the idle time ends it at ${left}.`;
   el("hourly-idle-error").hidden = true;
   document.querySelectorAll<HTMLButtonElement>(".h-choices button").forEach((b) => (b.disabled = false));
   if (current) renderMode(current);
@@ -1284,7 +1357,7 @@ function closeHourlyIdle() {
   if (current) renderMode(current);
 }
 
-function answerHourlyIdle(choice: "keep" | "cut" | "stop") {
+function answerHourlyIdle(choice: "keep" | "resume" | "stop") {
   if (!hourlyIdle) return;
   document.querySelectorAll<HTMLButtonElement>(".h-choices button").forEach((b) => (b.disabled = true));
   invoke("mini_hourly_idle", { choice })
@@ -1300,6 +1373,7 @@ declare global {
   interface Window {
     __cbbMiniHourlyError?: (text: string) => void;
     __cbbMiniHourlyIdle?: (ask: HourlyIdleAsk) => void;
+    __cbbMiniHourlyAfter?: (after: { file: boolean; notice: string | null }) => void;
   }
 }
 window.__cbbMiniHourlyError = (text) => {
@@ -1308,6 +1382,13 @@ window.__cbbMiniHourlyError = (text) => {
   hourlyError(text);
 };
 window.__cbbMiniHourlyIdle = (ask) => openHourlyIdle(ask);
+// An unfiled timer ended (ask which project it was for), and/or the timer
+// stopped while they were idle (say so).
+window.__cbbMiniHourlyAfter = (after) => {
+  if (hourlyIdle) closeHourlyIdle();
+  if (after.file) openHourlyPick("file", after.notice);
+  else hourlyInfo(after.notice);
+};
 
 function showSettings(open: boolean) {
   if (!el("compact-view").hidden || mood || chat || whatsNew || hourlyIdle) return;
@@ -1347,7 +1428,12 @@ window.addEventListener("DOMContentLoaded", () => {
   click("hourly-stop", () => hourlyTap("stop"));
   click("hourly-card", () => void invoke("mini_open", { href: "/hours" }));
   click("hourly-pick-back", closeHourlyPick);
-  click("hourly-idle-cut", () => answerHourlyIdle("cut"));
+  click("hourly-idle-resume", () => answerHourlyIdle("resume"));
+  click("hourly-file-new", () => fileHourly("new"));
+  click("hourly-file-later", () => fileHourly("later"));
+  document.querySelectorAll<HTMLButtonElement>("#idle-choice .seg").forEach((seg) => {
+    seg.addEventListener("click", () => menu(`idle-${seg.dataset.idle ?? "10"}`));
+  });
   click("hourly-idle-stop", () => answerHourlyIdle("stop"));
   click("hourly-idle-keep", () => answerHourlyIdle("keep"));
   const filter = el<HTMLInputElement>("hourly-filter");
@@ -1469,7 +1555,8 @@ window.addEventListener("DOMContentLoaded", () => {
     // The question about time away is only closed by an answer.
     if (hourlyIdle) return;
     if (hourlyPick) {
-      if (el<HTMLInputElement>("hourly-filter").value !== "") return;
+      // "Which project was it for?" is closed by an answer, or Later.
+      if (hourlyPick === "file" || el<HTMLInputElement>("hourly-filter").value !== "") return;
       closeHourlyPick();
       return;
     }
@@ -1486,7 +1573,7 @@ window.addEventListener("DOMContentLoaded", () => {
     // Like the rest of the panel, the next opening starts on the main view;
     // an unsent reply is kept for when the conversation is opened again.
     if (chat && !current?.pinned) closeChat();
-    if (hourlyPick && !current?.pinned) closeHourlyPick();
+    if (hourlyPick === "start" && !current?.pinned) closeHourlyPick();
     showSettings(false);
   });
 });

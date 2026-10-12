@@ -533,6 +533,8 @@ pub(crate) fn start<R: Runtime>(app: AppHandle<R>) {
 /// actually changed.
 fn tick_title<R: Runtime>(app: &AppHandle<R>, last: &mut String) {
     let now = unix_now();
+    // The project timer's tray and Dock menus show its time too.
+    crate::hourly::refresh_menus(app);
     let project = crate::hourly::running_since(app).map(|since| format!("▶ {}", tray_title(now.saturating_sub(since))));
     let text = project.or_else(|| {
         app.try_state::<Last>()

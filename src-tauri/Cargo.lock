@@ -452,6 +452,7 @@ version = "0.2.18"
 dependencies = [
  "gtk",
  "mac-notification-sys",
+ "muda",
  "notify-rust",
  "objc2",
  "percent-encoding",

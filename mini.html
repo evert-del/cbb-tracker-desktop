@@ -184,6 +184,11 @@
       #dnd-choice { display: grid; grid-template-columns: repeat(5, 1fr); gap: 2px; margin: 0 16px 12px; padding: 2px; border-radius: var(--r-ctl); background: var(--tile); }
       #dnd-choice .seg { padding: 6px 2px; font-size: 12px; }
       #dnd-choice .seg:disabled { opacity: 0.55; cursor: default; }
+      #idle-row { border-bottom: 0; padding-bottom: 6px; cursor: default; }
+      #idle-row:hover { background: none; }
+      #idle-choice { display: grid; grid-template-columns: repeat(4, 1fr); gap: 2px; margin: 0 16px 12px; padding: 2px; border-radius: var(--r-ctl); background: var(--tile); }
+      #idle-choice .seg { padding: 6px 2px; font-size: 12px; }
+      #idle-settings { border-top: 0.5px solid var(--rule); }
       #quiet-chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 99px; background: rgba(255, 255, 255, 0.2); color: #fff; font-size: 11px; font-weight: 600; white-space: nowrap; }
       #quiet-chip:hover { background: rgba(255, 255, 255, 0.3); }
       #quiet-chip svg { width: 12px; height: 12px; }
@@ -290,6 +295,12 @@
       .h-row .s { font-size: 11.5px; color: var(--faint); }
       .h-row.on .t::after { content: " · running"; color: var(--pink-ink); font-weight: 500; }
       #hourly-pick-empty { padding: 10px 16px; color: var(--muted); font-size: 12.5px; }
+      #hourly-pick-hint { margin: 10px 16px 0; color: var(--muted); font-size: 12.5px; }
+      #hourly-pick-error { margin: 0 16px 6px; }
+      #hourly-pick-foot { display: flex; gap: 8px; padding: 10px 14px; border-top: 0.5px solid var(--rule); }
+      #hourly-pick-foot button { flex: 1; min-height: 34px; border-radius: var(--r-ctl); font-weight: 600; background: var(--tile); }
+      #hourly-pick-foot button:hover { background: var(--tile-hover); }
+      #hourly-info { margin: 0; font-size: 12px; color: var(--fg); padding: 8px 10px; border-radius: var(--r-ctl); background: var(--tone-3-bg); color: var(--tone-3-fg); }
       #hourly-idle-view { display: flex; flex-direction: column; gap: 10px; flex: 1; padding: 16px; overflow-y: auto; }
       #hourly-idle-view h2 { margin: 0; font-size: 16px; font-weight: 600; }
       #hourly-idle-view .hint { margin: -4px 0 0; color: var(--muted); font-size: 12.5px; }
@@ -396,6 +407,7 @@
           <div id="hourly-quick"></div>
           <input id="hourly-note-input" type="text" maxlength="200" placeholder="Note for the next timer (optional)" autocomplete="off" aria-label="Note for the next timer (optional)" />
           <p class="h-error" id="hourly-error" role="alert" hidden></p>
+          <p id="hourly-info" role="status" hidden></p>
         </div>
 
         <div id="search">
@@ -551,10 +563,16 @@
           <button class="icon-btn" id="hourly-pick-back" type="button" aria-label="Back" title="Back">
             <svg viewBox="0 0 24 24"><path d="M19 12H5M11 18l-6-6 6-6"/></svg>
           </button>
-          Time a project
+          <span id="hourly-pick-title">Time a project</span>
         </div>
+        <p id="hourly-pick-hint" hidden></p>
         <input id="hourly-filter" type="search" placeholder="Find a project" autocomplete="off" spellcheck="false" aria-label="Find a project" />
         <div id="hourly-pick-list"></div>
+        <p class="h-error" id="hourly-pick-error" role="alert" hidden></p>
+        <div id="hourly-pick-foot" hidden>
+          <button type="button" id="hourly-file-new" title="Make a new project for it on the website (it can add the client too)">New project…</button>
+          <button type="button" id="hourly-file-later" title="Leave it unfiled for now; file it on My Hours">Later</button>
+        </div>
       </div>
 
       <div id="hourly-idle-view" hidden>
@@ -563,9 +581,9 @@
         <p class="h-error" id="hourly-idle-error" role="alert" hidden></p>
         <div class="h-choices">
           <!-- In the brief's order, none highlighted: the person decides. -->
-          <button type="button" id="hourly-idle-keep">Keep it all</button>
-          <button type="button" id="hourly-idle-cut">Cut the time away</button>
-          <button type="button" id="hourly-idle-stop">Stop at <span id="hourly-idle-at"></span></button>
+          <button type="button" id="hourly-idle-keep">Keep it</button>
+          <button type="button" id="hourly-idle-resume">Drop the idle time and keep going</button>
+          <button type="button" id="hourly-idle-stop">Drop the idle time and stop</button>
         </div>
       </div>
 
@@ -613,6 +631,17 @@
           <button type="button" class="seg" data-dnd="2h" role="radio" aria-checked="false">2h</button>
           <button type="button" class="seg" data-dnd="4h" role="radio" aria-checked="false">4h</button>
           <button type="button" class="seg" data-dnd="morning" role="radio" aria-checked="false" title="Until 08:00 tomorrow">Morning</button>
+        </div>
+        <div id="idle-settings" hidden>
+          <div class="set-row" id="idle-row">
+            <span class="txt">Ask about idle time after<span class="hint" style="display:block">With a project timer running and no keyboard or mouse. Unanswered, it stops at the idle moment after 30 minutes.</span></span>
+          </div>
+          <div id="idle-choice" role="radiogroup" aria-labelledby="idle-row">
+            <button type="button" class="seg" data-idle="5" role="radio" aria-checked="false">5 min</button>
+            <button type="button" class="seg" data-idle="10" role="radio" aria-checked="true">10 min</button>
+            <button type="button" class="seg" data-idle="15" role="radio" aria-checked="false">15 min</button>
+            <button type="button" class="seg" data-idle="20" role="radio" aria-checked="false">20 min</button>
+          </div>
         </div>
         <button class="set-row" id="whats-new-row" type="button">
           <span class="txt">What's new<span class="hint" style="display:block">What changed in this version, and how to use it.</span></span>

@@ -31,6 +31,8 @@ mod diagnostics;
 mod download;
 mod google_sign_in;
 mod idle;
+#[cfg(windows)]
+mod jumplist;
 mod location;
 mod mini;
 mod notify;
@@ -240,9 +242,20 @@ fn hosted_url_for_deep_link(url: &url::Url) -> Option<url::Url> {
 
 /// Load an inbound deep link in the main window and bring it forward.
 /// `tracker://offline` opens the Saved-for-offline library instead.
+/// The app's own shortcuts as links (the Windows jump list, jumplist.rs):
+/// `tracker://panel` and `tracker://new-window`, beside `tracker://offline`.
+/// Only things that open something; nothing that changes data.
+pub(crate) fn is_app_action(url: &url::Url) -> bool {
+    url.scheme() == "tracker" && matches!(url.host_str(), Some("offline" | "panel" | "new-window"))
+}
+
 fn route_deep_link<R: Runtime>(app: &AppHandle<R>, url: &url::Url) {
-    if url.scheme() == "tracker" && url.host_str() == Some("offline") {
-        show_library(app);
+    if is_app_action(url) {
+        match url.host_str() {
+            Some("offline") => show_library(app),
+            Some("panel") => mini::show(app),
+            _ => tabs::open_from_front(app, false),
+        }
         return;
     }
     // Google sign-in coming back from the browser (google_sign_in.rs).
@@ -620,6 +633,13 @@ pub(crate) fn build_tracker_window<R: Runtime>(
     });
     #[cfg(target_os = "macos")]
     let builder = builder.tabbing_identifier(TAB_GROUP);
+    // Windows: files dragged in from Explorer reach the tracker's own drop
+    // zones (uploads). Tauri's file-drop handler is on by default and there
+    // it swallows those drops before the page sees them (macOS and Linux
+    // pass them on). The app does nothing with dropped files itself, and a
+    // file dropped elsewhere is refused by on_navigation (file: never loads).
+    #[cfg(windows)]
+    let builder = builder.disable_drag_drop_handler();
     builder.build()
 }
 
@@ -950,6 +970,14 @@ pub fn run() {
                     route_deep_link(app.handle(), &url);
                 }
             }
+            // Windows: the taskbar icon's jump list (off the main thread:
+            // it is COM work and needs nothing from the app).
+            #[cfg(windows)]
+            if let Ok(exe) = tauri::utils::platform::current_exe() {
+                std::thread::spawn(move || {
+                    let _ = jumplist::set(&exe);
+                });
+            }
             // Warm tracker:// URLs while running.
             let link_handle = app.handle().clone();
             app.deep_link().on_open_url(move |event| {
@@ -1165,6 +1193,17 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_the_apps_own_shortcuts_are_app_actions() {
+        for link in ["tracker://panel", "tracker://new-window", "tracker://offline"] {
+            assert!(is_app_action(&link.parse().unwrap()), "{link}");
+        }
+        // Nothing that changes data, and nothing on another scheme.
+        for link in ["tracker://clock/wrap", "tracker://view/x", "https://panel/", "cbb-panel://open"] {
+            assert!(!is_app_action(&link.parse().unwrap()), "{link}");
+        }
+    }
 
     fn parsed(raw: &str) -> url::Url {
         url::Url::parse(raw).expect("test URL parses")

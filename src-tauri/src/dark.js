@@ -4,18 +4,26 @@
 // Photos, video, the black header and the app's own messages are flipped
 // back so they look as designed. Rust turns it on and off live through
 // window.__cbbSetDark; the choice is kept for this tab's later page loads.
+//
+// A modal dialog (the tracker's file viewer), a popover or a fullscreen
+// element sits in the browser's top layer, outside <html>, so the page's
+// flip never reaches it. Dialogs and popovers get the same flip themselves
+// (their documents and photos are then flipped back like the page's);
+// fullscreen is shown as it is.
 (function () {
   if (window.top !== window) return;
   var media = "img,video,picture,canvas,iframe,[style*='background-image']";
   var back = 'filter:invert(1) hue-rotate(180deg)';
   var css =
     'html.cbb-dark{filter:invert(.92) hue-rotate(180deg);background:#fff}' +
+    'html.cbb-dark :is(dialog:modal,:popover-open){filter:invert(.92) hue-rotate(180deg)}' +
     // Media and the header go back to their own colours; anything inside
     // one of those (a logo in the header) is left alone.
     'html.cbb-dark :is(' + media + '),' +
     'html.cbb-dark .gd-header,' +
     "html.cbb-dark body>div[role=status][style*='2147483001']{" + back + '}' +
-    'html.cbb-dark :is(' + media + ',.gd-header) :is(' + media + '){filter:none}';
+    'html.cbb-dark :is(' + media + ',.gd-header) :is(' + media + '){filter:none}' +
+    'html.cbb-dark :fullscreen,html.cbb-dark :fullscreen :is(' + media + '){filter:none!important}';
 
   var style = document.createElement('style');
   style.id = 'cbb-dark';

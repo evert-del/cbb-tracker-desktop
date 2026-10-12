@@ -158,7 +158,7 @@
 
       /* Settings view (gear), in place of the main view. */
       #main-view { display: flex; flex-direction: column; flex: 1; min-height: 0; }
-      #settings { display: flex; flex-direction: column; flex: 1; }
+      #settings { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow-y: auto; }
       #settings-head { display: flex; align-items: center; gap: 8px; padding: 12px 12px 10px; font-weight: 600; font-size: 14px; border-bottom: 0.5px solid var(--rule); }
       .set-row { display: flex; align-items: center; gap: 10px; padding: 12px 16px; text-align: left; border-bottom: 0.5px solid var(--rule); width: 100%; box-sizing: border-box; }
       .set-row:hover { background: var(--tile); }
@@ -168,13 +168,25 @@
       .switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,0.25); transition: transform 0.15s; }
       .switch[aria-checked="true"] { background: var(--pink); }
       .switch[aria-checked="true"]::after { transform: translateX(14px); }
+      [role="switch"][aria-checked="true"] > .switch { background: var(--pink); }
+      [role="switch"][aria-checked="true"] > .switch::after { transform: translateX(14px); }
       #quit-row { color: var(--danger-fg); }
       #close-row { border-bottom: 0; padding-bottom: 6px; cursor: default; }
       #close-row:hover { background: none; }
       #close-choice { display: grid; grid-template-columns: 1fr 1fr; gap: 2px; margin: 0 16px 12px; padding: 2px; border-radius: var(--r-ctl); background: var(--tile); }
       .seg { padding: 6px 8px; border-radius: var(--r-ctl); font-weight: 500; font-size: 12.5px; color: var(--muted); }
       .seg[aria-checked="true"] { background: var(--card); color: var(--fg); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12); }
-      #close-choice + .set-row { border-top: 0.5px solid var(--rule); }
+      #close-choice + .set-row, #dnd-choice + .set-row { border-top: 0.5px solid var(--rule); }
+      /* Notifications (quiet.rs): which pop up, and do-not-disturb. */
+      .set-label { padding: 14px 16px 4px; font-size: 11px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--faint); }
+      #dnd-row { border-bottom: 0; padding-bottom: 6px; cursor: default; }
+      #dnd-row:hover { background: none; }
+      #dnd-choice { display: grid; grid-template-columns: repeat(5, 1fr); gap: 2px; margin: 0 16px 12px; padding: 2px; border-radius: var(--r-ctl); background: var(--tile); }
+      #dnd-choice .seg { padding: 6px 2px; font-size: 12px; }
+      #dnd-choice .seg:disabled { opacity: 0.55; cursor: default; }
+      #quiet-chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 99px; background: rgba(255, 255, 255, 0.2); color: #fff; font-size: 11px; font-weight: 600; white-space: nowrap; }
+      #quiet-chip:hover { background: rgba(255, 255, 255, 0.3); }
+      #quiet-chip svg { width: 12px; height: 12px; }
       /* Mini timer: the pinned panel shrunk to one strip, coloured by state. */
       #compact-view { flex: 1; display: flex; align-items: center; gap: 6px; padding: 0 8px 0 12px; color: #fff; background: var(--head-out); cursor: grab; }
       #compact-view:active { cursor: grabbing; }
@@ -222,6 +234,36 @@
       #mood-done { margin: auto 0; text-align: center; font-weight: 600; }
       /* Walkie (walkie.rs): unread conversations, and the quick chat. */
       #lists { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; }
+      /* Quick search (search.rs): the tracker's own search-as-you-type. */
+      #search { display: flex; align-items: center; gap: 8px; margin: 0 14px 6px; padding: 0 8px 0 10px; height: 32px; border-radius: var(--r-ctl); background: var(--tile); border: 0.5px solid var(--rule); color: var(--faint); }
+      #search:focus-within { outline: 2px solid var(--pink); outline-offset: -1px; }
+      #search-input { flex: 1; min-width: 0; height: 100%; border: 0; background: none; font: inherit; color: var(--fg); outline: none; user-select: text; -webkit-user-select: text; }
+      #search-input::placeholder { color: var(--faint); }
+      #search-input::-webkit-search-cancel-button { display: none; }
+      #search-clear { display: grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; color: var(--muted); }
+      #search-clear:hover { background: var(--tile-hover); }
+      #search-clear svg { width: 12px; height: 12px; }
+      #lists.searching > :not(#search-results) { display: none !important; }
+      #search-results { display: flex; flex-direction: column; }
+      .hit { display: flex; align-items: center; gap: 10px; padding: 7px 16px; text-align: left; border-top: 0.5px solid var(--rule); }
+      .hit:hover, .hit.active { background: var(--tile); }
+      .hit .face { border-radius: var(--r-ctl); }
+      .hit .txt { min-width: 0; flex: 1; }
+      .hit .title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 500; }
+      .hit .sub { font-size: 11.5px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      #search-note { padding: 10px 16px 14px; color: var(--muted); font-size: 12.5px; }
+      /* Next call (schedule.rs): the next booking, from My Schedule. */
+      #next-card { margin: 0 14px 8px; padding: 10px 12px; border-radius: var(--r-ctl); background: var(--tile); display: flex; flex-direction: column; gap: 2px; }
+      .next-when { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+      #next-day { font-weight: 700; color: var(--pink-ink); text-transform: uppercase; letter-spacing: 0.04em; font-size: 11px; }
+      #next-pencil { font-size: 10.5px; font-weight: 600; padding: 1px 6px; border-radius: 99px; background: var(--tone-3-bg); color: var(--tone-3-fg); }
+      #next-title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .next-row { display: flex; align-items: center; gap: 12px; margin-top: 2px; min-width: 0; }
+      .next-link { display: inline-flex; align-items: center; gap: 4px; color: var(--pink-ink); font-size: 12px; font-weight: 600; min-width: 0; }
+      .next-link span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .next-link:hover { text-decoration: underline; }
+      .next-link svg { width: 13px; height: 13px; }
+      #next-place-text.plain { color: var(--muted); font-weight: 500; }
       #chats { display: flex; flex-direction: column; }
       .chat-row { display: flex; align-items: center; gap: 10px; padding: 8px 16px; text-align: left; border-top: 0.5px solid var(--rule); }
       .chat-row:hover { background: var(--tile); }
@@ -272,6 +314,10 @@
           <div id="head-top">
             <span id="dot"></span>
             <span id="status">Loading…</span>
+            <button id="quiet-chip" type="button" hidden title="Do not disturb: change in Settings">
+              <svg viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/></svg>
+              <span id="quiet-chip-text"></span>
+            </button>
             <button id="shrink" class="head-btn" type="button" aria-label="Shrink to mini timer" title="Shrink to mini timer">
               <svg viewBox="0 0 24 24"><path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7"/></svg>
             </button>
@@ -290,7 +336,32 @@
         <div id="actions"></div>
         <div id="no-sheet" hidden>The time sheet isn't switched on for you.</div>
 
+        <div id="search">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+          <input id="search-input" type="search" placeholder="Search projects, deliverables, ideas" autocomplete="off" spellcheck="false" aria-label="Search the tracker" aria-controls="search-results" />
+          <button id="search-clear" type="button" hidden aria-label="Clear search" title="Clear">
+            <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>
+          </button>
+        </div>
         <div id="lists">
+        <div id="search-results" hidden role="listbox" aria-label="Search results"></div>
+        <div id="next" hidden>
+          <div class="section">Next call</div>
+          <div id="next-card">
+            <div class="next-when"><span id="next-day"></span><span id="next-time"></span><span id="next-pencil" hidden title="Held for you, not booked yet">Pencilled</span></div>
+            <div id="next-title"></div>
+            <div class="next-row">
+              <button id="next-place" type="button" class="next-link" title="Open in Maps">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21s-7-6.2-7-11a7 7 0 0 1 14 0c0 4.8-7 11-7 11z"/><circle cx="12" cy="10" r="2.5"/></svg>
+                <span id="next-place-text"></span>
+              </button>
+              <button id="next-sheet" type="button" class="next-link" hidden>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></svg>
+                <span>Call sheet</span>
+              </button>
+            </div>
+          </div>
+        </div>
         <div id="walkie" hidden>
           <div class="section" id="walkie-label">Walkie</div>
           <div id="chats"></div>
@@ -430,6 +501,33 @@
         <div id="close-choice" role="radiogroup" aria-labelledby="close-row">
           <button type="button" class="seg" id="close-keep" role="radio" aria-checked="true">Keep running</button>
           <button type="button" class="seg" id="close-quit" role="radio" aria-checked="false">Quit the app</button>
+        </div>
+        <div class="set-label" id="notif-label">Notifications that pop up</div>
+        <button class="set-row" id="banners-tracker" type="button" role="switch" aria-checked="true">
+          <span class="txt">Tracker notifications<span class="hint" style="display:block">Approvals, phases and other updates.</span></span>
+          <span class="switch" aria-hidden="true"></span>
+        </button>
+        <button class="set-row" id="banners-walkie" type="button" role="switch" aria-checked="true">
+          <span class="txt">Walkie messages<span class="hint" style="display:block">Conversations, groups and project channels you're in.</span></span>
+          <span class="switch" aria-hidden="true"></span>
+        </button>
+        <button class="set-row" id="banners-channel1" type="button" role="switch" aria-checked="false">
+          <span class="txt">Channel 1<span class="hint" style="display:block">Messages to everyone in the company.</span></span>
+          <span class="switch" aria-hidden="true"></span>
+        </button>
+        <button class="set-row" id="auto-offline" type="button" role="switch" aria-checked="true">
+          <span class="txt">Save my call sheets for offline<span class="hint" style="display:block">The next two days' call sheets, ready without signal in Saved offline.</span></span>
+          <span class="switch" aria-hidden="true"></span>
+        </button>
+        <div class="set-row" id="dnd-row">
+          <span class="txt">Do not disturb<span class="hint" id="dnd-hint" style="display:block">Also quiets the tracker website. Call alerts still ring.</span></span>
+        </div>
+        <div id="dnd-choice" role="radiogroup" aria-labelledby="dnd-row">
+          <button type="button" class="seg" data-dnd="off" role="radio" aria-checked="true">Off</button>
+          <button type="button" class="seg" data-dnd="1h" role="radio" aria-checked="false">1h</button>
+          <button type="button" class="seg" data-dnd="2h" role="radio" aria-checked="false">2h</button>
+          <button type="button" class="seg" data-dnd="4h" role="radio" aria-checked="false">4h</button>
+          <button type="button" class="seg" data-dnd="morning" role="radio" aria-checked="false" title="Until 08:00 tomorrow">Morning</button>
         </div>
         <button class="set-row" id="whats-new-row" type="button">
           <span class="txt">What's new<span class="hint" style="display:block">What changed in this version, and how to use it.</span></span>

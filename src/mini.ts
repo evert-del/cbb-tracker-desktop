@@ -8,6 +8,22 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 type Need = { label: string; body: string; href: string };
 type ClockAction = { id: string; label: string };
 type LabelCount = { label: string; count: number };
+/** The next booking not yet over (schedule.rs). */
+type NextCall = {
+  starts_at: string;
+  ends_at: string;
+  day: string;
+  title: string;
+  project: string;
+  place: string | null;
+  map_url: string | null;
+  pencilled: boolean;
+  sheet_href: string | null;
+};
+
+/** Which notifications pop up, and the tracker's do-not-disturb (quiet.rs). */
+type Quiet = { tracker: boolean; walkie: boolean; channel1: boolean; dnd_until: string };
+
 type ChatRow = {
   key: string;
   kind: string;
@@ -29,6 +45,9 @@ type View = {
   summary: LabelCount[];
   walkie_unread: number;
   chats: ChatRow[];
+  quiet: Quiet;
+  next_call: NextCall | null;
+  auto_offline: boolean;
   version: string;
   autostart: boolean;
   close_quits: boolean;
@@ -279,6 +298,9 @@ window.__cbbMiniShow = (view) => {
     ? "Closing stops your timer, reminders and notifications until you reopen it."
     : `Stays in the ${place} so your timer, reminders and notifications keep going.`;
   renderPin(view.pinned);
+  renderQuiet(view.quiet);
+  renderNext(view.next_call);
+  el("auto-offline").setAttribute("aria-checked", String(view.auto_offline));
   renderActions(view);
   renderNeeds(view);
   renderSummary(view);
@@ -288,6 +310,110 @@ window.__cbbMiniShow = (view) => {
   renderMode(view);
   tick();
 };
+
+/** "16:00", or "Tue 08:00" when it isn't today. */
+function quietTime(iso: string): string {
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) return "";
+  const time = at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return at.toDateString() === new Date().toDateString()
+    ? time
+    : `${at.toLocaleDateString([], { weekday: "short" })} ${time}`;
+}
+
+// Times and days as the tracker says them: Johannesburg, 24-hour.
+const TRACKER_TZ = "Africa/Johannesburg";
+const TRACKER_DAY = new Intl.DateTimeFormat("en-CA", { timeZone: TRACKER_TZ });
+const TRACKER_TIME = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: TRACKER_TZ });
+
+/** "Today", "Tomorrow", or "Wed 14 Oct" for a business day (yyyy-mm-dd). */
+function nextDayLabel(day: string): string {
+  const today = TRACKER_DAY.format(new Date());
+  const tomorrow = TRACKER_DAY.format(new Date(Date.parse(`${today}T12:00:00Z`) + 86_400_000));
+  if (day === today) return "Today";
+  if (day === tomorrow) return "Tomorrow";
+  const at = new Date(`${day}T12:00:00Z`);
+  return Number.isNaN(at.getTime())
+    ? day
+    : at.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", timeZone: "UTC" });
+}
+
+function renderNext(next: NextCall | null) {
+  el("next").hidden = next === null;
+  if (!next) return;
+  el("next-day").textContent = nextDayLabel(next.day);
+  const starts = new Date(next.starts_at);
+  const ends = new Date(next.ends_at);
+  el("next-time").textContent = Number.isNaN(starts.getTime())
+    ? ""
+    : Number.isNaN(ends.getTime())
+      ? TRACKER_TIME.format(starts)
+      : `${TRACKER_TIME.format(starts)}–${TRACKER_TIME.format(ends)}`;
+  el("next-pencil").hidden = !next.pencilled;
+  el("next-title").textContent = [next.project, next.title].filter(Boolean).join(" · ");
+  el("next-title").title = el("next-title").textContent ?? "";
+  const place = el<HTMLButtonElement>("next-place");
+  place.hidden = !next.place;
+  place.disabled = !next.map_url;
+  place.title = next.map_url ? "Open in Maps" : "";
+  el("next-place-text").textContent = next.place ?? "";
+  el("next-place-text").classList.toggle("plain", !next.map_url);
+  el("next-sheet").hidden = !next.sheet_href;
+}
+
+/** The do-not-disturb choice last made here (the tracker only says when it ends). */
+let dndChoice: string | null = null;
+let dndBusy = false;
+
+function renderQuiet(quiet: Quiet) {
+  const sw = (id: string, on: boolean) => el(id).setAttribute("aria-checked", String(on));
+  sw("banners-tracker", quiet.tracker);
+  sw("banners-walkie", quiet.walkie);
+  sw("banners-channel1", quiet.channel1);
+  el("banners-channel1").toggleAttribute("disabled", !quiet.walkie);
+  const on = quiet.dnd_until !== "";
+  if (!on) dndChoice = null;
+  const until = on ? quietTime(quiet.dnd_until) : "";
+  el("quiet-chip").hidden = !on;
+  // Short, so the clock status beside it keeps its room; the title says it all.
+  el("quiet-chip-text").textContent = until || "Quiet";
+  el("quiet-chip").title = until ? `Do not disturb until ${until}. Change in Settings.` : "Do not disturb";
+  el("quiet-chip").setAttribute("aria-label", el("quiet-chip").title);
+  if (!dndBusy) {
+    el("dnd-hint").textContent = on
+      ? `On until ${until}. Call alerts still ring.`
+      : "Also quiets the tracker website. Call alerts still ring.";
+  }
+  document.querySelectorAll<HTMLButtonElement>("#dnd-choice .seg").forEach((seg) => {
+    const choice = seg.dataset.dnd ?? "";
+    seg.setAttribute("aria-checked", String(on ? choice === dndChoice : choice === "off"));
+    seg.disabled = dndBusy;
+  });
+}
+
+function setDnd(choice: string) {
+  if (dndBusy) return;
+  dndBusy = true;
+  dndChoice = choice === "off" ? null : choice;
+  el("dnd-hint").textContent = choice === "off" ? "Turning off…" : "Turning on…";
+  if (current) renderQuiet(current.quiet);
+  invoke("mini_dnd", { choice })
+    .catch((error) => dndFailed(String(error)))
+    .finally(() => window.setTimeout(() => { dndBusy = false; if (current) renderQuiet(current.quiet); }, 400));
+}
+
+function dndFailed(message: string) {
+  dndBusy = false;
+  el("dnd-hint").textContent = message;
+  document.querySelectorAll<HTMLButtonElement>("#dnd-choice .seg").forEach((seg) => { seg.disabled = false; });
+}
+
+declare global {
+  interface Window {
+    __cbbMiniDndFailed?: (message: string) => void;
+  }
+}
+window.__cbbMiniDndFailed = (message) => dndFailed(message);
 
 function renderPin(pinned: boolean) {
   const pin = el("pin");
@@ -793,9 +919,139 @@ function chatResult(r: ChatResult) {
 declare global {
   interface Window {
     __cbbMiniWalkieResult?: (r: ChatResult) => void;
+    __cbbMiniOpenChat?: (row: { key: string; kind: string; name: string }) => void;
   }
 }
 window.__cbbMiniWalkieResult = (r) => chatResult(r);
+// A clicked walkie banner opens its conversation here (mini.rs open_chat).
+window.__cbbMiniOpenChat = (row) => {
+  if (mood) return;
+  if (whatsNew) closeWhatsNew();
+  el("settings").hidden = true;
+  openChat({ key: row.key, kind: row.kind, name: row.name || "Walkie" });
+};
+
+// ── Quick search (search.rs): the tracker's own search-as-you-type. ──
+type Hit = { title: string; subtitle: string; href: string };
+type SearchResult = { seq: number; ok: boolean; groups?: { label: string; items: Hit[] }[]; error?: string };
+
+let searchSeq = 0;
+let searchTimer: number | undefined;
+let hits: Hit[] = [];
+let activeHit = 0;
+
+const HIT_ICONS: Record<string, string> = {
+  Projects: "M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z",
+  Deliverables: "M5 4h14v16H5zM9 8h6M9 12h6M9 16h3",
+  Ideas: "M9 18h6M10 21h4M12 3a6 6 0 0 0-3.5 10.9V16h7v-2.1A6 6 0 0 0 12 3z",
+};
+
+function searchNote(text: string) {
+  const box = el("search-results");
+  const note = document.createElement("div");
+  note.id = "search-note";
+  note.textContent = text;
+  box.replaceChildren(note);
+  hits = [];
+}
+
+function setSearching(on: boolean) {
+  el("lists").classList.toggle("searching", on);
+  el("search-results").hidden = !on;
+}
+
+function clearSearch() {
+  const input = el<HTMLInputElement>("search-input");
+  input.value = "";
+  searchSeq += 1;
+  window.clearTimeout(searchTimer);
+  el("search-clear").hidden = true;
+  setSearching(false);
+  el("search-results").replaceChildren();
+  hits = [];
+}
+
+function onSearchInput() {
+  const input = el<HTMLInputElement>("search-input");
+  const q = input.value.trim();
+  el("search-clear").hidden = input.value === "";
+  window.clearTimeout(searchTimer);
+  searchSeq += 1;
+  if (q === "") return clearSearch();
+  setSearching(true);
+  if (q.length < 2) return searchNote("Keep typing…");
+  const seq = searchSeq;
+  searchTimer = window.setTimeout(() => {
+    if (!hits.length) searchNote("Searching…");
+    invoke("mini_search", { q, seq }).catch((error) => searchResult({ seq, ok: false, error: String(error) }));
+  }, 200);
+}
+
+function searchResult(r: SearchResult) {
+  if (r.seq !== searchSeq || el<HTMLInputElement>("search-input").value.trim().length < 2) return;
+  if (!r.ok) return searchNote(r.error || "Could not search just now.");
+  const box = el("search-results");
+  box.replaceChildren();
+  hits = [];
+  for (const group of r.groups ?? []) {
+    if (!group.items.length) continue;
+    const label = document.createElement("div");
+    label.className = "section";
+    label.textContent = group.label;
+    box.appendChild(label);
+    for (const hit of group.items) {
+      const index = hits.length;
+      hits.push(hit);
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = "hit";
+      row.setAttribute("role", "option");
+      row.dataset.index = String(index);
+      const face = document.createElement("span");
+      face.className = "face";
+      face.appendChild(svg(HIT_ICONS[group.label] ?? HIT_ICONS.Projects));
+      const txt = document.createElement("span");
+      txt.className = "txt";
+      const title = document.createElement("div");
+      title.className = "title";
+      title.textContent = hit.title;
+      const sub = document.createElement("div");
+      sub.className = "sub";
+      sub.textContent = hit.subtitle;
+      txt.append(title, sub);
+      row.append(face, txt);
+      row.addEventListener("click", () => openHit(index));
+      row.addEventListener("mousemove", () => markHit(index));
+      box.appendChild(row);
+    }
+  }
+  if (!hits.length) return searchNote("Nothing found. The tracker searches projects, deliverables and ideas.");
+  markHit(0);
+}
+
+function markHit(index: number) {
+  activeHit = Math.max(0, Math.min(index, hits.length - 1));
+  document.querySelectorAll<HTMLElement>("#search-results .hit").forEach((row) => {
+    const on = Number(row.dataset.index) === activeHit;
+    row.classList.toggle("active", on);
+    row.setAttribute("aria-selected", String(on));
+    if (on) row.scrollIntoView({ block: "nearest" });
+  });
+}
+
+function openHit(index: number) {
+  const hit = hits[index];
+  if (!hit) return;
+  void invoke("mini_open", { href: hit.href });
+  clearSearch();
+}
+
+declare global {
+  interface Window {
+    __cbbMiniSearchResult?: (r: SearchResult) => void;
+  }
+}
+window.__cbbMiniSearchResult = (r) => searchResult(r);
 
 function showSettings(open: boolean) {
   if (!el("compact-view").hidden || mood || chat || whatsNew) return;
@@ -826,6 +1082,22 @@ window.addEventListener("DOMContentLoaded", () => {
   click("quit", () => menu("quit"));
   click("quit-row", () => menu("quit"));
   click("open-settings", () => showSettings(true));
+  click("quiet-chip", () => showSettings(true));
+  click("banners-tracker", () => menu("banners-tracker"));
+  click("banners-walkie", () => menu("banners-walkie"));
+  click("banners-channel1", () => menu("banners-channel1"));
+  click("auto-offline", () => menu("auto-offline"));
+  click("next-place", () => {
+    const url = current?.next_call?.map_url;
+    if (url) void invoke("mini_open_map", { url });
+  });
+  click("next-sheet", () => {
+    const href = current?.next_call?.sheet_href;
+    if (href) void invoke("mini_open", { href });
+  });
+  document.querySelectorAll<HTMLButtonElement>("#dnd-choice .seg").forEach((seg) => {
+    seg.addEventListener("click", () => setDnd(seg.dataset.dnd ?? "off"));
+  });
   click("mood-save", () => {
     if (!mood) return;
     if (mood.stage === "talk") { sendMood({ intent: "talk", yes: true }, "talk-yes"); return; }
@@ -892,6 +1164,28 @@ window.addEventListener("DOMContentLoaded", () => {
     if ((e.target as HTMLElement).closest("button")) return;
     void getCurrentWindow().startDragging();
   });
+  const search = el<HTMLInputElement>("search-input");
+  search.addEventListener("input", onSearchInput);
+  search.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      markHit(activeHit + (e.key === "ArrowDown" ? 1 : -1));
+    } else if (e.key === "Enter" && !e.isComposing) {
+      e.preventDefault();
+      openHit(activeHit);
+    } else if (e.key === "Escape" && search.value !== "") {
+      e.preventDefault();
+      e.stopPropagation();
+      clearSearch();
+    }
+  });
+  click("search-clear", () => { clearSearch(); search.focus(); });
+  // Type to search: a letter typed on the main view goes to the search field.
+  window.addEventListener("keydown", (e) => {
+    if (e.key.length !== 1 || e.metaKey || e.ctrlKey || e.altKey || e.isComposing) return;
+    if (el("main-view").hidden || document.activeElement instanceof HTMLInputElement || document.activeElement instanceof HTMLTextAreaElement) return;
+    search.focus();
+  });
   window.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;
     if (whatsNew) { closeWhatsNew(); return; }
@@ -904,6 +1198,7 @@ window.addEventListener("DOMContentLoaded", () => {
   // isn't answered or skipped: like closing the web clock's panel.
   window.addEventListener("blur", () => {
     if (mood && mood.sent === null && !current?.pinned) closeMood();
+    if (!current?.pinned) clearSearch();
     // Like the rest of the panel, the next opening starts on the main view;
     // an unsent reply is kept for when the conversation is opened again.
     if (chat && !current?.pinned) closeChat();

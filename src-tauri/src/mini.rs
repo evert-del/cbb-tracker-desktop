@@ -32,6 +32,12 @@ pub(crate) struct View {
     /// Unread walkie messages, and the conversations they are in (walkie.rs).
     pub walkie_unread: u32,
     pub chats: Vec<crate::walkie::ChatRow>,
+    /// Which notifications raise banners, and do-not-disturb (quiet.rs).
+    pub quiet: crate::quiet::Prefs,
+    /// The next booking not yet over, from the tracker (schedule.rs).
+    pub next_call: Option<crate::schedule::NextCall>,
+    /// The next days' call sheets are saved for offline (schedule.rs).
+    pub auto_offline: bool,
     pub version: String,
     pub autostart: bool,
     /// Closing the main window quits the app (close.rs) instead of hiding it.
@@ -103,6 +109,9 @@ pub(crate) fn plan(
         summary: Vec::new(),
         walkie_unread: 0,
         chats: Vec::new(),
+        quiet: crate::quiet::Prefs::default(),
+        next_call: None,
+        auto_offline: true,
         version: env!("CARGO_PKG_VERSION").into(),
         autostart: false,
         close_quits: false,
@@ -136,6 +145,9 @@ pub(crate) fn push<R: Runtime>(app: &AppHandle<R>) {
     view.summary = summary;
     view.walkie_unread = crate::walkie::unread(app);
     view.chats = crate::walkie::chats(app);
+    view.quiet = crate::quiet::prefs(app, crate::clock::unix_now());
+    view.next_call = crate::schedule::next(app);
+    view.auto_offline = crate::schedule::auto_save(app);
     let Ok(payload) = serde_json::to_string(&view) else { return };
     if let Some(mini) = app.get_webview_window("mini") {
         let script = format!("window.__cbbMiniShow && window.__cbbMiniShow({payload})");
@@ -564,6 +576,30 @@ pub(crate) fn ask_mood<R: Runtime>(app: &AppHandle<R>, moment: &str, greeting: O
     }
 }
 
+/// A clicked walkie banner (banner.rs): the panel, full size, open on that
+/// conversation's quick chat.
+pub(crate) fn open_chat<R: Runtime>(app: &AppHandle<R>, key: &str, kind: &str, name: &str) {
+    if !crate::walkie::valid_key(key) {
+        return show(app);
+    }
+    if is_compact() {
+        set_compact(app, false);
+        push(app);
+    }
+    let visible = app
+        .get_webview_window("mini")
+        .and_then(|mini| mini.is_visible().ok())
+        .unwrap_or(false);
+    if !visible {
+        show(app);
+    }
+    if let Some(mini) = app.get_webview_window("mini") {
+        let row = serde_json::json!({ "key": key, "kind": kind, "name": name });
+        let _ = mini.eval(format!("window.__cbbMiniOpenChat && window.__cbbMiniOpenChat({row})"));
+        let _ = mini.set_focus();
+    }
+}
+
 /// The panel's check-in: answer, skip ("Not now") or the chat offer.
 #[tauri::command]
 pub(crate) fn mini_mood<R: Runtime>(app: AppHandle<R>, request: serde_json::Value) -> Result<(), String> {
@@ -787,7 +823,47 @@ fn is_menu_item(item: &str) -> bool {
     matches!(
         item,
         "offline" | "new-window" | "update" | "diagnostics" | "autostart" | "close-keep" | "close-quit" | "quit"
-    )
+    ) || crate::quiet::is_toggle(item)
+        || item == "auto-offline"
+}
+
+/// The next call's place, in the browser: Google Maps links only.
+#[tauri::command]
+pub(crate) fn mini_open_map<R: Runtime>(app: AppHandle<R>, url: String) -> Result<(), String> {
+    if !crate::schedule::is_map_url(&url) {
+        return Err("Unknown place.".into());
+    }
+    crate::system_open::open_url(&app, &url);
+    crate::analytics::action(&app, "next_call_map", "panel");
+    Ok(())
+}
+
+/// Do-not-disturb from the panel: the tracker's own setting (quiet.rs), so
+/// the website and the app stay quiet together. `choice` is "1h", "2h",
+/// "4h", "morning" or "off".
+#[tauri::command]
+pub(crate) fn mini_dnd<R: Runtime>(app: AppHandle<R>, choice: String) -> Result<(), String> {
+    let dnd = crate::quiet::dnd_choice(&choice).ok_or("Unknown choice.")?;
+    let window = crate::walkie::tracker_window(&app).ok_or("Open the tracker first.")?;
+    window
+        .eval(crate::quiet::set_dnd_script(&dnd))
+        .map_err(|_| "The tracker could not be reached.".to_string())?;
+    crate::analytics::setting_changed(&app, "do_not_disturb", !dnd.is_null());
+    std::thread::spawn(move || {
+        let answer = crate::walkie::collect(&window, crate::quiet::STATUS_TAKE_JS, 33);
+        match answer.as_deref().and_then(crate::quiet::parse_status) {
+            Some(until) => crate::quiet::set_dnd_until(until.as_deref()),
+            None => {
+                if let Some(mini) = app.get_webview_window("mini") {
+                    let _ = mini.eval(
+                        "window.__cbbMiniDndFailed && window.__cbbMiniDndFailed('That didn’t change. Try again.')",
+                    );
+                }
+            }
+        }
+        push(&app);
+    });
+    Ok(())
 }
 
 /// The panel's shortcuts and settings: the same actions as the tray menu.
@@ -828,6 +904,17 @@ pub(crate) fn mini_menu<R: Runtime>(app: AppHandle<R>, item: String) -> Result<(
             crate::analytics::setting_changed(&app, "close_quits", quits);
         }
         "quit" => app.exit(0),
+        "auto-offline" => {
+            let on = crate::schedule::toggle_auto_save(&app);
+            crate::analytics::setting_changed(&app, "auto_offline", on);
+            push(&app);
+        }
+        item if crate::quiet::is_toggle(item) => {
+            if let Some((name, on)) = crate::quiet::toggle(&app, item) {
+                crate::analytics::setting_changed(&app, name, on);
+            }
+            push(&app);
+        }
         _ => {}
     }
     Ok(())
@@ -999,7 +1086,10 @@ mod tests {
 
     #[test]
     fn only_known_menu_items_pass() {
-        for item in ["offline", "new-window", "update", "diagnostics", "autostart", "close-keep", "close-quit", "quit"] {
+        for item in [
+            "offline", "new-window", "update", "diagnostics", "autostart", "close-keep", "close-quit", "quit",
+            "banners-tracker", "banners-walkie", "banners-channel1", "auto-offline",
+        ] {
             assert!(is_menu_item(item), "{item}");
         }
         for item in ["", "show", "quit;", "eval"] {

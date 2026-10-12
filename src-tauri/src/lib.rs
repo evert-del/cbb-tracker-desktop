@@ -846,6 +846,11 @@ pub fn run() {
                     _ => {}
                 }
             }
+            // Back in the tracker: the project timer may have changed on the
+            // website (the board's ▶, the header), so read it again (hourly.rs).
+            if matches!(event, tauri::WindowEvent::Focused(true)) && window.label() == "main" {
+                hourly::refresh_if_stale(window.app_handle());
+            }
             // macOS: keep the tab bar showing, also on a window whose tab was
             // just dragged out into its own window (tabs.rs).
             #[cfg(target_os = "macos")]

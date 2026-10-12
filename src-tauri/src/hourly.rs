@@ -11,6 +11,14 @@
 //!   the time away, or stop when you left? It never decides.
 //! - Called in on the time sheet with no timer for half an hour: one gentle
 //!   "Working on something?" banner that opens the panel.
+//! - "Just start, file it later" starts a timer with no project ("Not yet
+//!   filed", never billable). When it ends (stopped, or switched to a
+//!   project) the tracker's Hours page opens on it to file it: filing
+//!   happens on the website.
+//!
+//! The timer also starts and stops on the website (the board's ▶, the
+//! header), so it is read every 90 s, on opening the panel and when the
+//! tracker window comes forward.
 //!
 //! All of it reads the tracker's `GET /api/me/hourly`; while that answers
 //! 404 (not shipped) or 403 (not hourly), everything here stays hidden and
@@ -29,7 +37,7 @@ const POLL_EVERY: Duration = Duration::from_secs(90);
 /// The first read, once the tracker has had time to load after launch.
 const FIRST_AFTER: Duration = Duration::from_secs(30);
 /// Opening the panel reads again when the last read is older than this.
-const FRESH_FOR_SECS: u64 = 30;
+const FRESH_FOR_SECS: u64 = 5;
 
 /// Time away shorter than this doesn't ask about the timer.
 pub(crate) const IDLE_ASK_SECS: u64 = 10 * 60;
@@ -70,9 +78,11 @@ pub(crate) struct Project {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Running {
     pub id: String,
-    pub project_id: String,
+    /// `None` for a timer not yet filed under a project.
     #[serde(default)]
-    pub project_name: String,
+    pub project_id: Option<String>,
+    #[serde(default)]
+    pub project_name: Option<String>,
     #[serde(default)]
     pub billable: bool,
     pub started_at: String,
@@ -98,8 +108,30 @@ pub(crate) fn parse(raw: &str) -> Option<Info> {
     value.get("projects")?.as_array()?;
     let mut info: Info = serde_json::from_value(value).ok()?;
     info.projects.retain(|project| valid_id(&project.id));
-    info.running = info.running.filter(|running| valid_id(&running.id) && valid_id(&running.project_id));
+    info.running = info.running.filter(valid_running).map(|mut running| {
+        // Not yet filed is never billable, whatever the answer says.
+        if running.project_id.is_none() {
+            running.billable = false;
+            running.project_name = None;
+        }
+        running
+    });
     Some(info)
+}
+
+fn valid_running(running: &Running) -> bool {
+    valid_id(&running.id) && running.project_id.as_deref().is_none_or(valid_id)
+}
+
+impl Running {
+    pub(crate) fn unfiled(&self) -> bool {
+        self.project_id.is_none()
+    }
+}
+
+/// The tracker's Hours page, open on an unfiled stretch to file it.
+pub(crate) fn file_href(entry_id: &str) -> Option<String> {
+    valid_id(entry_id).then(|| format!("/hours?entry={entry_id}&panel=file"))
 }
 
 /// The tracker's ids (uuid or cuid): nothing that could reach a script.
@@ -110,7 +142,7 @@ pub(crate) fn valid_id(id: &str) -> bool {
 /// The one-tap starts: the four projects timed most recently, leaving out
 /// the one running now.
 pub(crate) fn quick(info: &Info) -> Vec<Project> {
-    let running = info.running.as_ref().map(|running| running.project_id.as_str());
+    let running = info.running.as_ref().and_then(|running| running.project_id.as_deref());
     info.projects.iter().filter(|project| Some(project.id.as_str()) != running).take(4).cloned().collect()
 }
 
@@ -143,15 +175,18 @@ pub(crate) fn clean_note(note: Option<&str>) -> Option<String> {
 }
 
 /// The body for `POST /api/me/project-timer`, built only from what the
-/// tracker takes. A start must name one of the person's own projects.
+/// tracker takes. A start names one of the person's own projects, or none
+/// ("Just start, file it later").
 pub(crate) fn timer_body(action: &str, project_id: Option<&str>, note: Option<&str>, info: &Info) -> Result<Value, &'static str> {
     match action {
         "start" => {
-            let project_id = project_id.ok_or("Pick a project.")?;
-            if !info.projects.iter().any(|project| project.id == project_id) {
-                return Err("That project isn't one of yours.");
+            let mut body = json!({ "action": "start" });
+            if let Some(project_id) = project_id {
+                if !info.projects.iter().any(|project| project.id == project_id) {
+                    return Err("That project isn't one of yours.");
+                }
+                body["projectId"] = Value::String(project_id.to_string());
             }
-            let mut body = json!({ "action": "start", "projectId": project_id });
             if let Some(note) = clean_note(note) {
                 body["note"] = Value::String(note);
             }
@@ -255,7 +290,10 @@ pub(crate) fn idle_steps(choice: &str, ask: &IdleAsk) -> Result<Vec<Value>, &'st
         "keep" => Ok(Vec::new()),
         "stop" => Ok(vec![stop]),
         "cut" => {
-            let mut start = json!({ "action": "start", "projectId": ask.running.project_id });
+            let mut start = json!({ "action": "start" });
+            if let Some(project_id) = &ask.running.project_id {
+                start["projectId"] = Value::String(project_id.clone());
+            }
             if let Some(note) = clean_note(ask.running.note.as_deref()) {
                 start["note"] = Value::String(note);
             }
@@ -334,7 +372,7 @@ fn set_running<R: Runtime>(app: &AppHandle<R>, running: Option<Running>) {
         if let Some(info) = inner.info.as_mut() {
             if let Some(running) = &running {
                 // The project moves to the front, as the tracker will say.
-                if let Some(at) = info.projects.iter().position(|project| project.id == running.project_id) {
+                if let Some(at) = info.projects.iter().position(|project| Some(&project.id) == running.project_id.as_ref()) {
                     let project = info.projects.remove(at);
                     info.projects.insert(0, project);
                 }
@@ -363,8 +401,10 @@ pub(crate) fn refresh_if_stale<R: Runtime>(app: &AppHandle<R>) {
     }
 }
 
-/// Sends `steps` and hands the outcome to the state and the panel.
-fn send<R: Runtime>(app: &AppHandle<R>, steps: Vec<Value>, done: &str) -> Result<(), String> {
+/// Sends `steps` and hands the outcome to the state and the panel. When it
+/// worked and `file` names an unfiled stretch that just ended, the Hours
+/// page opens on it to be filed.
+fn send<R: Runtime>(app: &AppHandle<R>, steps: Vec<Value>, done: &str, file: Option<String>) -> Result<(), String> {
     let window = crate::walkie::tracker_window(app).ok_or("Open the tracker first.")?;
     window
         .eval(timer_script(&steps, done))
@@ -375,8 +415,13 @@ fn send<R: Runtime>(app: &AppHandle<R>, steps: Vec<Value>, done: &str) -> Result
             .and_then(|raw| serde_json::from_str::<Outcome>(&raw).ok());
         match outcome {
             Some(Outcome { ok: true, running, .. }) => {
-                let running = running.filter(|r| valid_id(&r.id) && valid_id(&r.project_id));
+                let running = running.filter(valid_running);
                 set_running(&app, running);
+                if let Some(href) = file.as_deref().and_then(file_href) {
+                    let app_for_main = app.clone();
+                    let _ = app.run_on_main_thread(move || crate::mini::open_href(&app_for_main, &href));
+                    crate::analytics::action(&app, "hourly_file", "panel");
+                }
                 // The tracker's page shows the same timer: let it catch up.
                 if let Some(window) = crate::walkie::tracker_window(&app) {
                     let _ = window.eval("window.dispatchEvent(new CustomEvent('cbb:hourly-changed'))");
@@ -411,10 +456,14 @@ pub(crate) fn mini_hourly<R: Runtime>(
 ) -> Result<(), String> {
     let info = with(&app, |inner| inner.info.clone()).flatten().ok_or("The project timer isn't on for you.")?;
     let body = timer_body(&action, project_id.as_deref(), note.as_deref(), &info).map_err(str::to_string)?;
-    send(&app, vec![body], "")?;
-    let what = match (action.as_str(), info.running.is_some()) {
-        ("start", true) => "hourly_switch",
-        ("start", false) => "hourly_start",
+    // An unfiled timer that ends here (stopped, or switched to a project)
+    // is filed next, on the Hours page.
+    let file = info.running.as_ref().filter(|running| running.unfiled()).map(|running| running.id.clone());
+    send(&app, vec![body], "", file)?;
+    let what = match (action.as_str(), info.running.is_some(), project_id.is_some()) {
+        ("start", true, _) => "hourly_switch",
+        ("start", false, false) => "hourly_start_unfiled",
+        ("start", false, true) => "hourly_start",
         _ => "hourly_stop",
     };
     crate::analytics::action(&app, what, "panel");
@@ -428,7 +477,10 @@ pub(crate) fn mini_hourly_idle<R: Runtime>(app: AppHandle<R>, choice: String) ->
     let steps = idle_steps(&choice, &ask).map_err(str::to_string)?;
     if !steps.is_empty() {
         let left = crate::clock::fmt_hhmm_sast(ask.from);
-        send(&app, steps, &format!("Stopped at {left}, but it didn't start again:"))?;
+        // Stopped for good, an unfiled stretch is filed next; cut, the
+        // person is back at work and files it later from Hours.
+        let file = (choice == "stop" && ask.running.unfiled()).then(|| ask.running.id.clone());
+        send(&app, steps, &format!("Stopped at {left}, but it didn't start again:"), file)?;
     }
     let what = match choice.as_str() {
         "cut" => "hourly_idle_cut",
@@ -446,7 +498,8 @@ pub(crate) fn on_away<R: Runtime>(app: &AppHandle<R>, away: crate::idle::Away) {
     let Some(ask) = idle_ask(running.as_ref(), away) else { return };
     with(app, |inner| inner.ask = Some(ask.clone()));
     let question = json!({
-        "project": ask.running.project_name,
+        "project": ask.running.project_name.as_deref().unwrap_or("Not yet filed"),
+        "unfiled": ask.running.unfiled(),
         "billable": ask.running.billable,
         "from": ask.from * 1000,
         "to": ask.to * 1000,
@@ -524,7 +577,7 @@ mod tests {
         }
         let info = info();
         assert_eq!(info.projects.len(), 5, "an id that could reach a script is dropped");
-        assert_eq!(info.running.as_ref().map(|r| r.project_id.as_str()), Some("p2"));
+        assert_eq!(info.running.as_ref().and_then(|r| r.project_id.as_deref()), Some("p2"));
         assert_eq!(parse(r#"{"projects":[],"running":null}"#).map(|i| i.projects.len()), Some(0));
     }
 
@@ -548,7 +601,8 @@ mod tests {
         assert_eq!(timer_body("start", Some("p1"), Some("   "), &info), Ok(json!({ "action": "start", "projectId": "p1" })));
         assert_eq!(timer_body("stop", Some("p1"), Some("x"), &info), Ok(json!({ "action": "stop" })));
         assert!(timer_body("start", Some("someone-elses"), None, &info).is_err());
-        assert!(timer_body("start", None, None, &info).is_err());
+        // Just start, file it later.
+        assert_eq!(timer_body("start", None, Some("Call"), &info), Ok(json!({ "action": "start", "note": "Call" })));
         assert!(timer_body("delete", Some("p1"), None, &info).is_err());
         let long = "x".repeat(500);
         let body = timer_body("start", Some("p1"), Some(&long), &info).unwrap();
@@ -626,6 +680,25 @@ mod tests {
         // A timer stopped 10 minutes ago.
         assert!(!should_nudge(Some(since), since + 7200 - 600, 0, since + 7200));
         assert!(should_nudge(Some(since), since + 3600, 0, since + 3600 + 1800));
+    }
+
+    #[test]
+    fn an_unfiled_timer_is_never_billable_and_files_on_hours() {
+        let raw = r#"{"projects":[],"running":{"id":"t9","projectId":null,"projectName":null,"billable":true,"startedAt":"2026-10-12T07:00:00.000Z","note":null}}"#;
+        let running = parse(raw).and_then(|info| info.running).expect("an unfiled timer");
+        assert!(running.unfiled());
+        assert!(!running.billable);
+        assert_eq!(file_href(&running.id).as_deref(), Some("/hours?entry=t9&panel=file"));
+        assert_eq!(file_href("x&panel=evil"), None);
+        // A bad project id drops the timer rather than showing it as unfiled.
+        let bad = r#"{"projects":[],"running":{"id":"t9","projectId":"a b","startedAt":"2026-10-12T07:00:00.000Z"}}"#;
+        assert_eq!(parse(bad).and_then(|info| info.running), None);
+        // Cut restarts it unfiled too.
+        let ask = IdleAsk { running, from: STARTED + 600, to: STARTED + 1800 };
+        assert_eq!(
+            idle_steps("cut", &ask).unwrap()[1],
+            json!({ "action": "start" })
+        );
     }
 
     #[test]

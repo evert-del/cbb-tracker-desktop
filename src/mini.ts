@@ -26,7 +26,8 @@ type Quiet = { tracker: boolean; walkie: boolean; channel1: boolean; dnd_until: 
 
 /** The project timer, for people who bill by the hour (hourly.rs). */
 type HourlyProject = { id: string; name: string; projectNumber: string; clientName: string | null; billable: boolean };
-type HourlyRunning = { id: string; projectId: string; projectName: string; billable: boolean; startedAt: string; note: string | null };
+/** `projectId` null: started with no project, "Not yet filed" (never billable). */
+type HourlyRunning = { id: string; projectId: string | null; projectName: string | null; billable: boolean; startedAt: string; note: string | null };
 type Hourly = { running: HourlyRunning | null; quick: HourlyProject[]; projects: HourlyProject[]; asking: boolean };
 
 type ChatRow = {
@@ -1075,7 +1076,8 @@ window.__cbbMiniSearchResult = (r) => searchResult(r);
 /** "Other…" is open: every project, billed by the hour first, then quoted. */
 let hourlyPick = false;
 /** Back from time away with the timer running: the question being asked. */
-let hourlyIdle: { project: string; billable: boolean; from: number; to: number } | null = null;
+type HourlyIdleAsk = { project: string; billable: boolean; unfiled?: boolean; from: number; to: number };
+let hourlyIdle: HourlyIdleAsk | null = null;
 /**
  * After a tap the timer's buttons rest until the tracker's answer arrives
  * (the running timer changes) or 5 s pass, so a double-click can't start twice.
@@ -1126,7 +1128,7 @@ function hourlyTap(action: "start" | "stop", projectId?: string) {
 
 function projectTitle(p: HourlyProject): string {
   const head = [p.projectNumber, p.name].filter(Boolean).join(" ");
-  return [head, p.clientName, p.billable ? "Billable" : "Tracked (quoted)"].filter(Boolean).join(" · ");
+  return [head, p.clientName, p.billable ? "Billable" : "Tracked only"].filter(Boolean).join(" · ");
 }
 
 const PLAY = "M8 5v14l11-7z";
@@ -1140,18 +1142,24 @@ function renderHourly(h: Hourly | null) {
   const running = h.running;
   el("hourly-running").hidden = running === null;
   if (running) {
-    el("hourly-project").textContent = running.projectName;
+    const unfiled = running.projectId === null;
+    el("hourly-project").textContent = unfiled ? "Not yet filed" : running.projectName ?? "";
+    el("hourly-project").classList.toggle("unfiled", unfiled);
     const kind = el("hourly-kind");
-    kind.textContent = running.billable ? "Billable" : "Tracked";
+    kind.hidden = unfiled;
+    kind.textContent = running.billable ? "Billable" : "Tracked only";
     kind.classList.toggle("tracked", !running.billable);
     kind.title = running.billable ? "An hourly project: this time is billed" : "A quoted project: this time is tracked, not billed";
+    el("hourly-stop").title = unfiled ? "Stop, then pick the project on Hours" : "Stop the timer";
+    el("hourly-card").title = unfiled ? "Not billable until it's filed under a project. Open Hours" : "Open Hours in the tracker";
     el("hourly-note").textContent = running.note ?? "";
     el("hourly-note").hidden = !running.note;
   }
   const others = h.projects.filter((p) => p.id !== running?.projectId);
-  el("hourly-label").textContent = others.length === 0 ? (running ? "" : "No projects to time yet") : running ? "Switch to" : "Time a project";
+  el("hourly-label").textContent = running ? "Switch to" : "Time a project";
   el("hourly-label").hidden = running !== null && others.length === 0;
-  el("hourly-note-input").hidden = others.length === 0;
+  // With nothing running, "Just start" is always there, projects or not.
+  el("hourly-note-input").hidden = running !== null && others.length === 0;
   const quick = el("hourly-quick");
   quick.replaceChildren();
   for (const p of h.quick) {
@@ -1164,6 +1172,17 @@ function renderHourly(h: Hourly | null) {
     chip.append(svg(PLAY), name);
     chip.addEventListener("click", () => hourlyTap("start", p.id));
     quick.appendChild(chip);
+  }
+  if (!running) {
+    const later = document.createElement("button");
+    later.type = "button";
+    later.className = "h-chip later";
+    later.title = "Start the clock now and pick the project when you stop";
+    const text = document.createElement("span");
+    text.textContent = "Just start, file it later";
+    later.append(svg(PLAY), text);
+    later.addEventListener("click", () => hourlyTap("start"));
+    quick.appendChild(later);
   }
   if (others.length > h.quick.length) {
     const other = document.createElement("button");
@@ -1240,7 +1259,7 @@ function closeHourlyPick() {
   if (current) renderMode(current);
 }
 
-function openHourlyIdle(ask: { project: string; billable: boolean; from: number; to: number }) {
+function openHourlyIdle(ask: HourlyIdleAsk) {
   if (chat) closeChat();
   showSettings(false);
   hourlyPick = false;
@@ -1249,9 +1268,11 @@ function openHourlyIdle(ask: { project: string; billable: boolean; from: number;
   const to = new Date(ask.to);
   const left = TRACKER_TIME.format(from);
   const away = fmtSpan((ask.to - ask.from) / 60000);
+  const timer = ask.unfiled
+    ? "your timer (not yet filed)"
+    : `your timer on ${ask.project} (${ask.billable ? "billable" : "tracked only"})`;
   el("hourly-idle-text").textContent =
-    `You were away ${away} (${left}–${TRACKER_TIME.format(to)}) and your timer on ${ask.project} ` +
-    `(${ask.billable ? "billable" : "tracked"}) kept running. What should it count?`;
+    `You were away ${away} (${left}–${TRACKER_TIME.format(to)}) and ${timer} kept running. What should it count?`;
   el("hourly-idle-at").textContent = left;
   el("hourly-idle-error").hidden = true;
   document.querySelectorAll<HTMLButtonElement>(".h-choices button").forEach((b) => (b.disabled = false));
@@ -1278,7 +1299,7 @@ function answerHourlyIdle(choice: "keep" | "cut" | "stop") {
 declare global {
   interface Window {
     __cbbMiniHourlyError?: (text: string) => void;
-    __cbbMiniHourlyIdle?: (ask: { project: string; billable: boolean; from: number; to: number }) => void;
+    __cbbMiniHourlyIdle?: (ask: HourlyIdleAsk) => void;
   }
 }
 window.__cbbMiniHourlyError = (text) => {

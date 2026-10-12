@@ -272,6 +272,10 @@
       .h-chip span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
       .h-chip svg { width: 10px; height: 10px; flex: none; fill: var(--pink); stroke: none; }
       .h-chip.other { color: var(--pink-ink); }
+      .h-chip.later { background: none; border: 1px dashed var(--rule); color: var(--muted); }
+      .h-chip.later:hover { background: var(--tile); color: var(--fg); }
+      .h-chip.later svg { fill: var(--faint); }
+      #hourly-project.unfiled { font-style: italic; }
       #hourly-note-input, #hourly-filter { height: 28px; padding: 0 10px; border-radius: var(--r-ctl); border: 0.5px solid var(--rule); background: var(--tile); font: inherit; font-size: 12px; color: var(--fg); outline: none; user-select: text; -webkit-user-select: text; }
       #hourly-note-input:focus, #hourly-filter:focus { outline: 2px solid var(--pink); outline-offset: -1px; }
       #hourly-note-input::placeholder, #hourly-filter::placeholder { color: var(--faint); }

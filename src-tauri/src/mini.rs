@@ -784,7 +784,7 @@ pub(crate) fn mini_expand_notifications<R: Runtime>(app: AppHandle<R>) -> Result
 
 /// Open one row's page in the main window (tracker host only) and bring
 /// the window forward.
-fn open_href<R: Runtime>(app: &AppHandle<R>, href: &str) {
+pub(crate) fn open_href<R: Runtime>(app: &AppHandle<R>, href: &str) {
     if !href.starts_with('/') {
         return;
     }

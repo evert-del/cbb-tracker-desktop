@@ -20,7 +20,8 @@
 //!   notification | saved_offline | check_updates | diagnostics;
 //!   from: panel | tray_menu
 //! - `desktop_panel_mode`    pinned, compact (booleans)
-//! - `desktop_setting_changed` setting: launch_at_login | close_quits; value
+//! - `desktop_setting_changed` setting: launch_at_login | close_quits |
+//!   banners_tracker | banners_walkie | banners_channel1 | do_not_disturb; value
 
 use serde_json::{json, Value};
 use tauri::{AppHandle, Manager, Runtime};

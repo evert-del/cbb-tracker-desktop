@@ -237,6 +237,9 @@ fn apply<R: Runtime>(app: &AppHandle<R>, state: &Mutex<State>, poll: &Poll) {
         Ok(mut state) => (plan(&mut state, poll), state.inbox.clone()),
         Err(_) => return,
     };
+    // Held back when muted or on do-not-disturb (quiet.rs); the tray, the
+    // panel and the badge below still update.
+    let banners = if crate::quiet::allowed(app, crate::quiet::Kind::Tracker) { banners } else { Vec::new() };
     for banner in banners {
         let _ = app
             .notification()

@@ -8,6 +8,9 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 type Need = { label: string; body: string; href: string };
 type ClockAction = { id: string; label: string };
 type LabelCount = { label: string; count: number };
+/** Which notifications pop up, and the tracker's do-not-disturb (quiet.rs). */
+type Quiet = { tracker: boolean; walkie: boolean; channel1: boolean; dnd_until: string };
+
 type ChatRow = {
   key: string;
   kind: string;
@@ -29,6 +32,7 @@ type View = {
   summary: LabelCount[];
   walkie_unread: number;
   chats: ChatRow[];
+  quiet: Quiet;
   version: string;
   autostart: boolean;
   close_quits: boolean;
@@ -279,6 +283,7 @@ window.__cbbMiniShow = (view) => {
     ? "Closing stops your timer, reminders and notifications until you reopen it."
     : `Stays in the ${place} so your timer, reminders and notifications keep going.`;
   renderPin(view.pinned);
+  renderQuiet(view.quiet);
   renderActions(view);
   renderNeeds(view);
   renderSummary(view);
@@ -288,6 +293,70 @@ window.__cbbMiniShow = (view) => {
   renderMode(view);
   tick();
 };
+
+/** "16:00", or "Tue 08:00" when it isn't today. */
+function quietTime(iso: string): string {
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) return "";
+  const time = at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return at.toDateString() === new Date().toDateString()
+    ? time
+    : `${at.toLocaleDateString([], { weekday: "short" })} ${time}`;
+}
+
+/** The do-not-disturb choice last made here (the tracker only says when it ends). */
+let dndChoice: string | null = null;
+let dndBusy = false;
+
+function renderQuiet(quiet: Quiet) {
+  const sw = (id: string, on: boolean) => el(id).setAttribute("aria-checked", String(on));
+  sw("banners-tracker", quiet.tracker);
+  sw("banners-walkie", quiet.walkie);
+  sw("banners-channel1", quiet.channel1);
+  el("banners-channel1").toggleAttribute("disabled", !quiet.walkie);
+  const on = quiet.dnd_until !== "";
+  if (!on) dndChoice = null;
+  const until = on ? quietTime(quiet.dnd_until) : "";
+  el("quiet-chip").hidden = !on;
+  // Short, so the clock status beside it keeps its room; the title says it all.
+  el("quiet-chip-text").textContent = until || "Quiet";
+  el("quiet-chip").title = until ? `Do not disturb until ${until}. Change in Settings.` : "Do not disturb";
+  el("quiet-chip").setAttribute("aria-label", el("quiet-chip").title);
+  if (!dndBusy) {
+    el("dnd-hint").textContent = on
+      ? `On until ${until}. Call alerts still ring.`
+      : "Also quiets the tracker website. Call alerts still ring.";
+  }
+  document.querySelectorAll<HTMLButtonElement>("#dnd-choice .seg").forEach((seg) => {
+    const choice = seg.dataset.dnd ?? "";
+    seg.setAttribute("aria-checked", String(on ? choice === dndChoice : choice === "off"));
+    seg.disabled = dndBusy;
+  });
+}
+
+function setDnd(choice: string) {
+  if (dndBusy) return;
+  dndBusy = true;
+  dndChoice = choice === "off" ? null : choice;
+  el("dnd-hint").textContent = choice === "off" ? "Turning off…" : "Turning on…";
+  if (current) renderQuiet(current.quiet);
+  invoke("mini_dnd", { choice })
+    .catch((error) => dndFailed(String(error)))
+    .finally(() => window.setTimeout(() => { dndBusy = false; if (current) renderQuiet(current.quiet); }, 400));
+}
+
+function dndFailed(message: string) {
+  dndBusy = false;
+  el("dnd-hint").textContent = message;
+  document.querySelectorAll<HTMLButtonElement>("#dnd-choice .seg").forEach((seg) => { seg.disabled = false; });
+}
+
+declare global {
+  interface Window {
+    __cbbMiniDndFailed?: (message: string) => void;
+  }
+}
+window.__cbbMiniDndFailed = (message) => dndFailed(message);
 
 function renderPin(pinned: boolean) {
   const pin = el("pin");
@@ -826,6 +895,13 @@ window.addEventListener("DOMContentLoaded", () => {
   click("quit", () => menu("quit"));
   click("quit-row", () => menu("quit"));
   click("open-settings", () => showSettings(true));
+  click("quiet-chip", () => showSettings(true));
+  click("banners-tracker", () => menu("banners-tracker"));
+  click("banners-walkie", () => menu("banners-walkie"));
+  click("banners-channel1", () => menu("banners-channel1"));
+  document.querySelectorAll<HTMLButtonElement>("#dnd-choice .seg").forEach((seg) => {
+    seg.addEventListener("click", () => setDnd(seg.dataset.dnd ?? "off"));
+  });
   click("mood-save", () => {
     if (!mood) return;
     if (mood.stage === "talk") { sendMood({ intent: "talk", yes: true }, "talk-yes"); return; }

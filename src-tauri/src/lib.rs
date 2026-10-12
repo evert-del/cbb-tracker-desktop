@@ -30,6 +30,7 @@ mod desktop_entry;
 mod diagnostics;
 mod download;
 mod google_sign_in;
+mod hourly;
 mod idle;
 #[cfg(windows)]
 mod jumplist;
@@ -915,7 +916,9 @@ pub fn run() {
             mini::mini_whats_new,
             mini::mini_whats_new_done,
             walkie::mini_walkie_open,
-            walkie::mini_walkie_send
+            walkie::mini_walkie_send,
+            hourly::mini_hourly,
+            hourly::mini_hourly_idle
         ])
         .setup(|app| {
             #[cfg(target_os = "linux")]
@@ -1057,6 +1060,7 @@ pub fn run() {
             app.manage(notify::Snapshot::default());
             app.manage(walkie::Walkie::default());
             app.manage(schedule::Schedule::default());
+            app.manage(hourly::Hourly::default());
             app.manage(notify::InboxItems {
                 rows: [inbox_1, inbox_2, inbox_3],
                 hrefs: std::sync::Mutex::new([None, None, None]),
@@ -1166,6 +1170,7 @@ pub fn run() {
             notify::start(app.handle().clone());
             walkie::start(app.handle().clone());
             schedule::start(app.handle().clone());
+            hourly::start(app.handle().clone());
             #[cfg(target_os = "macos")]
             theme::start(app.handle().clone());
             idle::start(app.handle().clone());

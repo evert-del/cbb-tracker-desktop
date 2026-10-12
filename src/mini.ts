@@ -24,6 +24,11 @@ type NextCall = {
 /** Which notifications pop up, and the tracker's do-not-disturb (quiet.rs). */
 type Quiet = { tracker: boolean; walkie: boolean; channel1: boolean; dnd_until: string };
 
+/** The project timer, for people who bill by the hour (hourly.rs). */
+type HourlyProject = { id: string; name: string; projectNumber: string; clientName: string | null; billable: boolean };
+type HourlyRunning = { id: string; projectId: string; projectName: string; billable: boolean; startedAt: string; note: string | null };
+type Hourly = { running: HourlyRunning | null; quick: HourlyProject[]; projects: HourlyProject[]; asking: boolean };
+
 type ChatRow = {
   key: string;
   kind: string;
@@ -48,6 +53,7 @@ type View = {
   quiet: Quiet;
   next_call: NextCall | null;
   auto_offline: boolean;
+  hourly: Hourly | null;
   version: string;
   autostart: boolean;
   close_quits: boolean;
@@ -127,6 +133,9 @@ function tick() {
   const grown = (Date.now() - pushedAt) / 60000;
   const worked = view.worked_min + (view.state === "in" ? grown : 0);
   const rest = view.break_min + (view.state === "break" ? grown : 0);
+  const running = view.hourly?.running;
+  const started = running ? Date.parse(running.startedAt) : NaN;
+  el("hourly-elapsed").textContent = Number.isNaN(started) ? "" : fmtTimer(Date.now() - started);
   el("today").textContent =
     view.state === "none"
       ? ""
@@ -266,7 +275,14 @@ function renderMode(view: View) {
   if (compact) {
     el("main-view").hidden = true;
     el("settings").hidden = true;
-  } else if (el("settings").hidden && !mood && !chat && !whatsNew) {
+    el("hourly-pick").hidden = true;
+    el("hourly-idle-view").hidden = true;
+    return;
+  }
+  el("hourly-idle-view").hidden = !hourlyIdle;
+  el("hourly-pick").hidden = !hourlyPick || !!hourlyIdle;
+  if (hourlyPick || hourlyIdle) el("main-view").hidden = true;
+  else if (el("settings").hidden && !mood && !chat && !whatsNew) {
     el("main-view").hidden = false;
   }
 }
@@ -300,6 +316,7 @@ window.__cbbMiniShow = (view) => {
   renderPin(view.pinned);
   renderQuiet(view.quiet);
   renderNext(view.next_call);
+  renderHourly(view.hourly);
   el("auto-offline").setAttribute("aria-checked", String(view.auto_offline));
   renderActions(view);
   renderNeeds(view);
@@ -1053,8 +1070,227 @@ declare global {
 }
 window.__cbbMiniSearchResult = (r) => searchResult(r);
 
+// ── the project timer (hourly.rs) ──
+
+/** "Other…" is open: every project, billed by the hour first, then quoted. */
+let hourlyPick = false;
+/** Back from time away with the timer running: the question being asked. */
+let hourlyIdle: { project: string; billable: boolean; from: number; to: number } | null = null;
+/**
+ * After a tap the timer's buttons rest until the tracker's answer arrives
+ * (the running timer changes) or 5 s pass, so a double-click can't start twice.
+ */
+let hourlyTapped: { running: string; until: number } | null = null;
+let hourlyErrorTimer = 0;
+
+function hourlyResting(): boolean {
+  if (!hourlyTapped) return false;
+  const running = current?.hourly?.running?.id ?? "";
+  if (Date.now() > hourlyTapped.until || running !== hourlyTapped.running) {
+    hourlyTapped = null;
+    return false;
+  }
+  return true;
+}
+
+function restHourlyButtons() {
+  const resting = hourlyResting();
+  document.querySelectorAll<HTMLButtonElement>("#hourly-stop, #hourly-quick .h-chip:not(.other), #hourly-pick-list .h-row").forEach((btn) => {
+    btn.disabled = resting;
+  });
+}
+
+function hourlyError(text: string | null) {
+  const box = el("hourly-error");
+  window.clearTimeout(hourlyErrorTimer);
+  box.textContent = text ?? "";
+  box.hidden = !text;
+  if (text) hourlyErrorTimer = window.setTimeout(() => hourlyError(null), 8000);
+}
+
+function hourlyTap(action: "start" | "stop", projectId?: string) {
+  if (hourlyResting()) return;
+  hourlyTapped = { running: current?.hourly?.running?.id ?? "", until: Date.now() + 5000 };
+  restHourlyButtons();
+  window.setTimeout(restHourlyButtons, 5050);
+  hourlyError(null);
+  const noteInput = el<HTMLInputElement>("hourly-note-input");
+  const note = action === "start" ? noteInput.value.trim() : "";
+  if (action === "start") noteInput.value = "";
+  invoke("mini_hourly", { action, projectId: projectId ?? null, note: note || null }).catch((error) => {
+    hourlyTapped = null;
+    restHourlyButtons();
+    hourlyError(String(error));
+  });
+}
+
+function projectTitle(p: HourlyProject): string {
+  const head = [p.projectNumber, p.name].filter(Boolean).join(" ");
+  return [head, p.clientName, p.billable ? "Billable" : "Tracked (quoted)"].filter(Boolean).join(" · ");
+}
+
+const PLAY = "M8 5v14l11-7z";
+
+function renderHourly(h: Hourly | null) {
+  el("hourly").hidden = h === null;
+  if (h === null) {
+    if (hourlyPick) closeHourlyPick();
+    return;
+  }
+  const running = h.running;
+  el("hourly-running").hidden = running === null;
+  if (running) {
+    el("hourly-project").textContent = running.projectName;
+    const kind = el("hourly-kind");
+    kind.textContent = running.billable ? "Billable" : "Tracked";
+    kind.classList.toggle("tracked", !running.billable);
+    kind.title = running.billable ? "An hourly project: this time is billed" : "A quoted project: this time is tracked, not billed";
+    el("hourly-note").textContent = running.note ?? "";
+    el("hourly-note").hidden = !running.note;
+  }
+  const others = h.projects.filter((p) => p.id !== running?.projectId);
+  el("hourly-label").textContent = others.length === 0 ? (running ? "" : "No projects to time yet") : running ? "Switch to" : "Time a project";
+  el("hourly-label").hidden = running !== null && others.length === 0;
+  el("hourly-note-input").hidden = others.length === 0;
+  const quick = el("hourly-quick");
+  quick.replaceChildren();
+  for (const p of h.quick) {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "h-chip";
+    chip.title = `${running ? "Switch to" : "Start"} ${projectTitle(p)}`;
+    const name = document.createElement("span");
+    name.textContent = p.name || p.projectNumber;
+    chip.append(svg(PLAY), name);
+    chip.addEventListener("click", () => hourlyTap("start", p.id));
+    quick.appendChild(chip);
+  }
+  if (others.length > h.quick.length) {
+    const other = document.createElement("button");
+    other.type = "button";
+    other.className = "h-chip other";
+    other.textContent = "Other…";
+    other.addEventListener("click", openHourlyPick);
+    quick.appendChild(other);
+  }
+  if (hourlyPick) renderHourlyPick();
+  // A question whose timer stopped meanwhile (on the website, say) is moot.
+  if (hourlyIdle && !h.asking) closeHourlyIdle();
+  restHourlyButtons();
+}
+
+function renderHourlyPick() {
+  const h = current?.hourly;
+  const list = el("hourly-pick-list");
+  list.replaceChildren();
+  if (!h) return;
+  const words = el<HTMLInputElement>("hourly-filter").value.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const fits = (p: HourlyProject) => {
+    const text = `${p.projectNumber} ${p.name} ${p.clientName ?? ""}`.toLowerCase();
+    return words.every((w) => text.includes(w));
+  };
+  let shown = 0;
+  for (const [label, billable] of [["Billed by the hour", true], ["Quoted", false]] as const) {
+    const rows = h.projects.filter((p) => p.billable === billable && fits(p));
+    if (rows.length === 0) continue;
+    const head = document.createElement("div");
+    head.className = "section";
+    head.textContent = label;
+    list.appendChild(head);
+    for (const p of rows) {
+      const row = document.createElement("button");
+      row.type = "button";
+      const on = p.id === h.running?.projectId;
+      row.className = on ? "h-row on" : "h-row";
+      const t = document.createElement("span");
+      t.className = "t";
+      t.textContent = [p.projectNumber, p.name].filter(Boolean).join(" ");
+      const sub = document.createElement("span");
+      sub.className = "s";
+      sub.textContent = p.clientName ?? "";
+      row.append(t);
+      if (p.clientName) row.append(sub);
+      row.addEventListener("click", () => {
+        if (!on) hourlyTap("start", p.id);
+        closeHourlyPick();
+      });
+      list.appendChild(row);
+      shown += 1;
+    }
+  }
+  if (shown === 0) {
+    const empty = document.createElement("div");
+    empty.id = "hourly-pick-empty";
+    empty.textContent = words.length ? "No project matches." : "No projects to time yet.";
+    list.appendChild(empty);
+  }
+  restHourlyButtons();
+}
+
+function openHourlyPick() {
+  hourlyPick = true;
+  el<HTMLInputElement>("hourly-filter").value = "";
+  renderHourlyPick();
+  if (current) renderMode(current);
+  el("hourly-filter").focus();
+}
+
+function closeHourlyPick() {
+  hourlyPick = false;
+  if (current) renderMode(current);
+}
+
+function openHourlyIdle(ask: { project: string; billable: boolean; from: number; to: number }) {
+  if (chat) closeChat();
+  showSettings(false);
+  hourlyPick = false;
+  hourlyIdle = ask;
+  const from = new Date(ask.from);
+  const to = new Date(ask.to);
+  const left = TRACKER_TIME.format(from);
+  const away = fmtSpan((ask.to - ask.from) / 60000);
+  el("hourly-idle-text").textContent =
+    `You were away ${away} (${left}–${TRACKER_TIME.format(to)}) and your timer on ${ask.project} ` +
+    `(${ask.billable ? "billable" : "tracked"}) kept running. What should it count?`;
+  el("hourly-idle-at").textContent = left;
+  el("hourly-idle-error").hidden = true;
+  document.querySelectorAll<HTMLButtonElement>(".h-choices button").forEach((b) => (b.disabled = false));
+  if (current) renderMode(current);
+}
+
+function closeHourlyIdle() {
+  hourlyIdle = null;
+  if (current) renderMode(current);
+}
+
+function answerHourlyIdle(choice: "keep" | "cut" | "stop") {
+  if (!hourlyIdle) return;
+  document.querySelectorAll<HTMLButtonElement>(".h-choices button").forEach((b) => (b.disabled = true));
+  invoke("mini_hourly_idle", { choice })
+    .then(() => closeHourlyIdle())
+    .catch((error) => {
+      // Nothing more to answer (it stopped meanwhile): back to the panel.
+      closeHourlyIdle();
+      hourlyError(String(error));
+    });
+}
+
+declare global {
+  interface Window {
+    __cbbMiniHourlyError?: (text: string) => void;
+    __cbbMiniHourlyIdle?: (ask: { project: string; billable: boolean; from: number; to: number }) => void;
+  }
+}
+window.__cbbMiniHourlyError = (text) => {
+  hourlyTapped = null;
+  restHourlyButtons();
+  hourlyError(text);
+};
+window.__cbbMiniHourlyIdle = (ask) => openHourlyIdle(ask);
+
 function showSettings(open: boolean) {
-  if (!el("compact-view").hidden || mood || chat || whatsNew) return;
+  if (!el("compact-view").hidden || mood || chat || whatsNew || hourlyIdle) return;
+  if (hourlyPick) closeHourlyPick();
   el("main-view").hidden = open;
   el("settings").hidden = !open;
 }
@@ -1087,6 +1323,26 @@ window.addEventListener("DOMContentLoaded", () => {
   click("banners-walkie", () => menu("banners-walkie"));
   click("banners-channel1", () => menu("banners-channel1"));
   click("auto-offline", () => menu("auto-offline"));
+  click("hourly-stop", () => hourlyTap("stop"));
+  click("hourly-card", () => void invoke("mini_open", { href: "/hours" }));
+  click("hourly-pick-back", closeHourlyPick);
+  click("hourly-idle-cut", () => answerHourlyIdle("cut"));
+  click("hourly-idle-stop", () => answerHourlyIdle("stop"));
+  click("hourly-idle-keep", () => answerHourlyIdle("keep"));
+  const filter = el<HTMLInputElement>("hourly-filter");
+  filter.addEventListener("input", renderHourlyPick);
+  filter.addEventListener("keydown", (e) => {
+    // Enter starts the first match.
+    if (e.key !== "Enter" || e.isComposing) return;
+    e.preventDefault();
+    el("hourly-pick-list").querySelector<HTMLButtonElement>(".h-row:not(.on)")?.click();
+  });
+  el("hourly-note-input").addEventListener("keydown", (e) => {
+    // Enter starts the first one-tap project with this note.
+    if (e.key !== "Enter" || e.isComposing) return;
+    e.preventDefault();
+    el("hourly-quick").querySelector<HTMLButtonElement>(".h-chip:not(.other)")?.click();
+  });
   click("next-place", () => {
     const url = current?.next_call?.map_url;
     if (url) void invoke("mini_open_map", { url });
@@ -1189,6 +1445,13 @@ window.addEventListener("DOMContentLoaded", () => {
   window.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;
     if (whatsNew) { closeWhatsNew(); return; }
+    // The question about time away is only closed by an answer.
+    if (hourlyIdle) return;
+    if (hourlyPick) {
+      if (el<HTMLInputElement>("hourly-filter").value !== "") return;
+      closeHourlyPick();
+      return;
+    }
     if (mood) { if (mood.sent === null) closeMood(); return; }
     if (chat) { closeChat(); return; }
     if (!el("settings").hidden) showSettings(false);
@@ -1202,6 +1465,7 @@ window.addEventListener("DOMContentLoaded", () => {
     // Like the rest of the panel, the next opening starts on the main view;
     // an unsent reply is kept for when the conversation is opened again.
     if (chat && !current?.pinned) closeChat();
+    if (hourlyPick && !current?.pinned) closeHourlyPick();
     showSettings(false);
   });
 });

@@ -38,6 +38,8 @@ pub(crate) struct View {
     pub next_call: Option<crate::schedule::NextCall>,
     /// The next days' call sheets are saved for offline (schedule.rs).
     pub auto_offline: bool,
+    /// The project timer, for someone who bills by the hour (hourly.rs).
+    pub hourly: Option<crate::hourly::PanelView>,
     pub version: String,
     pub autostart: bool,
     /// Closing the main window quits the app (close.rs) instead of hiding it.
@@ -112,6 +114,7 @@ pub(crate) fn plan(
         quiet: crate::quiet::Prefs::default(),
         next_call: None,
         auto_offline: true,
+        hourly: None,
         version: env!("CARGO_PKG_VERSION").into(),
         autostart: false,
         close_quits: false,
@@ -148,6 +151,7 @@ pub(crate) fn push<R: Runtime>(app: &AppHandle<R>) {
     view.quiet = crate::quiet::prefs(app, crate::clock::unix_now());
     view.next_call = crate::schedule::next(app);
     view.auto_offline = crate::schedule::auto_save(app);
+    view.hourly = crate::hourly::panel(app);
     let Ok(payload) = serde_json::to_string(&view) else { return };
     if let Some(mini) = app.get_webview_window("mini") {
         let script = format!("window.__cbbMiniShow && window.__cbbMiniShow({payload})");
@@ -258,6 +262,7 @@ pub(crate) fn show<R: Runtime>(app: &AppHandle<R>) {
         let _ = mini.show();
         let _ = mini.set_focus();
         push(app);
+        crate::hourly::refresh_if_stale(app);
     }
 }
 
@@ -572,6 +577,27 @@ pub(crate) fn ask_mood<R: Runtime>(app: &AppHandle<R>, moment: &str, greeting: O
     if let Some(mini) = app.get_webview_window("mini") {
         let ask = serde_json::json!({ "moment": moment, "greeting": greeting });
         let _ = mini.eval(format!("window.__cbbMiniMood && window.__cbbMiniMood({ask})"));
+        let _ = mini.set_focus();
+    }
+}
+
+/// Back from time away with a project timer running (hourly.rs): the panel,
+/// full size, asks whether to keep it, cut the time away or stop it when
+/// they left. It only asks; nothing changes until they answer.
+pub(crate) fn ask_hourly_idle<R: Runtime>(app: &AppHandle<R>, question: &serde_json::Value) {
+    if is_compact() {
+        set_compact(app, false);
+        push(app);
+    }
+    let visible = app
+        .get_webview_window("mini")
+        .and_then(|mini| mini.is_visible().ok())
+        .unwrap_or(false);
+    if !visible {
+        show(app);
+    }
+    if let Some(mini) = app.get_webview_window("mini") {
+        let _ = mini.eval(format!("window.__cbbMiniHourlyIdle && window.__cbbMiniHourlyIdle({question})"));
         let _ = mini.set_focus();
     }
 }

@@ -252,6 +252,49 @@
       .hit .title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 500; }
       .hit .sub { font-size: 11.5px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
       #search-note { padding: 10px 16px 14px; color: var(--muted); font-size: 12.5px; }
+      /* Project timer (hourly.rs), for people who bill by the hour. */
+      #hourly { margin: 0 14px 10px; display: flex; flex-direction: column; gap: 8px; }
+      #hourly-running { display: flex; align-items: center; gap: 10px; padding: 8px 8px 8px 12px; border-radius: var(--r-ctl); background: var(--tile); border-left: 3px solid var(--pink); }
+      #hourly-card { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 1px; text-align: left; }
+      #hourly-card:hover #hourly-project { text-decoration: underline; }
+      .h-top { display: flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; }
+      #hourly-project { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .h-kind { flex: none; font-size: 10.5px; font-weight: 600; padding: 1px 6px; border-radius: 99px; background: var(--tone-2-bg); color: var(--tone-2-fg); }
+      .h-kind.tracked { background: var(--tone-4-bg); color: var(--tone-4-fg); }
+      #hourly-note { font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+      #hourly-elapsed { font-weight: 600; font-variant-numeric: tabular-nums; }
+      #hourly-stop { flex: none; min-height: 30px; padding: 0 12px; border-radius: var(--r-ctl); font-weight: 600; background: var(--danger-bg); color: var(--danger-fg); }
+      #hourly-stop:disabled, .h-chip:disabled { opacity: 0.55; cursor: default; }
+      .h-label { font-size: 11px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--faint); }
+      #hourly-quick { display: flex; flex-wrap: wrap; gap: 6px; }
+      .h-chip { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; min-height: 28px; padding: 0 10px; border-radius: 99px; background: var(--tile); font-size: 12px; font-weight: 600; }
+      .h-chip:hover { background: var(--tile-hover); }
+      .h-chip span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .h-chip svg { width: 10px; height: 10px; flex: none; fill: var(--pink); stroke: none; }
+      .h-chip.other { color: var(--pink-ink); }
+      #hourly-note-input, #hourly-filter { height: 28px; padding: 0 10px; border-radius: var(--r-ctl); border: 0.5px solid var(--rule); background: var(--tile); font: inherit; font-size: 12px; color: var(--fg); outline: none; user-select: text; -webkit-user-select: text; }
+      #hourly-note-input:focus, #hourly-filter:focus { outline: 2px solid var(--pink); outline-offset: -1px; }
+      #hourly-note-input::placeholder, #hourly-filter::placeholder { color: var(--faint); }
+      .h-error { margin: 0; color: var(--danger-fg); font-size: 12px; }
+      #hourly-pick { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+      #hourly-pick-head { display: flex; align-items: center; gap: 8px; padding: 12px 12px 10px; font-weight: 600; font-size: 14px; border-bottom: 0.5px solid var(--rule); }
+      #hourly-filter { margin: 10px 14px 4px; }
+      #hourly-pick-list { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; padding-bottom: 8px; }
+      .h-row { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; padding: 8px 16px; text-align: left; border-top: 0.5px solid var(--rule); }
+      .h-row:hover { background: var(--tile); }
+      .h-row .t { font-weight: 600; }
+      .h-row .s { font-size: 11.5px; color: var(--faint); }
+      .h-row.on .t::after { content: " · running"; color: var(--pink-ink); font-weight: 500; }
+      #hourly-pick-empty { padding: 10px 16px; color: var(--muted); font-size: 12.5px; }
+      #hourly-idle-view { display: flex; flex-direction: column; gap: 10px; flex: 1; padding: 16px; overflow-y: auto; }
+      #hourly-idle-view h2 { margin: 0; font-size: 16px; font-weight: 600; }
+      #hourly-idle-view .hint { margin: -4px 0 0; color: var(--muted); font-size: 12.5px; }
+      .h-choices { display: flex; flex-direction: column; gap: 8px; margin-top: auto; }
+      .h-choices button { min-height: 36px; border-radius: var(--r-ctl); font-weight: 600; background: var(--tile); }
+      .h-choices button:hover { background: var(--tile-hover); }
+      .h-choices button.primary { background: var(--pink); color: #fff; }
+      .h-choices button.primary:hover { background: var(--pink-ink); }
+      .h-choices button:disabled { opacity: 0.55; cursor: default; }
       /* Next call (schedule.rs): the next booking, from My Schedule. */
       #next-card { margin: 0 14px 8px; padding: 10px 12px; border-radius: var(--r-ctl); background: var(--tile); display: flex; flex-direction: column; gap: 2px; }
       .next-when { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
@@ -335,6 +378,21 @@
         </div>
         <div id="actions"></div>
         <div id="no-sheet" hidden>The time sheet isn't switched on for you.</div>
+
+        <div id="hourly" hidden>
+          <div id="hourly-running" hidden>
+            <button id="hourly-card" type="button" title="Open Hours in the tracker">
+              <span class="h-top"><span id="hourly-project"></span><span id="hourly-kind" class="h-kind"></span></span>
+              <span id="hourly-note" hidden></span>
+            </button>
+            <span id="hourly-elapsed">0:00</span>
+            <button id="hourly-stop" type="button">Stop</button>
+          </div>
+          <div class="h-label" id="hourly-label">Time a project</div>
+          <div id="hourly-quick"></div>
+          <input id="hourly-note-input" type="text" maxlength="200" placeholder="Note for the next timer (optional)" autocomplete="off" aria-label="Note for the next timer (optional)" />
+          <p class="h-error" id="hourly-error" role="alert" hidden></p>
+        </div>
 
         <div id="search">
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
@@ -482,6 +540,29 @@
             <svg viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
           </button>
         </form>
+      </div>
+
+      <div id="hourly-pick" hidden>
+        <div id="hourly-pick-head">
+          <button class="icon-btn" id="hourly-pick-back" type="button" aria-label="Back" title="Back">
+            <svg viewBox="0 0 24 24"><path d="M19 12H5M11 18l-6-6 6-6"/></svg>
+          </button>
+          Time a project
+        </div>
+        <input id="hourly-filter" type="search" placeholder="Find a project" autocomplete="off" spellcheck="false" aria-label="Find a project" />
+        <div id="hourly-pick-list"></div>
+      </div>
+
+      <div id="hourly-idle-view" hidden>
+        <h2 id="hourly-idle-title">Welcome back</h2>
+        <p class="hint" id="hourly-idle-text"></p>
+        <p class="h-error" id="hourly-idle-error" role="alert" hidden></p>
+        <div class="h-choices">
+          <!-- In the brief's order, none highlighted: the person decides. -->
+          <button type="button" id="hourly-idle-keep">Keep it all</button>
+          <button type="button" id="hourly-idle-cut">Cut the time away</button>
+          <button type="button" id="hourly-idle-stop">Stop at <span id="hourly-idle-at"></span></button>
+        </div>
       </div>
 
       <div id="settings" hidden>

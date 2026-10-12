@@ -36,6 +36,7 @@ mod mini;
 mod notify;
 mod offline;
 mod quiet;
+mod search;
 mod session;
 mod system_open;
 mod tabs;
@@ -888,6 +889,7 @@ pub fn run() {
             mini::mini_mood,
             mini::mini_mood_done,
             mini::mini_dnd,
+            search::mini_search,
             mini::mini_whats_new,
             mini::mini_whats_new_done,
             walkie::mini_walkie_open,

@@ -874,6 +874,128 @@ window.__cbbMiniOpenChat = (row) => {
   openChat({ key: row.key, kind: row.kind, name: row.name || "Walkie" });
 };
 
+// ── Quick search (search.rs): the tracker's own search-as-you-type. ──
+type Hit = { title: string; subtitle: string; href: string };
+type SearchResult = { seq: number; ok: boolean; groups?: { label: string; items: Hit[] }[]; error?: string };
+
+let searchSeq = 0;
+let searchTimer: number | undefined;
+let hits: Hit[] = [];
+let activeHit = 0;
+
+const HIT_ICONS: Record<string, string> = {
+  Projects: "M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z",
+  Deliverables: "M5 4h14v16H5zM9 8h6M9 12h6M9 16h3",
+  Ideas: "M9 18h6M10 21h4M12 3a6 6 0 0 0-3.5 10.9V16h7v-2.1A6 6 0 0 0 12 3z",
+};
+
+function searchNote(text: string) {
+  const box = el("search-results");
+  const note = document.createElement("div");
+  note.id = "search-note";
+  note.textContent = text;
+  box.replaceChildren(note);
+  hits = [];
+}
+
+function setSearching(on: boolean) {
+  el("lists").classList.toggle("searching", on);
+  el("search-results").hidden = !on;
+}
+
+function clearSearch() {
+  const input = el<HTMLInputElement>("search-input");
+  input.value = "";
+  searchSeq += 1;
+  window.clearTimeout(searchTimer);
+  el("search-clear").hidden = true;
+  setSearching(false);
+  el("search-results").replaceChildren();
+  hits = [];
+}
+
+function onSearchInput() {
+  const input = el<HTMLInputElement>("search-input");
+  const q = input.value.trim();
+  el("search-clear").hidden = input.value === "";
+  window.clearTimeout(searchTimer);
+  searchSeq += 1;
+  if (q === "") return clearSearch();
+  setSearching(true);
+  if (q.length < 2) return searchNote("Keep typing…");
+  const seq = searchSeq;
+  searchTimer = window.setTimeout(() => {
+    if (!hits.length) searchNote("Searching…");
+    invoke("mini_search", { q, seq }).catch((error) => searchResult({ seq, ok: false, error: String(error) }));
+  }, 200);
+}
+
+function searchResult(r: SearchResult) {
+  if (r.seq !== searchSeq || el<HTMLInputElement>("search-input").value.trim().length < 2) return;
+  if (!r.ok) return searchNote(r.error || "Could not search just now.");
+  const box = el("search-results");
+  box.replaceChildren();
+  hits = [];
+  for (const group of r.groups ?? []) {
+    if (!group.items.length) continue;
+    const label = document.createElement("div");
+    label.className = "section";
+    label.textContent = group.label;
+    box.appendChild(label);
+    for (const hit of group.items) {
+      const index = hits.length;
+      hits.push(hit);
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = "hit";
+      row.setAttribute("role", "option");
+      row.dataset.index = String(index);
+      const face = document.createElement("span");
+      face.className = "face";
+      face.appendChild(svg(HIT_ICONS[group.label] ?? HIT_ICONS.Projects));
+      const txt = document.createElement("span");
+      txt.className = "txt";
+      const title = document.createElement("div");
+      title.className = "title";
+      title.textContent = hit.title;
+      const sub = document.createElement("div");
+      sub.className = "sub";
+      sub.textContent = hit.subtitle;
+      txt.append(title, sub);
+      row.append(face, txt);
+      row.addEventListener("click", () => openHit(index));
+      row.addEventListener("mousemove", () => markHit(index));
+      box.appendChild(row);
+    }
+  }
+  if (!hits.length) return searchNote("Nothing found. The tracker searches projects, deliverables and ideas.");
+  markHit(0);
+}
+
+function markHit(index: number) {
+  activeHit = Math.max(0, Math.min(index, hits.length - 1));
+  document.querySelectorAll<HTMLElement>("#search-results .hit").forEach((row) => {
+    const on = Number(row.dataset.index) === activeHit;
+    row.classList.toggle("active", on);
+    row.setAttribute("aria-selected", String(on));
+    if (on) row.scrollIntoView({ block: "nearest" });
+  });
+}
+
+function openHit(index: number) {
+  const hit = hits[index];
+  if (!hit) return;
+  void invoke("mini_open", { href: hit.href });
+  clearSearch();
+}
+
+declare global {
+  interface Window {
+    __cbbMiniSearchResult?: (r: SearchResult) => void;
+  }
+}
+window.__cbbMiniSearchResult = (r) => searchResult(r);
+
 function showSettings(open: boolean) {
   if (!el("compact-view").hidden || mood || chat || whatsNew) return;
   el("main-view").hidden = open;
@@ -976,6 +1098,28 @@ window.addEventListener("DOMContentLoaded", () => {
     if ((e.target as HTMLElement).closest("button")) return;
     void getCurrentWindow().startDragging();
   });
+  const search = el<HTMLInputElement>("search-input");
+  search.addEventListener("input", onSearchInput);
+  search.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      markHit(activeHit + (e.key === "ArrowDown" ? 1 : -1));
+    } else if (e.key === "Enter" && !e.isComposing) {
+      e.preventDefault();
+      openHit(activeHit);
+    } else if (e.key === "Escape" && search.value !== "") {
+      e.preventDefault();
+      e.stopPropagation();
+      clearSearch();
+    }
+  });
+  click("search-clear", () => { clearSearch(); search.focus(); });
+  // Type to search: a letter typed on the main view goes to the search field.
+  window.addEventListener("keydown", (e) => {
+    if (e.key.length !== 1 || e.metaKey || e.ctrlKey || e.altKey || e.isComposing) return;
+    if (el("main-view").hidden || document.activeElement instanceof HTMLInputElement || document.activeElement instanceof HTMLTextAreaElement) return;
+    search.focus();
+  });
   window.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;
     if (whatsNew) { closeWhatsNew(); return; }
@@ -988,6 +1132,7 @@ window.addEventListener("DOMContentLoaded", () => {
   // isn't answered or skipped: like closing the web clock's panel.
   window.addEventListener("blur", () => {
     if (mood && mood.sent === null && !current?.pinned) closeMood();
+    if (!current?.pinned) clearSearch();
     // Like the rest of the panel, the next opening starts on the main view;
     // an unsent reply is kept for when the conversation is opened again.
     if (chat && !current?.pinned) closeChat();

@@ -93,6 +93,17 @@ const START_JS: &str = r#"(function () {
 const TAKE_JS: &str =
     "(function () { var v = window.__cbbHourly || ''; window.__cbbHourly = ''; return v; })()";
 
+/// Today's entries: leaves `{ s, b }` on `window.__cbbHourlyToday`.
+const TODAY_JS: &str = r#"(function () {
+  fetch('/api/me/project-time', { credentials: 'same-origin', cache: 'no-store' })
+    .then(function (r) { return r.text().catch(function () { return ''; }).then(function (t) { return { s: r.status, b: t }; }); })
+    .then(function (x) { window.__cbbHourlyToday = JSON.stringify(x); })
+    .catch(function () { window.__cbbHourlyToday = JSON.stringify({ s: 0, b: '' }); });
+})()"#;
+
+const TAKE_TODAY_JS: &str =
+    "(function () { var v = window.__cbbHourlyToday || ''; window.__cbbHourlyToday = ''; return v; })()";
+
 const TAKE_RESULT_JS: &str =
     "(function () { var v = window.__cbbHourlyResult || ''; window.__cbbHourlyResult = ''; return v; })()";
 
@@ -300,6 +311,139 @@ pub(crate) fn read_answer(raw: &str) -> Read {
     }
 }
 
+/// One of today's entries (`GET /api/me/project-time`).
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct Entry {
+    pub id: String,
+    #[serde(default)]
+    pub project_id: Option<String>,
+    #[serde(default)]
+    pub project_name: Option<String>,
+    #[serde(default)]
+    pub client_name: Option<String>,
+    #[serde(default)]
+    pub billable: bool,
+    pub started_at: String,
+    #[serde(default)]
+    pub ended_at: Option<String>,
+    #[serde(default)]
+    pub note: Option<String>,
+    /// On an invoice: it can't be changed.
+    #[serde(default)]
+    pub billed: bool,
+    #[serde(default)]
+    pub minutes: u64,
+}
+
+/// Today's entries and totals, as the panel shows them. The tracker sends
+/// `{ from, to, entries }`; the totals are added up here.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct Today {
+    #[serde(default, alias = "from")]
+    pub day: String,
+    #[serde(default)]
+    pub entries: Vec<Entry>,
+    #[serde(default)]
+    pub total_minutes: u64,
+    #[serde(default)]
+    pub billable_minutes: u64,
+}
+
+/// Reads `GET /api/me/project-time`'s answer (`{ s, b }` as START_JS
+/// leaves it): the day, or `None` (not shipped yet, or unreadable: the
+/// list just doesn't show).
+pub(crate) fn read_today(raw: &str) -> Option<Today> {
+    #[derive(Deserialize)]
+    struct Answer {
+        s: u16,
+        #[serde(default)]
+        b: String,
+    }
+    let answer: Answer = serde_json::from_str(raw).ok()?;
+    if answer.s != 200 {
+        return None;
+    }
+    let value: Value = serde_json::from_str(&answer.b).ok()?;
+    value.get("entries")?.as_array()?;
+    let mut today: Today = serde_json::from_value(value).ok()?;
+    today.entries.retain(|entry| valid_id(&entry.id) && entry.project_id.as_deref().is_none_or(valid_id));
+    for entry in &mut today.entries {
+        if entry.project_id.is_none() {
+            entry.billable = false;
+        }
+    }
+    today.total_minutes = today.entries.iter().map(|e| e.minutes).sum();
+    today.billable_minutes = today.entries.iter().filter(|e| e.billable).map(|e| e.minutes).sum();
+    Some(today)
+}
+
+/// An edit of one of today's entries: `patch` is `PATCH
+/// /api/me/project-time/:id`'s body (times and note, only what changed);
+/// `file_to` moves it to another project (`POST /api/me/project-time/file`).
+#[derive(Debug, PartialEq)]
+pub(crate) struct Change {
+    pub patch: Option<Value>,
+    pub file_to: Option<String>,
+}
+
+/// The panel's edit view's changes, checked as far as the app can.
+pub(crate) fn entry_change(
+    entry: &Entry,
+    started: Option<u64>,
+    ended: Option<u64>,
+    note: Option<&str>,
+    project_id: Option<&str>,
+    info: &Info,
+    now: u64,
+) -> Result<Change, &'static str> {
+    if entry.billed {
+        return Err("These hours are on an invoice already.");
+    }
+    let mut body = json!({});
+    let start_was = crate::clock::parse_iso(&entry.started_at);
+    let end_was = entry.ended_at.as_deref().and_then(crate::clock::parse_iso);
+    if let Some(started) = started.filter(|s| Some(*s) != start_was) {
+        body["startedAt"] = Value::String(iso_utc(started));
+    }
+    if let Some(ended) = ended.filter(|e| Some(*e) != end_was) {
+        if entry.ended_at.is_none() {
+            return Err("Stop the timer to set when it ended.");
+        }
+        body["endedAt"] = Value::String(iso_utc(ended));
+    }
+    let start = started.or(start_was).unwrap_or(0);
+    let end = ended.or(end_was);
+    if end.is_some_and(|end| end <= start) {
+        return Err("The end has to be after the start.");
+    }
+    if end.unwrap_or(start) > now + 60 {
+        return Err("That's in the future.");
+    }
+    if end.is_some_and(|end| end - start > 24 * 3600) {
+        return Err("Keep it to 24 hours or less.");
+    }
+    if let Some(note) = note {
+        let note = clean_note(Some(note));
+        if note != entry.note {
+            body["note"] = note.map_or(Value::Null, Value::String);
+        }
+    }
+    let mut file_to = None;
+    if let Some(project_id) = project_id.filter(|id| Some(*id) != entry.project_id.as_deref()) {
+        if !info.projects.iter().any(|project| project.id == project_id) {
+            return Err("That project isn't one of yours.");
+        }
+        file_to = Some(project_id.to_string());
+    }
+    let patch = body.as_object().is_some_and(|fields| !fields.is_empty()).then_some(body);
+    if patch.is_none() && file_to.is_none() {
+        return Err("Nothing changed.");
+    }
+    Ok(Change { patch, file_to })
+}
+
 /// The tracker's ids (uuid or cuid): nothing that could reach a script.
 pub(crate) fn valid_id(id: &str) -> bool {
     (1..=64).contains(&id.len()) && id.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
@@ -396,6 +540,9 @@ pub(crate) struct PanelView {
     /// "Suggest time from my work" (detector.rs): its settings and the
     /// suggestion waiting for an answer.
     pub detector: crate::detector::View,
+    /// Today's entries and totals; `None` while the tracker doesn't have
+    /// the list yet.
+    pub today: Option<Today>,
 }
 
 /// The project timer's project for today's booking: the booking is today
@@ -471,20 +618,30 @@ pub(crate) fn file_body(entry_id: &str, project_id: &str, info: &Info) -> Result
     Ok(json!({ "entryId": entry_id, "projectId": project_id }))
 }
 
-/// Posts each `(url, body)` in turn through the page's own session,
-/// stopping at the first refusal, and leaves `{ ok, running }` (the last
-/// answer's) or `{ ok: false, error }` on `window.__cbbHourlyResult`.
-/// `done` names what already happened when a later step is refused
-/// ("Stopped at 09:40, but…").
-pub(crate) fn post_script(steps: &[(&str, Value)], done: &str) -> String {
-    let steps = Value::Array(steps.iter().map(|(url, body)| json!({ "url": url, "body": body })).collect());
+/// One request: method, tracker path and JSON body (null: none).
+pub(crate) type Step = (&'static str, String, Value);
+
+pub(crate) fn post(url: &str, body: Value) -> Step {
+    ("POST", url.to_string(), body)
+}
+
+/// Sends each step in turn through the page's own session, stopping at the
+/// first refusal, and leaves `{ ok, running }` (the last answer's) or
+/// `{ ok: false, error }` on `window.__cbbHourlyResult`. `done` names what
+/// already happened when a later step is refused ("Stopped at 09:40, but…").
+pub(crate) fn post_script(steps: &[Step], done: &str) -> String {
+    let steps = Value::Array(
+        steps.iter().map(|(method, url, body)| json!({ "method": method, "url": url, "body": body })).collect(),
+    );
     let done = Value::String(done.to_string());
     format!(
         r#"(function (steps, done) {{
   window.__cbbHourlyResult = '';
   function post(i, last) {{
     if (i >= steps.length) {{ window.__cbbHourlyResult = JSON.stringify({{ ok: true, running: last }}); return; }}
-    fetch(steps[i].url, {{ method: 'POST', credentials: 'same-origin', headers: {{ 'Content-Type': 'application/json' }}, body: JSON.stringify(steps[i].body) }})
+    var init = {{ method: steps[i].method, credentials: 'same-origin' }};
+    if (steps[i].body !== null) {{ init.headers = {{ 'Content-Type': 'application/json' }}; init.body = JSON.stringify(steps[i].body); }}
+    fetch(steps[i].url, init)
       .then(function (r) {{ return r.json().catch(function () {{ return {{}}; }}).then(function (b) {{ return {{ ok: r.ok, b: b || {{}} }}; }}); }})
       .then(function (x) {{
         if (!x.ok) {{
@@ -626,13 +783,16 @@ pub(crate) const MENU_HOURS: &str = "hourly-hours";
 pub(crate) const MENU_ADD: &str = "hourly-add";
 const MENU_START: &str = "hourly-start-";
 
-pub(crate) fn menu_model(info: &Info, pinned: &[String], now: u64) -> MenuModel {
+pub(crate) fn menu_model(info: &Info, pinned: &[String], today_minutes: Option<u64>, now: u64) -> MenuModel {
     let title = match &info.running {
         Some(running) => {
             let since = crate::clock::parse_iso(&running.started_at).unwrap_or(now);
             format!("{} · {}", running_label(Some(info), running), crate::clock::fmt_span(now.saturating_sub(since) / 60))
         }
-        None => "Project timer".into(),
+        None => match today_minutes.filter(|minutes| *minutes > 0) {
+            Some(minutes) => format!("Project timer · Today {}", fmt_minutes(minutes)),
+            None => "Project timer".into(),
+        },
     };
     let projects = quick(info, pinned)
         .into_iter()
@@ -689,7 +849,11 @@ impl<R: Runtime> TrayMenu<R> {
 pub(crate) fn refresh_menus<R: Runtime>(app: &AppHandle<R>) {
     let now = crate::clock::unix_now();
     let pinned = pins(app);
-    let model = with(app, |inner| inner.info.as_ref().map(|info| menu_model(info, &pinned, now))).flatten();
+    let model = with(app, |inner| {
+        let today = inner.today.as_ref().map(|today| today.total_minutes);
+        inner.info.as_ref().map(|info| menu_model(info, &pinned, today, now))
+    })
+    .flatten();
     if let Ok(mut dock) = DOCK.lock() {
         dock.clone_from(&model);
     }
@@ -791,6 +955,8 @@ struct Inner {
     auto_stopped: Option<String>,
     last_timer_at: u64,
     nudged_for: u64,
+    /// Today's entries (`GET /api/me/project-time`).
+    today: Option<Today>,
 }
 
 #[derive(Default)]
@@ -836,6 +1002,7 @@ pub(crate) fn panel<R: Runtime>(app: &AppHandle<R>) -> Option<PanelView> {
             quick: with_booked(quick(info, &pinned), info, booked.as_deref()),
             booked,
             detector,
+            today: inner.today.clone(),
             projects: info.projects.clone(),
             asking: inner.ask.is_some(),
             filing: inner.to_file.is_some(),
@@ -1000,9 +1167,30 @@ fn read<R: Runtime>(app: &AppHandle<R>) {
     let _ = window.eval(START_JS);
     let Some(raw) = crate::walkie::collect(&window, TAKE_JS, 30) else { return };
     match read_answer(&raw) {
-        Read::Hourly(info) => set_info(app, Some(info)),
+        Read::Hourly(info) => {
+            set_info(app, Some(info));
+            read_entries(app);
+        }
         Read::Off => set_info(app, None),
         Read::Keep => {}
+    }
+}
+
+/// Today's entries, read through the page (blocking).
+fn read_entries<R: Runtime>(app: &AppHandle<R>) {
+    let Some(window) = crate::walkie::tracker_window(app) else { return };
+    let _ = window.eval(TODAY_JS);
+    let Some(raw) = crate::walkie::collect(&window, TAKE_TODAY_JS, 30) else { return };
+    let today = read_today(&raw);
+    let changed = with(app, |inner| {
+        let changed = inner.today != today;
+        inner.today = today;
+        changed
+    })
+    .unwrap_or(false);
+    if changed {
+        refresh_menus(app);
+        crate::mini::push(app);
     }
 }
 
@@ -1048,7 +1236,7 @@ enum Then {
 }
 
 /// Sends `steps` through the page and hands the outcome on.
-fn send<R: Runtime>(app: &AppHandle<R>, steps: Vec<(&'static str, Value)>, done: &str, then: Then) -> Result<(), String> {
+fn send<R: Runtime>(app: &AppHandle<R>, steps: Vec<Step>, done: &str, then: Then) -> Result<(), String> {
     let window = crate::walkie::tracker_window(app).ok_or("Open the tracker first.")?;
     let script = post_script(&steps, done);
     let app = app.clone();
@@ -1087,6 +1275,7 @@ fn send<R: Runtime>(app: &AppHandle<R>, steps: Vec<(&'static str, Value)>, done:
                     say(&app, &what);
                 }
                 set_running(&app, running);
+                read_entries(&app);
                 // The tracker's page shows the same timer: let it catch up.
                 let _ = window.eval("window.dispatchEvent(new Event('cbb:hourly-changed'))");
                 if file.is_some() || notice.is_some() {
@@ -1105,6 +1294,7 @@ fn send<R: Runtime>(app: &AppHandle<R>, steps: Vec<(&'static str, Value)>, done:
                 if let Some(id) = logged {
                     crate::detector::answered(&app, id);
                 }
+                read_entries(&app);
                 crate::mini::push(&app);
                 let _ = window.eval("window.dispatchEvent(new Event('cbb:hourly-changed'))");
                 if let Some(notice) = notice {
@@ -1156,7 +1346,7 @@ fn ends_unfiled(info: &Info) -> Option<String> {
 fn start<R: Runtime>(app: &AppHandle<R>, project_id: Option<&str>, note: Option<&str>, from: &'static str, tell: bool) -> Result<(), String> {
     let info = current(app)?;
     let body = start_body(project_id, note, &info).map_err(str::to_string)?;
-    send(app, vec![(TIMER_URL, body)], "", Then::Timer { file: ends_unfiled(&info), notice: None, say: tell, auto: None })?;
+    send(app, vec![post(TIMER_URL, body)], "", Then::Timer { file: ends_unfiled(&info), notice: None, say: tell, auto: None })?;
     let what = match (info.running.is_some(), project_id.is_some()) {
         (true, _) => "hourly_switch",
         (false, false) => "hourly_start_unfiled",
@@ -1171,7 +1361,7 @@ fn stop<R: Runtime>(app: &AppHandle<R>, from: &'static str, tell: bool) -> Resul
     if info.running.is_none() {
         return Err("No timer is running.".into());
     }
-    send(app, vec![(TIMER_URL, stop_body(None))], "", Then::Timer { file: ends_unfiled(&info), notice: None, say: tell, auto: None })?;
+    send(app, vec![post(TIMER_URL, stop_body(None))], "", Then::Timer { file: ends_unfiled(&info), notice: None, say: tell, auto: None })?;
     crate::analytics::action(app, "hourly_stop", from);
     Ok(())
 }
@@ -1216,7 +1406,7 @@ pub(crate) fn mini_hourly_idle<R: Runtime>(app: AppHandle<R>, choice: String) ->
             // The unfiled stretch up to the idle moment is filed next,
             // whether the timer stays stopped or starts again.
             let file = left_to_file(&ask.running, ask.from);
-            let steps = steps.into_iter().map(|body| (TIMER_URL, body)).collect();
+            let steps = steps.into_iter().map(|body| post(TIMER_URL, body)).collect();
             let then = Then::Timer { file, notice: None, say: false, auto: None };
             if let Err(error) = send(&app, steps, "", then) {
                 panel_error(&app, &error);
@@ -1241,7 +1431,7 @@ pub(crate) fn mini_hourly_file<R: Runtime>(app: AppHandle<R>, choice: String, pr
         "file" => {
             let info = current(&app)?;
             let body = file_body(&entry, project_id.as_deref().unwrap_or_default(), &info).map_err(str::to_string)?;
-            send(&app, vec![(FILE_URL, body)], "", Then::Saved { filed: true, notice: None, logged: None })?;
+            send(&app, vec![post(FILE_URL, body)], "", Then::Saved { filed: true, notice: None, logged: None })?;
             crate::analytics::action(&app, "hourly_file", "panel");
         }
         "new" => {
@@ -1273,7 +1463,7 @@ pub(crate) fn log_stretch<R: Runtime>(app: &AppHandle<R>, project_id: &str, star
     let body = add_body(project_id, start, end, None, &info, crate::clock::unix_now()).map_err(str::to_string)?;
     let label = info.projects.iter().find(|project| project.id == project_id).map(project_label).unwrap_or_default();
     let notice = format!("Logged {} on {label}.", fmt_minutes((end - start) / 60));
-    send(app, vec![(TIME_URL, body)], "", Then::Saved { filed: false, notice: Some(notice), logged: Some(id) })
+    send(app, vec![post(TIME_URL, body)], "", Then::Saved { filed: false, notice: Some(notice), logged: Some(id) })
 }
 
 /// Wrapped on the time sheet (clock.rs) with a project timer still running:
@@ -1309,8 +1499,90 @@ pub(crate) fn mini_hourly_add<R: Runtime>(
     let body = add_body(&project_id, started, ended, note.as_deref(), &info, crate::clock::unix_now()).map_err(str::to_string)?;
     let label = info.projects.iter().find(|project| project.id == project_id).map(project_label).unwrap_or_default();
     let notice = format!("Added {} to {label}.", fmt_minutes((ended - started) / 60));
-    send(&app, vec![(TIME_URL, body)], "", Then::Saved { filed: false, notice: Some(notice), logged: None })?;
+    send(&app, vec![post(TIME_URL, body)], "", Then::Saved { filed: false, notice: Some(notice), logged: None })?;
     crate::analytics::action(&app, "hourly_add_time", "panel");
+    Ok(())
+}
+
+fn today_entry<R: Runtime>(app: &AppHandle<R>, entry_id: &str) -> Result<Entry, String> {
+    with(app, |inner| inner.today.as_ref().and_then(|today| today.entries.iter().find(|e| e.id == entry_id).cloned()))
+        .flatten()
+        .ok_or_else(|| "That entry isn't in today's list any more.".to_string())
+}
+
+/// ▶ on one of today's entries: carry on with its project and note (an
+/// unfiled one carries on unfiled).
+#[tauri::command]
+pub(crate) fn mini_hourly_continue<R: Runtime>(app: AppHandle<R>, entry_id: String) -> Result<(), String> {
+    let entry = today_entry(&app, &entry_id)?;
+    let project = entry.project_id.as_deref();
+    // Carrying on a project they're no longer on: the tracker refuses a start
+    // there, so say so plainly.
+    if let Some(project) = project {
+        if !current(&app)?.projects.iter().any(|p| p.id == project) {
+            return Err("You can't time that project any more.".into());
+        }
+    }
+    start(&app, project, entry.note.as_deref(), "panel", false)?;
+    crate::analytics::action(&app, "hourly_continue", "panel");
+    Ok(())
+}
+
+/// Save the panel's edit of one of today's entries. Times are ISO moments.
+#[tauri::command]
+pub(crate) fn mini_hourly_edit<R: Runtime>(
+    app: AppHandle<R>,
+    entry_id: String,
+    started_at: Option<String>,
+    ended_at: Option<String>,
+    note: Option<String>,
+    project_id: Option<String>,
+) -> Result<(), String> {
+    let entry = today_entry(&app, &entry_id)?;
+    let info = current(&app)?;
+    let read = |raw: Option<String>| -> Result<Option<u64>, String> {
+        match raw {
+            None => Ok(None),
+            Some(raw) => crate::clock::parse_iso(&raw).map(Some).ok_or_else(|| "Those times don't read right.".to_string()),
+        }
+    };
+    let change = entry_change(
+        &entry,
+        read(started_at)?,
+        read(ended_at)?,
+        note.as_deref(),
+        project_id.as_deref(),
+        &info,
+        crate::clock::unix_now(),
+    )
+    .map_err(str::to_string)?;
+    // The project first (the tracker's "file"), then the times and note.
+    let mut steps = Vec::new();
+    if let Some(project) = &change.file_to {
+        steps.push(post(FILE_URL, json!({ "entryId": entry.id, "projectId": project })));
+    }
+    if let Some(patch) = change.patch {
+        steps.push(("PATCH", format!("{TIME_URL}/{}", entry.id), patch));
+    }
+    let done = if change.file_to.is_some() { "Moved to the project, but the times didn't save:" } else { "" };
+    send(&app, steps, done, Then::Saved { filed: false, notice: Some("Saved.".into()), logged: None })?;
+    crate::analytics::action(&app, "hourly_edit", "panel");
+    Ok(())
+}
+
+/// Delete one of today's entries (not the running one: stop it first).
+#[tauri::command]
+pub(crate) fn mini_hourly_delete<R: Runtime>(app: AppHandle<R>, entry_id: String) -> Result<(), String> {
+    let entry = today_entry(&app, &entry_id)?;
+    if entry.billed {
+        return Err("These hours are on an invoice already.".into());
+    }
+    if entry.ended_at.is_none() {
+        return Err("Stop the timer first.".into());
+    }
+    let url = format!("{TIME_URL}/{}", entry.id);
+    send(&app, vec![("DELETE", url, Value::Null)], "", Then::Saved { filed: false, notice: Some("Deleted.".into()), logged: None })?;
+    crate::analytics::action(&app, "hourly_delete", "panel");
     Ok(())
 }
 
@@ -1378,7 +1650,7 @@ fn auto_stop<R: Runtime>(app: &AppHandle<R>, running: &Running, at: u64, back: b
             say: false,
             auto: Some(AutoStop { timer: running.id.clone(), later: !back }),
         };
-        if send(&app, vec![(TIMER_URL, stop_body(Some(at)))], "", then).is_err() {
+        if send(&app, vec![post(TIMER_URL, stop_body(Some(at)))], "", then).is_err() {
             with(&app, |inner| inner.auto_stopped = None);
         }
         crate::analytics::action(&app, "hourly_idle_auto_stop", "idle");
@@ -1565,10 +1837,11 @@ mod tests {
 
     #[test]
     fn the_script_posts_each_step_and_stops_at_a_refusal() {
-        let js = post_script(&[(TIMER_URL, json!({ "action": "stop" })), (FILE_URL, json!({ "entryId": "t", "projectId": "p" }))], "Stopped.");
-        assert!(js.contains("fetch(steps[i].url, { method: 'POST', credentials: 'same-origin'"));
+        let js = post_script(&[post(TIMER_URL, json!({ "action": "stop" })), post(FILE_URL, json!({ "entryId": "t", "projectId": "p" }))], "Stopped.");
+        assert!(js.contains("var init = { method: steps[i].method, credentials: 'same-origin' };"));
+        assert!(js.contains("fetch(steps[i].url, init)"));
         assert!(js.ends_with(
-            r#"})([{"body":{"action":"stop"},"url":"/api/me/project-timer"},{"body":{"entryId":"t","projectId":"p"},"url":"/api/me/project-time/file"}], "Stopped.")"#
+            r#"})([{"body":{"action":"stop"},"method":"POST","url":"/api/me/project-timer"},{"body":{"entryId":"t","projectId":"p"},"method":"POST","url":"/api/me/project-time/file"}], "Stopped.")"#
         ));
         assert!(js.contains("if (!x.ok)"));
         assert!(!js.contains("localStorage") && !js.contains("console."));
@@ -1648,18 +1921,19 @@ mod tests {
 
     #[test]
     fn the_menus_show_the_timer_and_the_recent_projects() {
-        let model = menu_model(&info(), &[], STARTED + 65 * 60);
+        let model = menu_model(&info(), &[], None, STARTED + 65 * 60);
         assert_eq!(model.title, "Brand film · 1h 05m");
         assert!(model.running);
         assert_eq!(model.projects[0], ("hourly-start-p1".to_string(), "Spirit Films · Con Spirito S1 (Billable)".to_string()));
         assert_eq!(model.projects.len(), 4);
         let mut stopped = info();
         stopped.running = None;
-        assert_eq!(menu_model(&stopped, &[], STARTED).title, "Project timer");
+        assert_eq!(menu_model(&stopped, &[], None, STARTED).title, "Project timer");
+        assert_eq!(menu_model(&stopped, &[], Some(320), STARTED).title, "Project timer · Today 5h 20m");
         let mut unfiled = info();
         unfiled.running.as_mut().unwrap().project_id = None;
         unfiled.running.as_mut().unwrap().project_name = None;
-        assert_eq!(menu_model(&unfiled, &[], STARTED + 600).title, "Not yet filed · 10m");
+        assert_eq!(menu_model(&unfiled, &[], Some(320), STARTED + 600).title, "Not yet filed · 10m");
         for id in [MENU_STOP, MENU_LATER, MENU_HOURS, MENU_ADD, "hourly-start-p1"] {
             assert!(is_menu_id(id), "{id}");
         }
@@ -1792,6 +2066,73 @@ mod tests {
         assert_eq!(read_answer(&json!({ "s": 200, "b": "<html>" }).to_string()), Read::Keep);
         assert_eq!(read_answer("null"), Read::Keep);
         assert_eq!(read_answer(""), Read::Keep);
+    }
+
+    fn entry(ended: Option<&str>) -> Entry {
+        Entry {
+            id: "e1".into(),
+            project_id: Some("p1".into()),
+            project_name: Some("Con Spirito S1".into()),
+            client_name: Some("Spirit Films".into()),
+            billable: true,
+            started_at: "2026-10-12T07:00:00.000Z".into(),
+            ended_at: ended.map(str::to_string),
+            note: Some("Grade".into()),
+            billed: false,
+            minutes: 90,
+        }
+    }
+
+    #[test]
+    fn todays_list_reads_only_a_real_answer() {
+        let body = r#"{"from":"2026-10-12","to":"2026-10-12","entries":[
+            {"id":"e1","projectId":null,"projectName":null,"clientName":null,"billable":true,"billed":false,"startedAt":"2026-10-12T09:00:00.000Z","endedAt":null,"minutes":5,"note":null,"source":"DESKTOP"},
+            {"id":"e2","projectId":"p1","projectName":"Logo refresh","clientName":"Vimeo","billable":true,"billed":false,"startedAt":"2026-10-12T07:00:00.000Z","endedAt":"2026-10-12T08:30:00.000Z","minutes":90,"note":"Grade","source":"WEB"},
+            {"id":"bad id","startedAt":"x"}]}"#;
+        let today = read_today(&json!({ "s": 200, "b": body }).to_string()).expect("a day");
+        assert_eq!(today.day, "2026-10-12");
+        assert_eq!(today.entries.len(), 2, "an id that could reach a script is dropped");
+        assert!(!today.entries[0].billable, "unfiled is never billable");
+        assert_eq!((today.total_minutes, today.billable_minutes), (95, 90));
+        assert_eq!(read_today(&json!({ "s": 404, "b": "{}" }).to_string()), None, "not shipped yet");
+        assert_eq!(read_today(&json!({ "s": 200, "b": "<html>" }).to_string()), None);
+        assert_eq!(read_today(""), None);
+    }
+
+    #[test]
+    fn edits_send_only_what_changed_and_never_end_the_running_one() {
+        let info = info();
+        let now = STARTED + 8 * 3600;
+        let done = entry(Some("2026-10-12T08:30:00.000Z"));
+        assert_eq!(
+            entry_change(&done, None, Some(STARTED + 7200), Some("Grade"), Some("p1"), &info, now),
+            Ok(Change { patch: Some(json!({ "endedAt": "2026-10-12T09:00:00.000Z" })), file_to: None })
+        );
+        assert_eq!(
+            entry_change(&done, None, None, Some("  "), Some("p3"), &info, now),
+            Ok(Change { patch: Some(json!({ "note": null })), file_to: Some("p3".into()) })
+        );
+        assert_eq!(entry_change(&done, None, None, None, Some("p3"), &info, now), Ok(Change { patch: None, file_to: Some("p3".into()) }));
+        assert_eq!(entry_change(&done, Some(STARTED), None, Some("Grade"), None, &info, now), Err("Nothing changed."));
+        assert!(entry_change(&done, Some(STARTED + 7200), None, None, None, &info, now).is_err(), "start after its end");
+        assert!(entry_change(&done, None, Some(now + 600), None, None, &info, now).is_err(), "in the future");
+        assert!(entry_change(&done, None, None, None, Some("someone-elses"), &info, now).is_err());
+        let running = entry(None);
+        assert!(entry_change(&running, None, Some(STARTED + 600), None, None, &info, now).is_err());
+        assert_eq!(
+            entry_change(&running, Some(STARTED - 600), None, None, None, &info, now),
+            Ok(Change { patch: Some(json!({ "startedAt": "2026-10-12T06:50:00.000Z" })), file_to: None })
+        );
+        let mut billed = done;
+        billed.billed = true;
+        assert!(entry_change(&billed, None, None, Some("x"), None, &info, now).is_err());
+    }
+
+    #[test]
+    fn requests_carry_their_method_and_a_delete_sends_no_body() {
+        let js = post_script(&[("DELETE", "/api/me/project-time/e1".into(), Value::Null)], "");
+        assert!(js.contains(r#""method":"DELETE""#));
+        assert!(js.contains("if (steps[i].body !== null)"));
     }
 
     #[test]

@@ -338,6 +338,25 @@
       .h-field { min-width: 0; }
       .h-field select, .h-field input { width: 100%; min-width: 0; box-sizing: border-box; }
       #hourly-add-view { overflow-x: hidden; margin: 0; }
+      .h-today-head { display: flex; align-items: baseline; gap: 8px; margin-top: 6px; }
+      .h-today-head .h-label { flex: 1; }
+      #hourly-today-total { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+      #hourly-today-list { display: flex; flex-direction: column; }
+      .t-row { display: flex; align-items: center; gap: 8px; padding: 7px 0; border-top: 0.5px solid var(--rule); }
+      .t-main { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 1px; text-align: left; }
+      .t-main:disabled { cursor: default; }
+      .t-main .l { font-weight: 600; font-size: 12.5px; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .t-main .w { font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .t-main:not(:disabled):hover .l { text-decoration: underline; }
+      .t-mins { font-size: 12px; font-variant-numeric: tabular-nums; color: var(--muted); }
+      .t-go { flex: none; width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; background: var(--tile); }
+      .t-go:hover { background: var(--tile-hover); }
+      .t-go svg { width: 11px; height: 11px; fill: var(--pink); stroke: none; }
+      .t-tag { font-size: 10.5px; font-weight: 600; color: var(--faint); }
+      #hourly-edit-view { display: flex; flex-direction: column; gap: 10px; flex: 1; padding: 16px; overflow-y: auto; overflow-x: hidden; margin: 0; }
+      #hourly-edit-view h2 { margin: 0; font-size: 16px; font-weight: 600; }
+      #hourly-edit-length { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+      #hourly-edit-delete { color: var(--danger-fg); }
       #hourly-add-length { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
       .h-row .t { font-weight: 600; }
       .h-row .s { font-size: 11.5px; color: var(--faint); }
@@ -520,6 +539,10 @@
           </div>
           <div id="hourly-quick"></div>
           <input id="hourly-note-input" type="text" maxlength="500" placeholder="Note for the next timer (optional)" autocomplete="off" aria-label="Note for the next timer (optional)" />
+          <div id="hourly-today" hidden>
+            <div class="h-today-head"><span class="h-label">Today</span><span id="hourly-today-total"></span></div>
+            <div id="hourly-today-list"></div>
+          </div>
         </div>
         </div>
 
@@ -662,6 +685,23 @@
         <div class="h-choices">
           <button type="submit" class="primary" id="hourly-add-save">Add</button>
           <button type="button" id="hourly-add-cancel">Cancel</button>
+        </div>
+      </form>
+
+      <form id="hourly-edit-view" hidden>
+        <h2>Edit time</h2>
+        <label class="h-field">Project<select id="hourly-edit-project"></select></label>
+        <div class="h-times">
+          <label class="h-field">From<input id="hourly-edit-from" type="time" step="60" required /></label>
+          <label class="h-field">To<input id="hourly-edit-to" type="time" step="60" /></label>
+        </div>
+        <span id="hourly-edit-length"></span>
+        <label class="h-field">Note (optional)<input id="hourly-edit-note" type="text" maxlength="500" autocomplete="off" /></label>
+        <p class="h-error" id="hourly-edit-error" role="alert" hidden></p>
+        <div class="h-choices">
+          <button type="submit" class="primary" id="hourly-edit-save">Save</button>
+          <button type="button" id="hourly-edit-delete">Delete</button>
+          <button type="button" id="hourly-edit-cancel">Cancel</button>
         </div>
       </form>
 

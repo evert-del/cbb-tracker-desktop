@@ -64,7 +64,24 @@ type Hourly = {
   booked?: string | null;
   /** "Suggest time from my work" (detector.rs). */
   detector?: Detector;
+  /** Today's entries and totals; null while the tracker doesn't have the list. */
+  today?: Today | null;
 };
+
+type TodayEntry = {
+  id: string;
+  projectId: string | null;
+  projectName: string | null;
+  clientName: string | null;
+  billable: boolean;
+  startedAt: string;
+  endedAt: string | null;
+  note: string | null;
+  /** On an invoice: locked. */
+  billed: boolean;
+  minutes: number;
+};
+type Today = { day: string; entries: TodayEntry[]; totalMinutes: number; billableMinutes: number };
 
 type Detector = {
   on: boolean;
@@ -326,12 +343,14 @@ function renderMode(view: View) {
     el("hourly-pick").hidden = true;
     el("hourly-idle-view").hidden = true;
     el("hourly-add-view").hidden = true;
+    el("hourly-edit-view").hidden = true;
     return;
   }
   el("hourly-idle-view").hidden = !hourlyIdle;
   el("hourly-pick").hidden = !hourlyPick || !!hourlyIdle;
   el("hourly-add-view").hidden = !hourlyAdd || !!hourlyIdle || !!hourlyPick;
-  if (hourlyPick || hourlyIdle || hourlyAdd) el("main-view").hidden = true;
+  el("hourly-edit-view").hidden = !hourlyEdit || !!hourlyIdle || !!hourlyPick || hourlyAdd;
+  if (hourlyPick || hourlyIdle || hourlyAdd || hourlyEdit) el("main-view").hidden = true;
   else if (el("settings").hidden && !mood && !chat && !whatsNew) {
     el("main-view").hidden = false;
   }
@@ -1242,6 +1261,182 @@ function projectTitle(p: HourlyProject): string {
 
 const PLAY = "M8 5v14l11-7z";
 
+// ── Today: the entries so far, carried on or edited ──
+
+/** "Vimeo · Logo refresh" for an entry, or "Not yet filed". */
+function entryLabel(e: TodayEntry): string {
+  if (e.projectId === null) return "Not yet filed";
+  const name = e.projectName?.trim() || "A project";
+  const client = e.clientName?.trim();
+  return client ? `${client} · ${name}` : name;
+}
+
+function renderToday(t: Today | null) {
+  el("hourly-today").hidden = t === null || t.entries.length === 0;
+  if (!t) return;
+  el("hourly-today-total").textContent =
+    t.billableMinutes > 0 && t.billableMinutes < t.totalMinutes
+      ? `${fmtMinutes(t.totalMinutes)} · ${fmtMinutes(t.billableMinutes)} billable`
+      : fmtMinutes(t.totalMinutes);
+  const list = el("hourly-today-list");
+  list.replaceChildren();
+  for (const e of t.entries) {
+    const row = document.createElement("div");
+    row.className = "t-row";
+    const main = document.createElement("button");
+    main.type = "button";
+    main.className = "t-main";
+    const running = e.endedAt === null;
+    const from = TRACKER_TIME.format(new Date(e.startedAt));
+    const to = running ? "now" : TRACKER_TIME.format(new Date(e.endedAt ?? e.startedAt));
+    const label = document.createElement("span");
+    label.className = "l";
+    label.textContent = entryLabel(e);
+    const when = document.createElement("span");
+    when.className = "w";
+    when.textContent = [`${from}–${to}`, e.note].filter(Boolean).join(" · ");
+    main.append(label, when);
+    main.disabled = e.billed;
+    main.title = e.billed ? "On an invoice: it can't be changed." : "Edit";
+    main.addEventListener("click", () => openHourlyEdit(e));
+    const mins = document.createElement("span");
+    mins.className = "t-mins";
+    mins.textContent = fmtMinutes(e.minutes);
+    row.append(main, mins);
+    if (e.billed) {
+      const tag = document.createElement("span");
+      tag.className = "t-tag";
+      tag.textContent = "Invoiced";
+      row.appendChild(tag);
+    } else if (!running) {
+      // Carry on: a new timer on the same project and note, from now.
+      const go = document.createElement("button");
+      go.type = "button";
+      go.className = "t-go";
+      go.title = `Carry on: ${entryLabel(e)}`;
+      go.setAttribute("aria-label", `Carry on with ${entryLabel(e)}`);
+      go.appendChild(svg(PLAY));
+      go.addEventListener("click", () => {
+        hourlyError(null);
+        invoke("mini_hourly_continue", { entryId: e.id }).catch((error) => hourlyError(String(error)));
+      });
+      row.appendChild(go);
+    } else {
+      const tag = document.createElement("span");
+      tag.className = "t-tag";
+      tag.textContent = "Running";
+      row.appendChild(tag);
+    }
+    list.appendChild(row);
+  }
+}
+
+let hourlyEdit: TodayEntry | null = null;
+
+/** The edit form's times as moments on the entry's own day (an end before
+ * the start runs past midnight). */
+function editStretch(): { from: Date; to: Date | null } | null {
+  if (!hourlyEdit) return null;
+  const day = localDay(new Date(hourlyEdit.startedAt));
+  const from = new Date(`${day}T${el<HTMLInputElement>("hourly-edit-from").value}`);
+  if (Number.isNaN(from.getTime())) return null;
+  if (hourlyEdit.endedAt === null) return { from, to: null };
+  const to = new Date(`${day}T${el<HTMLInputElement>("hourly-edit-to").value}`);
+  if (Number.isNaN(to.getTime())) return null;
+  if (to <= from) to.setDate(to.getDate() + 1);
+  return { from, to };
+}
+
+function renderEditLength() {
+  const s = editStretch();
+  el("hourly-edit-length").textContent =
+    s === null ? "" : s.to === null ? "Still running" : fmtMinutes((s.to.getTime() - s.from.getTime()) / 60000);
+}
+
+function openHourlyEdit(e: TodayEntry) {
+  const h = current?.hourly;
+  if (!h || e.billed) return;
+  if (chat) closeChat();
+  showSettings(false);
+  hourlyPick = null;
+  hourlyEdit = e;
+  const select = el<HTMLSelectElement>("hourly-edit-project");
+  select.replaceChildren();
+  if (e.projectId === null) select.appendChild(new Option("Not yet filed", ""));
+  // Its own project, even one no longer in the list.
+  if (e.projectId && !h.projects.some((p) => p.id === e.projectId)) select.appendChild(new Option(entryLabel(e), e.projectId));
+  for (const [label, billable] of [["Billed by the hour", true], ["Quoted", false]] as const) {
+    const rows = h.projects.filter((p) => p.billable === billable);
+    if (rows.length === 0) continue;
+    const group = document.createElement("optgroup");
+    group.label = label;
+    for (const p of rows) group.appendChild(new Option(projectLabel(p), p.id));
+    select.appendChild(group);
+  }
+  select.value = e.projectId ?? "";
+  const pad = (d: Date) => `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+  el<HTMLInputElement>("hourly-edit-from").value = pad(new Date(e.startedAt));
+  const toInput = el<HTMLInputElement>("hourly-edit-to");
+  toInput.value = e.endedAt ? pad(new Date(e.endedAt)) : "";
+  toInput.disabled = e.endedAt === null;
+  toInput.placeholder = e.endedAt === null ? "Running" : "";
+  el<HTMLInputElement>("hourly-edit-note").value = e.note ?? "";
+  el<HTMLButtonElement>("hourly-edit-delete").hidden = e.endedAt === null;
+  el("hourly-edit-error").hidden = true;
+  document.querySelectorAll<HTMLButtonElement>("#hourly-edit-view .h-choices button").forEach((b) => (b.disabled = false));
+  renderEditLength();
+  if (current) renderMode(current);
+}
+
+function closeHourlyEdit() {
+  hourlyEdit = null;
+  if (current) renderMode(current);
+}
+
+function editError(text: string) {
+  el("hourly-edit-error").textContent = text;
+  el("hourly-edit-error").hidden = false;
+  document.querySelectorAll<HTMLButtonElement>("#hourly-edit-view .h-choices button").forEach((b) => (b.disabled = false));
+}
+
+function saveHourlyEdit() {
+  const e = hourlyEdit;
+  const s = editStretch();
+  if (!e) return;
+  if (!s) return editError("Fill in the times.");
+  document.querySelectorAll<HTMLButtonElement>("#hourly-edit-view .h-choices button").forEach((b) => (b.disabled = true));
+  el("hourly-edit-error").hidden = true;
+  const project = el<HTMLSelectElement>("hourly-edit-project").value;
+  // Saved when the tracker says so (__cbbMiniHourlyAfter closes the form).
+  invoke("mini_hourly_edit", {
+    entryId: e.id,
+    startedAt: s.from.toISOString(),
+    endedAt: s.to ? s.to.toISOString() : null,
+    note: el<HTMLInputElement>("hourly-edit-note").value,
+    projectId: project || null,
+  }).catch((error) => editError(String(error)));
+}
+
+function deleteHourlyEdit() {
+  const e = hourlyEdit;
+  if (!e) return;
+  const button = el<HTMLButtonElement>("hourly-edit-delete");
+  // A second tap confirms: nothing is deleted on one stray click.
+  if (button.dataset.confirm !== "1") {
+    button.dataset.confirm = "1";
+    button.textContent = "Tap again to delete";
+    window.setTimeout(() => {
+      button.dataset.confirm = "";
+      button.textContent = "Delete";
+    }, 4000);
+    return;
+  }
+  button.dataset.confirm = "";
+  button.textContent = "Delete";
+  document.querySelectorAll<HTMLButtonElement>("#hourly-edit-view .h-choices button").forEach((b) => (b.disabled = true));
+  invoke("mini_hourly_delete", { entryId: e.id }).catch((error) => editError(String(error)));
+}
+
 // ── "Suggest time from my work" (detector.rs) ──
 
 function renderDetector(d: Detector | null) {
@@ -1425,6 +1620,9 @@ function renderHourly(h: Hourly | null) {
   el("hourly").hidden = h === null;
   el("hourly-start").hidden = h === null;
   renderDetector(h?.detector ?? null);
+  renderToday(h?.today ?? null);
+  // Edited away meanwhile (deleted, on the website): nothing to edit.
+  if (hourlyEdit && !h?.today?.entries.some((e) => e.id === hourlyEdit?.id)) closeHourlyEdit();
   el("idle-settings").hidden = h === null;
   if (h === null) {
     if (hourlyPick) closeHourlyPick();
@@ -1712,6 +1910,7 @@ declare global {
 }
 window.__cbbMiniHourlyError = (text) => {
   if (hourlyAdd) return addError(text);
+  if (hourlyEdit) return editError(text);
   if (hourlyIdle) return idleError(text);
   hourlyTapped = null;
   restHourlyButtons();
@@ -1735,6 +1934,7 @@ window.__cbbMiniHourlyWrap = (ask) => {
 window.__cbbMiniHourlyAfter = (after) => {
   if (hourlyIdle) closeHourlyIdle();
   if (hourlyAdd) closeHourlyAdd();
+  if (hourlyEdit) closeHourlyEdit();
   if (after.file) openHourlyPick("file", after.notice);
   else hourlyInfo(after.notice);
 };
@@ -1744,8 +1944,9 @@ function showSettings(open: boolean) {
   // Opening Settings leaves the timer's views; closing it (as on blur)
   // keeps a filing question or a half-typed Add time.
   if (open && hourlyAdd) closeHourlyAdd();
+  if (open && hourlyEdit) closeHourlyEdit();
   if (open && hourlyPick) closeHourlyPick();
-  if (!open && (hourlyAdd || hourlyPick)) {
+  if (!open && (hourlyAdd || hourlyPick || hourlyEdit)) {
     el("settings").hidden = true;
     return;
   }
@@ -1783,6 +1984,15 @@ window.addEventListener("DOMContentLoaded", () => {
   click("auto-offline", () => menu("auto-offline"));
   click("hourly-stop", () => hourlyTap("stop"));
   click("hourly-add-open", openHourlyAdd);
+  click("hourly-edit-cancel", closeHourlyEdit);
+  click("hourly-edit-delete", deleteHourlyEdit);
+  el("hourly-edit-view").addEventListener("submit", (e) => {
+    e.preventDefault();
+    saveHourlyEdit();
+  });
+  for (const id of ["hourly-edit-from", "hourly-edit-to"]) {
+    el(id).addEventListener("input", renderEditLength);
+  }
   click("hourly-suggest-log", () => answerSuggestion("log"));
   click("hourly-suggest-skip", () => answerSuggestion("skip"));
   click("hourly-suggest-other", () => openHourlyPick("suggest"));
@@ -1931,6 +2141,7 @@ window.addEventListener("DOMContentLoaded", () => {
     // The question about time away is only closed by an answer.
     if (hourlyIdle) return;
     if (hourlyAdd) { closeHourlyAdd(); return; }
+    if (hourlyEdit) { closeHourlyEdit(); return; }
     if (hourlyPick) {
       // "Which project was it for?" is closed by an answer, or Later.
       if (hourlyPick === "file" || el<HTMLInputElement>("hourly-filter").value !== "") return;

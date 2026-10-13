@@ -95,6 +95,8 @@ type Detector = {
   titlesSupported: boolean;
   /** macOS: the permission works once the app restarts. */
   restart?: boolean;
+  /** macOS: what the permission line says ("ask", "restart", "stuck"). */
+  permission?: "ask" | "restart" | "stuck" | null;
   /** "Right now": what it's seeing (on this computer only). */
   now?: {
     kind: "timer" | "away" | "app";
@@ -1684,8 +1686,7 @@ function renderDetector(d: Detector | null) {
   apps.hidden = !d.titlesSupported;
   el("detector-add-app").hidden = !d.titlesSupported;
   if (!d.titlesSupported) el("detector-open").hidden = true;
-  el("detector-restart").hidden = !d.restart;
-  el("detector-permission").hidden = !!d.restart || !(d.titlesSupported && !d.titlesAllowed && d.apps.some((a) => a.on));
+  renderPermission(d.on ? d.permission ?? null : null);
   renderDetectorNow(d);
   const folders = el("detector-folders");
   folders.replaceChildren();
@@ -1723,6 +1724,27 @@ function renderDetector(d: Detector | null) {
   }
 }
 
+/** macOS's Screen Recording permission: what to do, by where it's stuck. */
+const SETTINGS_STEPS =
+  "In System Settings, remove CoolerBox Tracker with −, add it again with + (from Applications), switch it on, then restart.";
+function renderPermission(state: "ask" | "restart" | "stuck" | null) {
+  el("detector-permission").hidden = state === null;
+  if (state === null) return;
+  el("detector-permission-text").textContent = {
+    ask:
+      `To read window names, macOS needs the permission it calls "Screen Recording". The app never records or captures your screen. ` +
+      `Already switched on there, and still seeing this? ${SETTINGS_STEPS}`,
+    restart:
+      `Once Screen Recording is switched on for CoolerBox Tracker in System Settings, restart the app to finish. ` +
+      `If it was on already: ${SETTINGS_STEPS}`,
+    stuck:
+      "macOS is still hiding window names from CoolerBox Tracker, even though Screen Recording looks switched on. " +
+      `Test builds and their updates need it given again. ${SETTINGS_STEPS} Or let the app ask macOS again. Linked folders keep working meanwhile.`,
+  }[state];
+  el("detector-permission-btn").hidden = state !== "ask";
+  el("detector-reset-btn").hidden = state !== "stuck";
+}
+
 /** "Right now": what it's looking at, and what it's counting. */
 function renderDetectorNow(d: Detector) {
   const box = el("detector-now");
@@ -1746,7 +1768,12 @@ function renderDetectorNow(d: Detector) {
     what.append(bold(n.app), n.title ? ` · ${n.title}` : "");
     what.append(document.createElement("br"));
     if (n.project) what.append("→ ", bold(n.project));
-    else if (!n.title && d.titlesSupported) what.append("Can't read the window's name yet, so it'll ask which project.");
+    else if (!n.title && d.titlesSupported)
+      what.append(
+        d.folders.length > 0
+          ? "Can't read window names yet; using your linked folders for now."
+          : "Can't read the window's name yet, so it'll ask which project.",
+      );
     else what.append("→ no project recognised in this; after 10 minutes it'll ask which project.");
   }
   const counting = el("detector-now-counting");
@@ -2422,6 +2449,12 @@ window.addEventListener("DOMContentLoaded", () => {
       .catch((error) => hourlyError(String(error)));
   });
   click("detector-restart-btn", () => void invoke("mini_detector_restart"));
+  click("detector-open-settings", () => void invoke("mini_detector_open_settings"));
+  click("detector-reset-btn", () => {
+    invoke("mini_detector_reset_permission").catch((error) => {
+      el("detector-permission-text").textContent = String(error);
+    });
+  });
   click("detector-now-log", () => {
     el<HTMLButtonElement>("detector-now-log").disabled = true;
     invoke("mini_detector_log_now")

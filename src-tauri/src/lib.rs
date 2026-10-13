@@ -951,6 +951,8 @@ pub fn run() {
             hourly::mini_hourly_new_project,
             detector::mini_detector_open_apps,
             detector::mini_detector_restart,
+            detector::mini_detector_open_settings,
+            detector::mini_detector_reset_permission,
             detector::mini_detector_log_now
         ])
         .setup(|app| {

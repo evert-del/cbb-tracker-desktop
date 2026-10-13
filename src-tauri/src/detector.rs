@@ -119,11 +119,14 @@ pub(crate) const CATALOG: &[(&str, &str, &str, &str, &str)] = &[
 pub(crate) const CUSTOM: &str = "custom:";
 
 /// The front window: the app's name (macOS) or program file (Windows), and
-/// its title ("" when it can't be read).
-#[derive(Debug, Clone, PartialEq)]
+/// its title ("" when it can't be read). `own` is CoolerBox Tracker itself
+/// (the quick panel open to look at Right now): not work, and not a reason
+/// to forget what was in front before it.
+#[derive(Debug, Clone, PartialEq, Default)]
 pub(crate) struct Front {
     pub app: String,
     pub title: String,
+    pub own: bool,
 }
 
 /// The catalogue entry an app name or program file is, if any: the longest
@@ -172,6 +175,14 @@ pub(crate) fn valid_app_id(id: &str) -> bool {
         }
         None => CATALOG.iter().any(|(known, ..)| *known == id),
     }
+}
+
+/// An app whose window is named after the open document (design, video,
+/// audio, 3D and documents): a blank name there means macOS is hiding it.
+/// Others (Claude, Terminal, browsers, the person's own) may leave theirs
+/// blank all the same.
+pub(crate) fn names_documents(id: &str) -> bool {
+    CATALOG.iter().any(|(known, _, kind, ..)| *known == id && matches!(*kind, "Design" | "Video" | "Audio" | "3D" | "Documents"))
 }
 
 /// A browser: only pages that name a project count.
@@ -639,7 +650,7 @@ mod platform {
                     }
                     CFRelease(list as *const c_void);
                 }
-                Some(Front { app: app_name, title })
+                Some(Front { app: app_name, title, own: u32::try_from(pid).ok() == Some(std::process::id()) })
             }
         })
     }
@@ -687,6 +698,25 @@ mod platform {
     pub(super) fn titles_allowed() -> bool {
         // SAFETY: no arguments.
         unsafe { CGPreflightScreenCaptureAccess() }
+    }
+
+    pub(super) fn open_settings() {
+        let _ = std::process::Command::new("open")
+            .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")
+            .spawn();
+    }
+
+    /// Forget this app's Screen Recording answer (`tccutil reset`), so the
+    /// next ask is a fresh one for the build that's running.
+    pub(super) fn reset_titles(bundle: &str) -> Result<(), String> {
+        let done = std::process::Command::new("/usr/bin/tccutil").args(["reset", "ScreenCapture", bundle]).output();
+        match done {
+            Ok(out) if out.status.success() => Ok(()),
+            _ => {
+                open_settings();
+                Err("macOS didn't let the app reset it. In System Settings, remove CoolerBox Tracker with −, add it again with +, switch it on, then restart.".into())
+            }
+        }
     }
 
     /// Ask macOS for it (a system prompt the first time; System Settings
@@ -740,7 +770,9 @@ mod platform {
             let mut text = [0u16; 512];
             let len = GetWindowTextW(window, text.as_mut_ptr(), text.len() as i32);
             let title = String::from_utf16_lossy(&text[..len.max(0) as usize]);
-            Some(Front { app: program(window), title })
+            let mut pid = 0u32;
+            GetWindowThreadProcessId(window, &mut pid);
+            Some(Front { app: program(window), title, own: pid == std::process::id() })
         }
     }
 
@@ -771,6 +803,12 @@ mod platform {
     }
 
     pub(super) fn ask_titles() {}
+
+    pub(super) fn open_settings() {}
+
+    pub(super) fn reset_titles(_bundle: &str) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 #[cfg(not(any(target_os = "macos", windows)))]
@@ -790,6 +828,12 @@ mod platform {
     }
 
     pub(super) fn ask_titles() {}
+
+    pub(super) fn open_settings() {}
+
+    pub(super) fn reset_titles(_bundle: &str) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 // ── state ──
@@ -868,6 +912,10 @@ pub(crate) struct View {
     pub titles_supported: bool,
     /// macOS: the permission needs the app to restart before it works.
     pub restart: bool,
+    /// macOS, what the permission line says: "ask" (not given to this
+    /// app), "restart" (asked for in this run: restart once it's on),
+    /// "stuck" (given, but window names still come back blank), or none.
+    pub permission: Option<&'static str>,
     /// "Right now": what it's seeing, and the stretch it's counting.
     pub now: Option<NowView>,
     /// The oldest suggestion waiting for an answer, and how many more.
@@ -984,9 +1032,31 @@ pub(crate) fn view<R: Runtime>(app: &AppHandle<R>, info: &crate::hourly::Info) -
         titles_allowed,
         titles_supported: cfg!(any(target_os = "macos", windows)),
         restart: cfg!(target_os = "macos") && on && ((ASKED.load(std::sync::atomic::Ordering::Relaxed) && !titles_allowed) || blank >= 4),
+        permission: permission_state(
+            cfg!(target_os = "macos") && on && picked.iter().any(|id| !is_browser(id)),
+            titles_allowed,
+            ASKED.load(std::sync::atomic::Ordering::Relaxed),
+            blank,
+        ),
         now,
         suggestion,
         more: waiting.len().saturating_sub(1),
+    }
+}
+
+/// What the panel says about macOS's permission to read window names.
+/// macOS ties it to the app's signature: a test build, or an update of one,
+/// can show it switched on in System Settings while it doesn't apply, and
+/// switching it on again changes nothing. "stuck" says how to get past that.
+pub(crate) fn permission_state(needed: bool, allowed: bool, asked: bool, blank: u32) -> Option<&'static str> {
+    if !needed {
+        return None;
+    }
+    match (allowed, asked) {
+        (false, true) => Some("restart"),
+        (false, false) => Some("ask"),
+        (true, _) if blank >= 4 => Some("stuck"),
+        (true, _) => None,
     }
 }
 
@@ -1062,12 +1132,19 @@ fn tick<R: Runtime>(app: &AppHandle<R>, now: u64) {
     let picked = picked(app);
     let mut hits: Vec<Hit> = Vec::new();
     let mut seen = None;
-    if let Some(front) = platform::front() {
+    let front = platform::front();
+    // The quick panel itself in front: leave what was seen before as it was.
+    let own = front.as_ref().is_some_and(|f| f.own);
+    if let Some(front) = front.filter(|f| !f.own) {
         let id = app_id(&front, &picked);
         let mut project = None;
-        if let Some(id) = &id {
+        // A blank name only counts against the permission in an app that
+        // names its window after the document.
+        if id.as_deref().is_some_and(names_documents) {
             let blank = front.title.trim().is_empty();
             with_state(|state| state.blank = if blank { state.blank.saturating_add(1) } else { 0 });
+        }
+        if let Some(id) = &id {
             let hit = if is_untitled(&front.title) {
                 Some(Hit::Untitled(id.clone()))
             } else {
@@ -1126,7 +1203,9 @@ fn tick<R: Runtime>(app: &AppHandle<R>, now: u64) {
             suggest(app, stretch);
         }
     }
-    set_seen(app, seen);
+    if !own {
+        set_seen(app, seen);
+    }
 }
 
 /// Start the helper's loop for the app's life (it does nothing while off).
@@ -1212,6 +1291,24 @@ pub(crate) fn mini_detector_open_apps<R: Runtime>(app: AppHandle<R>) -> Result<V
 #[tauri::command]
 pub(crate) fn mini_detector_permission<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     ask_titles();
+    crate::mini::push(&app);
+    Ok(())
+}
+
+/// Open System Settings at Screen & System Audio Recording (macOS).
+#[tauri::command]
+pub(crate) fn mini_detector_open_settings() -> Result<(), String> {
+    platform::open_settings();
+    Ok(())
+}
+
+/// "Ask macOS again": forget this app's Screen Recording answer, so macOS
+/// asks afresh for the build that's running (macOS only, on a tap).
+#[tauri::command]
+pub(crate) fn mini_detector_reset_permission<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
+    platform::reset_titles(&app.config().identifier)?;
+    ask_titles();
+    with_state(|state| state.blank = 0);
     crate::mini::push(&app);
     Ok(())
 }
@@ -1397,13 +1494,13 @@ mod tests {
     #[test]
     fn only_picked_apps_count() {
         let picked = vec!["photoshop".to_string(), "figma".to_string()];
-        let mac = Front { app: "Adobe Photoshop 2026".into(), title: String::new() };
-        let win = Front { app: "photoshop.exe".into(), title: String::new() };
-        let other = Front { app: "Adobe Illustrator 2026".into(), title: String::new() };
+        let mac = Front { app: "Adobe Photoshop 2026".into(), title: String::new(), own: false };
+        let win = Front { app: "photoshop.exe".into(), title: String::new(), own: false };
+        let other = Front { app: "Adobe Illustrator 2026".into(), title: String::new(), own: false };
         assert_eq!(app_id(&mac, &picked).as_deref(), Some("photoshop"));
         assert_eq!(app_id(&win, &picked).as_deref(), Some("photoshop"));
         assert_eq!(app_id(&other, &picked), None, "not picked");
-        assert_eq!(app_id(&Front { app: "Safari".into(), title: String::new() }, &picked), None);
+        assert_eq!(app_id(&Front { app: "Safari".into(), title: String::new(), own: false }, &picked), None);
         // The closest catalogue name: Lightroom Classic isn't Lightroom.
         assert_eq!(catalog_id("Adobe Lightroom Classic"), Some("lightroom-classic"));
         assert_eq!(catalog_id("Adobe Lightroom"), Some("lightroom"));
@@ -1414,18 +1511,18 @@ mod tests {
         assert_eq!(catalog_id("msedge.exe"), Some("edge"));
         assert!(is_browser("chrome") && !is_browser("cursor"));
         let lr = vec!["lightroom".to_string()];
-        assert_eq!(app_id(&Front { app: "Adobe Lightroom Classic".into(), title: String::new() }, &lr), None);
+        assert_eq!(app_id(&Front { app: "Adobe Lightroom Classic".into(), title: String::new(), own: false }, &lr), None);
     }
 
     #[test]
     fn any_app_can_be_picked_by_its_own_name() {
         let picked = vec!["custom:Studio One".to_string(), "custom:bitwig studio.exe".to_string()];
-        assert_eq!(app_id(&Front { app: "Studio One".into(), title: String::new() }, &picked).as_deref(), Some("custom:Studio One"));
+        assert_eq!(app_id(&Front { app: "Studio One".into(), title: String::new(), own: false }, &picked).as_deref(), Some("custom:Studio One"));
         assert_eq!(
-            app_id(&Front { app: "bitwig studio.exe".into(), title: String::new() }, &picked).as_deref(),
+            app_id(&Front { app: "bitwig studio.exe".into(), title: String::new(), own: false }, &picked).as_deref(),
             Some("custom:bitwig studio.exe")
         );
-        assert_eq!(app_id(&Front { app: "Studio One Pro".into(), title: String::new() }, &picked), None, "exact names only");
+        assert_eq!(app_id(&Front { app: "Studio One Pro".into(), title: String::new(), own: false }, &picked), None, "exact names only");
         assert!(valid_app_id("custom:Studio One"));
         assert!(valid_app_id("photoshop"));
         assert!(!valid_app_id("custom:"));
@@ -1452,6 +1549,17 @@ mod tests {
     }
 
     #[test]
+    fn the_permission_line_says_what_to_do() {
+        assert_eq!(permission_state(false, false, false, 9), None, "nothing picked that needs it");
+        assert_eq!(permission_state(true, false, false, 0), Some("ask"));
+        assert_eq!(permission_state(true, false, true, 0), Some("restart"));
+        assert_eq!(permission_state(true, true, false, 3), None);
+        assert_eq!(permission_state(true, true, false, 4), Some("stuck"), "on in System Settings, still blank");
+        assert!(names_documents("photoshop") && names_documents("word"));
+        assert!(!names_documents("claude") && !names_documents("chrome") && !names_documents("custom:Studio One"));
+    }
+
+    #[test]
     fn titles_match_loosely_by_the_projects_own_words() {
         let ps = vec![
             project("k", "CB-1", "Motus x News24 Editorial Partnership - The Klutch Programme", Some("POP24")),
@@ -1467,6 +1575,9 @@ mod tests {
         assert_eq!(match_title("SE_Oct_banner.ai", &ps), None);
         // Common words point at nothing.
         assert_eq!(match_title("final content video.mp4", &ps), None);
+        // The tester's real file.
+        let pp = vec![project("pp", "CB-5", "Pieter Pruis Cover - Mooi maar gevaarlik", Some("CoolerBox Records"))];
+        assert_eq!(match_title("PIETER PRUIS COVER - MOOI MAAR GEVAARLIK.psd @ 25% (RGB/8)", &pp).as_deref(), Some("pp"));
     }
 
     const T0: u64 = 1_791_788_400;

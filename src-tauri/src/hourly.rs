@@ -1243,6 +1243,14 @@ pub(crate) fn has_read<R: Runtime>(app: &AppHandle<R>) -> bool {
     with(app, |inner| inner.read_at > 0).unwrap_or(false)
 }
 
+/// Read now (the tracker page just loaded), not after the first poll's wait.
+pub(crate) fn read_now<R: Runtime>(app: &AppHandle<R>) {
+    if crate::session::signed_in() {
+        let app = app.clone();
+        std::thread::spawn(move || read(&app));
+    }
+}
+
 /// Read again soon if the last read is stale (the panel opened, or the
 /// tracker window came forward).
 pub(crate) fn refresh_if_stale<R: Runtime>(app: &AppHandle<R>) {

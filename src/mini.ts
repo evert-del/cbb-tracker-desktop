@@ -230,7 +230,7 @@ function tick() {
   if (!el("hourly-auto").hidden) renderAutoCard();
   if (running) renderRunningRetainer(running);
   el("today").textContent =
-    view.state === "none"
+    view.state === "none" || view.state === "loading"
       ? ""
       : worked < 1 && rest < 1
         ? "Nothing on the time sheet yet today"

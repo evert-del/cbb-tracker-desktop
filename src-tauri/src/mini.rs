@@ -98,7 +98,7 @@ pub(crate) fn plan(
             _ => "none".into(),
         },
         status: if clock.is_none() {
-            "Loading your day…".into()
+            "Loading…".into()
         } else {
             planned.status.strip_prefix("Time sheet: ").unwrap_or(&planned.status).to_string()
         },
@@ -298,6 +298,7 @@ pub(crate) fn show<R: Runtime>(app: &AppHandle<R>) {
         let _ = mini.show();
         let _ = mini.set_focus();
         push(app);
+        crate::clock::refresh_if_stale(app);
         crate::hourly::refresh_if_stale(app);
     }
 }
@@ -1132,6 +1133,15 @@ mod tests {
             assert_eq!(view.state, state);
             assert_eq!(view.since_iso, "");
         }
+    }
+
+    #[test]
+    fn before_the_first_read_it_says_loading() {
+        let view = plan(None, 0, vec![], NOW);
+        assert_eq!(view.state, "loading");
+        assert_eq!(view.status, "Loading…");
+        assert!(!view.status.contains("not in use"));
+        assert!(view.actions.is_empty());
     }
 
     #[test]

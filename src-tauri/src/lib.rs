@@ -594,6 +594,10 @@ pub(crate) fn build_tracker_window<R: Runtime>(
                     // Signed in on the dashboard (where the app opens): what's
                     // new after an update, once (whats_new.rs).
                     if has_session_cookie(&cookies) {
+                        // The page can fetch now: read the clock and the
+                        // project timer straight away, not on the next poll.
+                        clock::read_now(probe.app_handle());
+                        hourly::read_now(probe.app_handle());
                         whats_new::maybe_show(probe.app_handle());
                     }
                 }

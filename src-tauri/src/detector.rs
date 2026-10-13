@@ -860,6 +860,19 @@ struct Inner {
     /// Looks in a row at a picked app whose window name came back empty
     /// (macOS: the permission isn't working until the app restarts).
     blank: u32,
+    /// "Not this" on what it was counting: that project (or unrecognised
+    /// work in that app) isn't counted again until something else is seen.
+    ignored: Option<(String, Option<String>)>,
+}
+
+/// The project (or, for unrecognised work, the app) a moment points at, as
+/// "Not this" remembers it. `None` for an untitled document.
+fn hit_key(hit: &Hit) -> Option<(String, Option<String>)> {
+    match hit {
+        Hit::Project { project, .. } => Some((project.clone(), None)),
+        Hit::Unknown(app) => Some((String::new(), Some(app.clone()))),
+        Hit::Untitled(_) => None,
+    }
 }
 
 static STATE: Mutex<Option<Inner>> = Mutex::new(None);
@@ -1003,9 +1016,11 @@ pub(crate) fn view<R: Runtime>(app: &AppHandle<R>, info: &crate::hourly::Info) -
     };
     let now = seen.map(|seen| {
         let (counting, since, can_log) = match &building {
-            Some(b) if b.project.is_empty() => {
-                (Some(format!("something in {}", b.app.as_deref().map(app_label).unwrap_or_default())), Some(b.start * 1000), false)
-            }
+            Some(b) if b.project.is_empty() => (
+                Some(format!("something in {}", b.app.as_deref().map(app_label).unwrap_or_default())),
+                Some(b.start * 1000),
+                crate::clock::unix_now().saturating_sub(b.start) >= 60,
+            ),
             Some(b) => (Some(label_of(&b.project)), Some(b.start * 1000), crate::clock::unix_now().saturating_sub(b.start) >= 60),
             None => (None, None, false),
         };
@@ -1199,6 +1214,22 @@ fn tick<R: Runtime>(app: &AppHandle<R>, now: u64) {
         }
     }
     for hit in hits {
+        // "Not this": skip it until something else turns up.
+        let skip = with_state(|state| {
+            let key = hit_key(&hit);
+            match (&state.ignored, key) {
+                (Some(ignored), Some(key)) if *ignored == key => true,
+                (Some(_), Some(_)) => {
+                    state.ignored = None;
+                    false
+                }
+                _ => false,
+            }
+        })
+        .unwrap_or(false);
+        if skip {
+            continue;
+        }
         if let Some(stretch) = with_state(|state| state.tracker.step(now, Some(hit))).flatten() {
             suggest(app, stretch);
         }
@@ -1319,20 +1350,35 @@ pub(crate) fn mini_detector_restart<R: Runtime>(app: AppHandle<R>) -> Result<(),
     app.restart();
 }
 
-/// "Log it and start the timer": the stretch being counted, up to now, then
-/// the timer on its project.
+/// "Start the timer from 10:45": the stretch being counted, up to now, then
+/// the timer on its project (or on `project_id`, picked for work no project
+/// was recognised in).
 #[tauri::command]
-pub(crate) fn mini_detector_log_now<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
-    let stretch = with_state(|state| state.tracker.current().cloned())
-        .flatten()
-        .filter(|s| !s.project.is_empty())
-        .ok_or("Nothing it recognised to log yet.")?;
+pub(crate) fn mini_detector_log_now<R: Runtime>(app: AppHandle<R>, project_id: Option<String>) -> Result<(), String> {
+    let stretch = with_state(|state| state.tracker.current().cloned()).flatten().ok_or("Nothing to log yet.")?;
+    let project = project_id.filter(|p| !p.is_empty()).unwrap_or_else(|| stretch.project.clone());
+    if project.is_empty() {
+        return Err("Pick the project it's for.".into());
+    }
     let end = crate::clock::unix_now();
     if end < stretch.start + 60 {
         return Err("Give it a minute first.".into());
     }
-    crate::hourly::log_and_start(&app, &stretch.project, stretch.start, end)?;
+    crate::hourly::log_and_start(&app, &project, stretch.start, end)?;
     with_state(|state| state.tracker.take());
+    crate::mini::push(&app);
+    Ok(())
+}
+
+/// "Not this" on what it's counting: forget the stretch, and don't count
+/// the same project (or app) again until something else is in front.
+#[tauri::command]
+pub(crate) fn mini_detector_drop_now<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
+    with_state(|state| {
+        if let Some(stretch) = state.tracker.take() {
+            state.ignored = Some((stretch.project.clone(), if stretch.project.is_empty() { stretch.app } else { None }));
+        }
+    });
     crate::mini::push(&app);
     Ok(())
 }

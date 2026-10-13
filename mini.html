@@ -285,11 +285,19 @@
       #detector-change-apps:hover { text-decoration: underline; }
       #timer-settings { border-bottom: 0.5px solid var(--rule); }
       #timer-settings .set-label:first-child { padding-top: 10px; }
-      #detector-now { display: flex; flex-direction: column; gap: 4px; padding: 8px 10px; border-radius: var(--r-ctl); border: 0.5px solid var(--rule); font-size: 12px; color: var(--muted); }
-      #detector-now .d-now-head { font-size: 10.5px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--faint); }
-      #detector-now .d-now-what { color: var(--fg); overflow-wrap: anywhere; }
-      #detector-now .d-now-what b { font-weight: 600; }
-      #detector-now-log { align-self: flex-start; margin-top: 2px; padding: 5px 10px; border-radius: var(--r-ctl); background: var(--pink); color: #fff; font-weight: 600; font-size: 12px; }
+      /* What "Suggest time from my work" is counting right now (no timer running). */
+      #hourly-auto { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border-radius: var(--r-ctl); border: 1px dashed var(--pink); font-size: 12.5px; }
+      #hourly-auto-text { color: var(--fg); overflow-wrap: anywhere; }
+      #hourly-auto-text b { font-weight: 600; }
+      #hourly-auto-text::before { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--pink); margin-right: 7px; vertical-align: 1px; }
+      #hourly-auto-from { color: var(--muted); font-size: 11.5px; overflow-wrap: anywhere; }
+      #hourly-auto .h-wrap-actions button { background: var(--tile); padding: 0 10px; }
+      #hourly-auto .h-wrap-actions button:hover { background: var(--tile-hover); }
+      #hourly-auto #hourly-auto-log { flex: 2; background: var(--pink); color: #fff; white-space: nowrap; }
+      #hourly-auto-warn { font-size: 11.5px; color: var(--tone-3-fg); }
+      #hourly-auto-warn button { font-weight: 600; text-decoration: underline; color: inherit; }
+      @media (prefers-reduced-motion: no-preference) { #hourly-auto-text::before { animation: auto-pulse 2s ease-in-out infinite; } }
+      @keyframes auto-pulse { 50% { opacity: 0.35; } }
       #hourly-new { display: flex; flex-direction: column; gap: 10px; padding: 4px 16px 12px; overflow-y: auto; }
       #hourly-new-billing { display: grid; grid-template-columns: 1fr 1fr; gap: 2px; padding: 2px; border-radius: var(--r-ctl); background: var(--tile); }
       .h-check { display: flex; gap: 8px; align-items: flex-start; font-size: 12.5px; color: var(--fg); }
@@ -526,6 +534,16 @@
               <button type="button" id="hourly-wrap-stop">Stop it</button>
               <button type="button" id="hourly-wrap-keep">Keep it running</button>
             </div>
+          </div>
+          <div id="hourly-auto" role="status" hidden>
+            <span id="hourly-auto-text"></span>
+            <span id="hourly-auto-from"></span>
+            <div class="h-wrap-actions" id="hourly-auto-acts">
+              <button type="button" id="hourly-auto-log">Start the timer</button>
+              <button type="button" id="hourly-auto-pick">Pick the project…</button>
+              <button type="button" id="hourly-auto-drop">Not this</button>
+            </div>
+            <span id="hourly-auto-warn" hidden>macOS is hiding window names, so it can only go by your folders. <button type="button" id="hourly-auto-fix">Fix…</button></span>
           </div>
           <div id="hourly-suggest" role="alert" hidden>
             <span id="hourly-suggest-text"></span>
@@ -845,12 +863,6 @@
                 <button type="button" id="detector-reset-btn">Ask macOS again</button>
                 <button type="button" id="detector-restart-btn">Restart now</button>
               </div>
-            </div>
-            <div id="detector-now" hidden>
-              <span class="d-now-head">Right now</span>
-              <span class="d-now-what" id="detector-now-what"></span>
-              <span id="detector-now-counting"></span>
-              <button type="button" id="detector-now-log" hidden>Log it and start the timer</button>
             </div>
             <div class="set-label">Apps to look at</div>
             <div id="detector-apps"></div>

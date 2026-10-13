@@ -953,7 +953,8 @@ pub fn run() {
             detector::mini_detector_restart,
             detector::mini_detector_open_settings,
             detector::mini_detector_reset_permission,
-            detector::mini_detector_log_now
+            detector::mini_detector_log_now,
+            detector::mini_detector_drop_now
         ])
         .setup(|app| {
             #[cfg(target_os = "linux")]

@@ -227,6 +227,7 @@ function tick() {
   const running = view.hourly?.running;
   const started = running ? Date.parse(running.startedAt) : NaN;
   el("hourly-elapsed").textContent = Number.isNaN(started) ? "" : fmtTimer(Date.now() - started);
+  if (!el("hourly-auto").hidden) renderAutoCard();
   if (running) renderRunningRetainer(running);
   el("today").textContent =
     view.state === "none"
@@ -1174,7 +1175,7 @@ window.__cbbMiniSearchResult = (r) => searchResult(r);
  * for a suggested stretch (`suggest`), or the project for a linked folder
  * (`link`).
  */
-let hourlyPick: "start" | "file" | "suggest" | "link" | null = null;
+let hourlyPick: "start" | "file" | "suggest" | "link" | "now" | null = null;
 let linkFolder = "";
 /** Back from time away with the timer running: the question being asked. */
 type HourlyIdleAsk = { project: string; billable: boolean; unfiled?: boolean; from: number; to: number };
@@ -1710,7 +1711,7 @@ function renderDetector(d: Detector | null) {
     d.on ? d.permission ?? null : null,
     d.on && d.titlesSupported && d.titlesAllowed && d.apps.some((a) => a.on),
   );
-  renderDetectorNow(d);
+  renderAutoCard();
   const folders = el("detector-folders");
   folders.replaceChildren();
   for (const f of d.folders) {
@@ -1769,51 +1770,49 @@ function renderPermission(state: "ask" | "restart" | "stuck" | null, ok = false)
   el("detector-reset-btn").hidden = state !== "stuck";
 }
 
-/** "Right now": what it's looking at, and what it's counting. Always there
- * while it's on (a placeholder before the first look), so nothing below
- * moves under a click when it fills in. */
-function renderDetectorNow(d: Detector) {
-  const box = el("detector-now");
-  const n = d.now ?? null;
-  box.hidden = !d.on;
-  const what = el("detector-now-what");
-  what.replaceChildren();
-  if (!n) {
-    what.textContent = "Looking… it checks every 15 seconds.";
-    el("detector-now-counting").hidden = true;
-    el("detector-now-log").hidden = true;
+/**
+ * The quick panel's "noticing" card: what Suggest time from my work is
+ * counting right now, while no timer runs, with Start the timer from 10:45
+ * (or Pick the project… for unrecognised work) and Not this. A suggestion
+ * waiting for an answer takes its place. Refreshed each second for the
+ * minutes.
+ */
+function renderAutoCard() {
+  const h = current?.hourly ?? null;
+  const d = h?.detector ?? null;
+  const card = el("hourly-auto");
+  const n = d?.now ?? null;
+  const counting = !!(n && n.counting && n.since !== null);
+  const warn = !!d?.permission;
+  const show = !!d && d.on && !h?.running && !d.suggestion && (counting || warn);
+  card.hidden = !show;
+  if (!show || !d) return;
+  el("hourly-auto-warn").hidden = !warn;
+  el("hourly-auto-acts").hidden = !counting;
+  el("hourly-auto-from").hidden = !counting;
+  const text = el("hourly-auto-text");
+  text.replaceChildren();
+  if (!counting || !n || n.since === null) {
+    text.textContent = "Suggest time from my work is on.";
     return;
   }
-  const bold = (text: string) => {
-    const b = document.createElement("b");
-    b.textContent = text;
-    return b;
-  };
-  if (n.kind === "timer") {
-    what.textContent = "The project timer is running, so there's nothing to suggest.";
-  } else if (n.kind === "away") {
-    what.textContent = "You're away from the computer.";
-  } else if (!n.picked) {
-    what.append(bold(n.app || "This app"), " isn't one of your picked apps.");
+  const since = TRACKER_TIME.format(new Date(n.since));
+  const mins = fmtMinutes(Math.max(0, Math.round((Date.now() - n.since) / 60000)));
+  const unknown = (n.counting ?? "").startsWith("something in ");
+  const b = document.createElement("b");
+  if (unknown) {
+    b.textContent = (n.counting ?? "").replace("something in ", "");
+    text.append("Working in ", b, `, since ${since} (${mins}). No project recognised yet.`);
   } else {
-    what.append(bold(n.app), n.title ? ` · ${n.title}` : "");
-    what.append(document.createElement("br"));
-    if (n.project) what.append("→ ", bold(n.project));
-    else if (!n.title && d.titlesSupported)
-      what.append(
-        d.folders.length > 0
-          ? "Can't read window names yet; using your linked folders for now."
-          : "Can't read the window's name yet, so it'll ask which project.",
-      );
-    else what.append("→ no project recognised in this; after 10 minutes it'll ask which project.");
+    b.textContent = n.counting ?? "";
+    text.append("Working on ", b, `, since ${since} (${mins})`);
   }
-  const counting = el("detector-now-counting");
-  counting.hidden = !n.counting || n.since === null;
-  if (n.counting && n.since !== null) {
-    const mins = Math.max(0, Math.round((Date.now() - n.since) / 60000));
-    counting.textContent = `Counting: ${n.counting}, since ${TRACKER_TIME.format(new Date(n.since))} (${fmtMinutes(mins)}).`;
-  }
-  el("detector-now-log").hidden = !n.canLog;
+  el("hourly-auto-from").textContent =
+    n.kind === "app" && n.picked ? `From ${n.app}${n.title ? ` · ${n.title}` : ""}` : n.kind === "away" ? "You're away from the computer." : "";
+  el("hourly-auto-from").hidden = !el("hourly-auto-from").textContent;
+  el<HTMLButtonElement>("hourly-auto-log").hidden = unknown || !n.canLog;
+  el("hourly-auto-log").textContent = `Start timer from ${since}`;
+  el<HTMLButtonElement>("hourly-auto-pick").hidden = !unknown;
 }
 
 function answerSuggestion(choice: "log" | "skip", projectId?: string) {
@@ -2073,6 +2072,12 @@ function renderHourlyPick() {
           fileHourly("file", p.id);
           return;
         }
+        if (hourlyPick === "now") {
+          invoke("mini_detector_log_now", { projectId: p.id })
+            .catch((error) => hourlyError(String(error)))
+            .finally(() => closeHourlyPick());
+          return;
+        }
         if (hourlyPick === "suggest") {
           answerSuggestion("log", p.id);
           closeHourlyPick();
@@ -2181,6 +2186,7 @@ function openHourlyNew(name: string) {
     file: "Create and file the time",
     suggest: "Create and log the time",
     link: "Create and link the folders",
+    now: "Create and start the timer",
   }[hourlyPick ?? "start"];
   showHourlyNew(true);
   el("hourly-new-name").focus();
@@ -2219,6 +2225,12 @@ function saveHourlyNew() {
         answerSuggestion("log", p.id);
         return closeHourlyPick();
       }
+      if (mode === "now") {
+        invoke("mini_detector_log_now", { projectId: p.id })
+          .catch((error) => hourlyError(String(error)))
+          .finally(() => closeHourlyPick());
+        return;
+      }
       if (mode === "link") {
         invoke("mini_detector_link_project", { projectId: p.id })
           .catch((error) => hourlyError(String(error)))
@@ -2235,7 +2247,7 @@ function saveHourlyNew() {
  * "Other…" (`start`), or "Which project was it for?" (`file`) right after an
  * unfiled timer ended, with what happened (`hint`).
  */
-function openHourlyPick(mode: "start" | "file" | "suggest" | "link" = "start", hint: string | null = null) {
+function openHourlyPick(mode: "start" | "file" | "suggest" | "link" | "now" = "start", hint: string | null = null) {
   if (mode !== "start") {
     if (chat) closeChat();
     if (mode === "file") showSettings(false);
@@ -2248,6 +2260,7 @@ function openHourlyPick(mode: "start" | "file" | "suggest" | "link" = "start", h
     file: "Which project was it for?",
     suggest: "Which project was it?",
     link: "Link to…",
+    now: "Which project is it?",
   }[mode];
   el("hourly-pick-hint").textContent =
     hint ?? (filing ? "The time you just stopped isn't filed under a project yet." : mode === "link" ? linkFolder : "");
@@ -2490,11 +2503,17 @@ window.addEventListener("DOMContentLoaded", () => {
       el("detector-permission-text").textContent = String(error);
     });
   });
-  click("detector-now-log", () => {
-    el<HTMLButtonElement>("detector-now-log").disabled = true;
-    invoke("mini_detector_log_now")
+  click("hourly-auto-log", () => {
+    el<HTMLButtonElement>("hourly-auto-log").disabled = true;
+    invoke("mini_detector_log_now", { projectId: null })
       .catch((error) => hourlyError(String(error)))
-      .finally(() => (el<HTMLButtonElement>("detector-now-log").disabled = false));
+      .finally(() => (el<HTMLButtonElement>("hourly-auto-log").disabled = false));
+  });
+  click("hourly-auto-pick", () => openHourlyPick("now"));
+  click("hourly-auto-drop", () => void invoke("mini_detector_drop_now"));
+  click("hourly-auto-fix", () => {
+    showSettings(true);
+    el("detector-permission").scrollIntoView({ block: "center" });
   });
   click("detector-row", () => {
     // On: off straight away. Off: first say what it sees and what it doesn't.

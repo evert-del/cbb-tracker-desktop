@@ -100,7 +100,7 @@ fn act<R: Runtime>(app: &AppHandle<R>, target: &Target, click: Click) {
         (Target::Walkie { key, .. }, Click::Reply(text)) => crate::walkie::reply_from_banner(app, key, &text),
         (Target::Page { path, id }, _) => crate::notify::open_item(app, Some(path.clone()), id.clone()),
         (Target::Walkie { key, kind, name }, Click::Open) => crate::mini::open_chat(app, key, kind, name),
-        (Target::Panel, _) => crate::mini::show(app),
+        (Target::Panel, _) => crate::mini::show_from_banner(app),
         (Target::Library, _) => crate::show_library(app),
         (Target::Reveal(path), _) => crate::download::reveal(app, path),
     }

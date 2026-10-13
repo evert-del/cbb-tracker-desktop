@@ -904,6 +904,7 @@ pub fn run() {
                 && !mini::is_pinned()
                 && !mini::held_open()
                 && !detector::choosing_folder()
+                && !mini::just_opened_from_banner()
             {
                 mini::hide(window.app_handle());
             }

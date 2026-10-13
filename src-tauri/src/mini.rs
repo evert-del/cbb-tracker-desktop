@@ -366,6 +366,47 @@ fn place_in_main_screen_corner<R: Runtime>(mini: &tauri::WebviewWindow<R>) {
     let _ = mini.set_position(tauri::LogicalPosition::new(x, y));
 }
 
+/// When a clicked banner last opened the panel. Clicking a banner brings
+/// the app forward, and focus can move around while it does: the panel
+/// would lose it and hide straight away (drop-down behaviour), so the click
+/// seemed to do nothing. For a moment after, losing focus doesn't hide it.
+static OPENED_FROM_BANNER: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+
+/// Opened from a banner this recently: a blur doesn't hide the panel.
+pub(crate) fn just_opened_from_banner() -> bool {
+    OPENED_FROM_BANNER
+        .lock()
+        .ok()
+        .and_then(|at| *at)
+        .is_some_and(|at| at.elapsed() < std::time::Duration::from_millis(1500))
+}
+
+/// A clicked banner: the panel, full size, kept open and focused once the
+/// app has come forward.
+pub(crate) fn show_from_banner<R: Runtime>(app: &AppHandle<R>) {
+    if let Ok(mut at) = OPENED_FROM_BANNER.lock() {
+        *at = Some(std::time::Instant::now());
+    }
+    if is_compact() {
+        set_compact(app, false);
+    }
+    show(app);
+    // Again once the app is forward, in case focus went elsewhere meanwhile.
+    let app = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        let again = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            if let Some(mini) = again.get_webview_window("mini") {
+                if !mini.is_visible().unwrap_or(false) {
+                    show(&again);
+                }
+                let _ = mini.set_focus();
+            }
+        });
+    });
+}
+
 /// Toggle the panel (tray click, tray menu, Cmd+Shift+M / Ctrl+Alt+M).
 /// `via` says which, for analytics.rs: tray_icon, tray_menu or shortcut.
 pub(crate) fn toggle<R: Runtime>(app: &AppHandle<R>, via: &'static str) {
@@ -649,7 +690,7 @@ pub(crate) fn open_chat<R: Runtime>(app: &AppHandle<R>, key: &str, kind: &str, n
         .and_then(|mini| mini.is_visible().ok())
         .unwrap_or(false);
     if !visible {
-        show(app);
+        show_from_banner(app);
     }
     if let Some(mini) = app.get_webview_window("mini") {
         let row = serde_json::json!({ "key": key, "kind": kind, "name": name });

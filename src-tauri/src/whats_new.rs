@@ -45,7 +45,7 @@ pub(crate) fn notes(version: &str, os: &str) -> Vec<Item> {
                 ),
                 item(
                     "Suggests time you forgot to log",
-                    "Switch on Settings › Suggest time from my work, pick your apps (Illustrator, Photoshop, Figma, …) and link folders to projects. It asks \"Worked on this, log it?\" and sends nothing until you say yes. Window names and file paths stay on your computer."
+                    "Switch on Settings › Suggest time from my work, pick your apps (Illustrator, Photoshop, Figma, …) and link folders to projects. It asks \"Worked on this, log it?\" and never logs time by itself. It never records your screen or reads your files, and nobody at CoolerBox or your company can see what you work on: only time you say yes to reaches the tracker, as a project and two times."
                         .into(),
                 ),
                 item(

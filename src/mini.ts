@@ -1439,6 +1439,15 @@ function deleteHourlyEdit() {
 
 // ── "Suggest time from my work" (detector.rs) ──
 
+/** The privacy explainer: "ask" before switching on, "read" from the link. */
+let detectorPrivacy: "ask" | "read" | null = null;
+
+function showDetectorPrivacy(mode: "ask" | "read" | null) {
+  detectorPrivacy = mode;
+  renderDetector(current?.hourly?.detector ?? null);
+  if (mode) el("detector-privacy").scrollIntoView({ block: "nearest" });
+}
+
 function renderDetector(d: Detector | null) {
   el("detector-settings").hidden = d === null;
   const card = el("hourly-suggest");
@@ -1446,7 +1455,12 @@ function renderDetector(d: Detector | null) {
   card.hidden = s === null;
   if (d === null) return;
   el("detector-row").setAttribute("aria-checked", String(d.on));
-  el("detector-body").hidden = !d.on;
+  el("detector-body").hidden = !d.on || detectorPrivacy !== null;
+  // Switching it on always goes through what it sees and what it doesn't.
+  if (d.on && detectorPrivacy === "ask") detectorPrivacy = null;
+  el("detector-privacy").hidden = detectorPrivacy === null;
+  el("detector-agree").hidden = detectorPrivacy !== "ask";
+  el("detector-privacy-close").textContent = detectorPrivacy === "ask" ? "Not now" : "Close";
   const apps = el("detector-apps");
   apps.replaceChildren();
   for (const a of d.apps) {
@@ -1996,7 +2010,19 @@ window.addEventListener("DOMContentLoaded", () => {
   click("hourly-suggest-log", () => answerSuggestion("log"));
   click("hourly-suggest-skip", () => answerSuggestion("skip"));
   click("hourly-suggest-other", () => openHourlyPick("suggest"));
-  click("detector-row", () => void invoke("mini_detector_toggle"));
+  click("detector-row", () => {
+    // On: off straight away. Off: first say what it sees and what it doesn't.
+    if (current?.hourly?.detector?.on) {
+      detectorPrivacy = null;
+      void invoke("mini_detector_toggle");
+    } else showDetectorPrivacy(detectorPrivacy === "ask" ? null : "ask");
+  });
+  click("detector-agree", () => {
+    detectorPrivacy = null;
+    void invoke("mini_detector_toggle");
+  });
+  click("detector-privacy-close", () => showDetectorPrivacy(null));
+  click("detector-privacy-open", () => showDetectorPrivacy("read"));
   click("detector-link", () => void invoke("mini_detector_link").catch((error) => hourlyError(String(error))));
   click("detector-permission-btn", () => void invoke("mini_detector_permission"));
   click("hourly-wrap-stop", () => {

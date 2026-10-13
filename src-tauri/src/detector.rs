@@ -19,7 +19,10 @@
 //! Window names and file paths never leave the computer and are never
 //! stored: they're matched as they're seen and dropped. What's kept until
 //! answered (or 7 days) is the project and the times. The linked folders and
-//! picked apps are the person's own settings (`settings.json`).
+//! picked apps are the person's own settings (`settings.json`). No analytics
+//! either: whether it's on, and how it's used, isn't reported. The panel's
+//! "What it sees, and what it doesn't" says all this, and is shown before it
+//! can be switched on; keep the two in step.
 //!
 //! Window names: macOS (needs the Screen Recording permission to read other
 //! apps' window titles; it's asked for when an app is picked) and Windows.
@@ -672,7 +675,6 @@ pub(crate) fn mini_detector_toggle<R: Runtime>(app: AppHandle<R>) -> Result<(), 
         with_state(|state| *state = Inner::default());
         set_pending(&app, &[]);
     }
-    crate::analytics::setting_changed(&app, "detector", on);
     crate::mini::push(&app);
     Ok(())
 }
@@ -742,7 +744,6 @@ pub(crate) fn mini_detector_link_project<R: Runtime>(app: AppHandle<R>, project_
         list.push(line);
     }
     crate::close::set_strings(&app, FOLDERS, &list);
-    crate::analytics::action(&app, "detector_folder_linked", "panel");
     crate::mini::push(&app);
     Ok(())
 }
@@ -773,11 +774,9 @@ pub(crate) fn mini_detector_answer<R: Runtime>(
         "log" => {
             let project = project_id.unwrap_or_else(|| stretch.project.clone());
             crate::hourly::log_stretch(&app, &project, stretch.start, stretch.end, id)?;
-            crate::analytics::action(&app, "detector_logged", "panel");
         }
         "skip" => {
             answered(&app, id);
-            crate::analytics::action(&app, "detector_skipped", "panel");
         }
         _ => return Err("Unknown answer.".into()),
     }

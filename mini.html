@@ -279,6 +279,15 @@
       #detector-permission { margin: 0; font-size: 12px; color: var(--tone-3-fg); background: var(--tone-3-bg); padding: 8px 10px; border-radius: var(--r-ctl); }
       #detector-permission button { font-weight: 600; text-decoration: underline; color: inherit; }
       .d-hint { margin: 0; font-size: 11.5px; color: var(--faint); }
+      #detector-privacy { margin: 0 16px 12px; padding: 12px; border-radius: var(--r-ctl); background: var(--tile); font-size: 12.5px; line-height: 1.45; }
+      #detector-privacy h3 { margin: 10px 0 4px; font-size: 12.5px; font-weight: 600; }
+      #detector-privacy h3:first-child { margin-top: 0; }
+      #detector-privacy ul { margin: 0; padding-left: 18px; }
+      #detector-privacy li { margin: 2px 0; }
+      #detector-privacy .lead { margin: 0 0 4px; font-weight: 600; }
+      #detector-privacy .h-choices { margin-top: 12px; }
+      #detector-privacy-open { align-self: flex-start; font-size: 12.5px; font-weight: 600; color: var(--pink-ink); }
+      #detector-privacy-open:hover { text-decoration: underline; }
       #hourly-running { display: flex; align-items: center; gap: 10px; padding: 8px 8px 8px 12px; border-radius: var(--r-ctl); background: var(--tile); border-left: 3px solid var(--pink); }
       #hourly-card { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 1px; text-align: left; }
       #hourly-card:hover #hourly-project { text-decoration: underline; }
@@ -775,17 +784,49 @@
         </div>
         <div id="detector-settings" hidden>
           <button class="set-row" id="detector-row" type="button" role="switch" aria-checked="false">
-            <span class="txt">Suggest time from my work<span class="hint" style="display:block">When you forgot the timer: asks "Worked on Vimeo · Logo refresh 09:10–10:40, log it?" from the apps and folders you choose.</span></span>
+            <span class="txt">Suggest time from my work<span class="hint" style="display:block">When you forgot the timer: asks "Worked on Vimeo · Logo refresh 09:10–10:40, log it?" from the apps and folders you choose. Off until you switch it on.</span></span>
             <span class="switch" aria-hidden="true"></span>
           </button>
+          <div id="detector-privacy" hidden>
+            <p class="lead">This is here only to help you: so your project time stays up to date and nothing you worked on gets missed.</p>
+            <p class="lead">Your screen and your files stay private. Nobody at CoolerBox or your company can see what you're working on.</p>
+            <h3>What it looks at, on this computer only</h3>
+            <ul>
+              <li>Which app is in front, and the name of its window (like "Logo_v3.psd"), only for the apps you pick. Every other app is ignored.</li>
+              <li>When a file was last saved in a folder you link to a project. It never opens a file or reads what's in it.</li>
+              <li>Only while this is on and no project timer is running.</li>
+            </ul>
+            <h3>What it never does</h3>
+            <ul>
+              <li>It never records your screen, takes screenshots or captures images. (macOS calls the permission it needs "Screen Recording"; the app uses it only to read window names.)</li>
+              <li>It never sends or saves window names, file names or folder contents. They're matched to a project the moment they're seen, then forgotten.</li>
+              <li>It never logs time by itself.</li>
+            </ul>
+            <h3>What the tracker gets</h3>
+            <ul>
+              <li>Nothing, until you tap "Log it". Then only the project and the start and end time, the same as adding time by hand.</li>
+              <li>Your company can't switch this on for you. The app doesn't report whether it's on, or how you use it.</li>
+            </ul>
+            <h3>What stays on this computer</h3>
+            <ul>
+              <li>The apps you picked and the folders you linked.</li>
+              <li>Suggestions you haven't answered: just a project and two times, deleted after 7 days.</li>
+            </ul>
+            <p class="d-hint" style="margin-top:8px">Switching it off stops all of it straight away.</p>
+            <div class="h-choices">
+              <button type="button" class="primary" id="detector-agree">Switch it on</button>
+              <button type="button" id="detector-privacy-close">Not now</button>
+            </div>
+          </div>
           <div id="detector-body" hidden>
             <div class="set-label">Apps to look at</div>
             <div id="detector-apps"></div>
-            <p id="detector-permission" hidden>macOS needs the Screen Recording permission to read these apps' window names. <button type="button" id="detector-permission-btn">Allow it…</button></p>
+            <p id="detector-permission" hidden>To read these apps' window names, macOS needs the permission it calls "Screen Recording". The app never records or captures your screen. <button type="button" id="detector-permission-btn">Allow it…</button></p>
             <div class="set-label">Folders linked to a project</div>
             <div id="detector-folders"></div>
             <button type="button" id="detector-link">Link a folder…</button>
-            <p class="d-hint">Window names and file paths stay on this computer and are never sent. Only a stretch you say yes to goes to the tracker.</p>
+            <p class="d-hint">Nothing about your screen, apps or files leaves this computer. Only time you say yes to goes to the tracker: the project and the times.</p>
+            <button type="button" id="detector-privacy-open">What it sees, and what it doesn't</button>
           </div>
         </div>
         <button class="set-row" id="whats-new-row" type="button">

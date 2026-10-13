@@ -68,7 +68,7 @@ pub(crate) const AUTO_STOP_SECS: u64 = 30 * 60;
 /// Called in this long without a timer: one "Working on something?".
 pub(crate) const NUDGE_AFTER_SECS: u64 = 30 * 60;
 
-const NOTE_MAX: usize = 200;
+const NOTE_MAX: usize = 500;
 
 const START_JS: &str = r#"(function () {
   fetch('/api/me/hourly', { credentials: 'same-origin', cache: 'no-store' })
@@ -114,13 +114,32 @@ pub(crate) fn project_label(project: &Project) -> String {
     }
 }
 
-/// The running timer's label: its project's, or "Not yet filed".
+/// The running timer's label, from its own client and project ("Vimeo ·
+/// Logo refresh"; the tracker fills them in even for a project no longer in
+/// the list), or "Not yet filed".
 pub(crate) fn running_label(info: Option<&Info>, running: &Running) -> String {
     let Some(project_id) = &running.project_id else { return "Not yet filed".into() };
+    if let Some(name) = running.project_name.as_deref().map(str::trim).filter(|name| !name.is_empty()) {
+        return match running.client_name.as_deref().map(str::trim).filter(|client| !client.is_empty()) {
+            Some(client) => format!("{client} · {name}"),
+            None => name.to_string(),
+        };
+    }
     info.and_then(|info| info.projects.iter().find(|project| &project.id == project_id))
         .map(project_label)
-        .or_else(|| running.project_name.clone().filter(|name| !name.is_empty()))
         .unwrap_or_else(|| "Not yet filed".into())
+}
+
+/// Minutes the running timer has run by `now`.
+pub(crate) fn elapsed_minutes(running: &Running, now: u64) -> i64 {
+    crate::clock::parse_iso(&running.started_at).map_or(0, |since| (now.saturating_sub(since) / 60) as i64)
+}
+
+/// The running project's retainer as it stands now: the tracker's figure
+/// (finished entries only) less the running time when it's billable.
+pub(crate) fn live_retainer(running: &Running, now: u64) -> Option<i64> {
+    let left = running.retainer_minutes_left?;
+    Some(if running.billable { left - elapsed_minutes(running, now) } else { left })
 }
 
 /// "2h 30m", "1h", "45m".
@@ -142,16 +161,23 @@ pub(crate) fn retainer_text(minutes_left: i64) -> String {
 }
 
 /// The once-a-month "retainer is running out" banner for the running
-/// project: its client, project and minutes left, when under an hour.
-pub(crate) fn retainer_low(info: &Info) -> Option<(&Project, i64)> {
-    let project_id = info.running.as_ref()?.project_id.as_deref()?;
-    let project = info.projects.iter().find(|project| project.id == project_id)?;
-    let left = project.retainer_minutes_left?;
-    (left < 60).then_some((project, left))
+/// project, when its live retainer is under an hour: the project's id, the
+/// client's name and the minutes left.
+pub(crate) fn retainer_low(info: &Info, now: u64) -> Option<(String, String, i64)> {
+    let running = info.running.as_ref()?;
+    let project_id = running.project_id.clone()?;
+    let left = live_retainer(running, now)?;
+    let client = running
+        .client_name
+        .as_deref()
+        .or(running.project_name.as_deref())
+        .map(str::trim)
+        .filter(|client| !client.is_empty())?
+        .to_string();
+    (left < 60).then_some((project_id, client, left))
 }
 
-pub(crate) fn retainer_banner(project: &Project, left: i64) -> String {
-    let client = project.client_name.as_deref().map(str::trim).filter(|c| !c.is_empty()).unwrap_or(&project.name);
+pub(crate) fn retainer_banner(client: &str, left: i64) -> String {
     if left > 0 {
         format!("{client}'s retainer has {} left this month.", fmt_minutes(left.unsigned_abs()))
     } else if left == 0 {
@@ -177,7 +203,13 @@ pub(crate) struct Running {
     #[serde(default)]
     pub project_name: Option<String>,
     #[serde(default)]
+    pub client_name: Option<String>,
+    #[serde(default)]
     pub billable: bool,
+    /// The client's retainer this month from finished entries only (the
+    /// running time isn't in it: see `live_retainer`).
+    #[serde(default)]
+    pub retainer_minutes_left: Option<i64>,
     pub started_at: String,
     #[serde(default)]
     pub note: Option<String>,
@@ -221,6 +253,8 @@ fn unfiled_not_billable(mut running: Running) -> Running {
     if running.project_id.is_none() {
         running.billable = false;
         running.project_name = None;
+        running.client_name = None;
+        running.retainer_minutes_left = None;
     }
     running
 }
@@ -259,7 +293,8 @@ pub(crate) struct PanelView {
     pub idle_minutes: u64,
 }
 
-/// A note as it is sent: trimmed, one line, at most 200 characters.
+/// A note as it is sent: trimmed, one line, at most 500 characters (the
+/// tracker's own limit).
 pub(crate) fn clean_note(note: Option<&str>) -> Option<String> {
     let note: String = note?
         .chars()
@@ -410,26 +445,24 @@ pub(crate) struct IdleAsk {
 }
 
 /// The requests for an answer: "keep" sends nothing; "stop" stops the timer
-/// when idling began; "resume" does that and starts the same project (or an
-/// unfiled timer) again now, with the same note, so the idle time is the
-/// only gap. Time is only ever ended at the idle moment, never added.
+/// when idling began; "resume" is the tracker's `restart`: it ends the timer
+/// then and starts the same project (or an unfiled timer) with the same note
+/// from now, in one transaction, so the idle time is the only gap. Time is
+/// only ever ended at the idle moment, never added.
 pub(crate) fn idle_steps(choice: &str, ask: &IdleAsk) -> Result<Vec<Value>, &'static str> {
-    let stop = stop_body(Some(ask.from));
     match choice {
         "keep" => Ok(Vec::new()),
-        "stop" => Ok(vec![stop]),
-        "resume" => {
-            let mut start = json!({ "action": "start" });
-            if let Some(project_id) = &ask.running.project_id {
-                start["projectId"] = Value::String(project_id.clone());
-            }
-            if let Some(note) = clean_note(ask.running.note.as_deref()) {
-                start["note"] = Value::String(note);
-            }
-            Ok(vec![stop, start])
-        }
+        "stop" => Ok(vec![stop_body(Some(ask.from))]),
+        "resume" => Ok(vec![json!({ "action": "restart", "at": iso_utc(ask.from) })]),
         _ => Err("Unknown choice."),
     }
+}
+
+/// The unfiled stretch that ending `running` at `at` leaves to be filed.
+/// Ended at or before its start, the tracker drops it: nothing to file.
+pub(crate) fn left_to_file(running: &Running, at: u64) -> Option<String> {
+    let started = crate::clock::parse_iso(&running.started_at)?;
+    (running.unfiled() && started < at).then(|| running.id.clone())
 }
 
 // ── "Working on something?" ──
@@ -475,13 +508,7 @@ pub(crate) fn menu_model(info: &Info, now: u64) -> MenuModel {
         .into_iter()
         .map(|project| (format!("{MENU_START}{}", project.id), menu_label(&project)))
         .collect();
-    let retainer = info
-        .running
-        .as_ref()
-        .and_then(|running| running.project_id.as_ref())
-        .and_then(|id| info.projects.iter().find(|project| &project.id == id))
-        .and_then(|project| project.retainer_minutes_left)
-        .map(retainer_text);
+    let retainer = info.running.as_ref().and_then(|running| live_retainer(running, now)).map(retainer_text);
     MenuModel { title, retainer, running: info.running.is_some(), projects }
 }
 
@@ -705,10 +732,10 @@ fn set_info<R: Runtime>(app: &AppHandle<R>, info: Option<Info>) {
 /// Once a month per project: the running project's retainer is under an
 /// hour (or used up).
 fn maybe_warn_retainer<R: Runtime>(app: &AppHandle<R>) {
+    let now = crate::clock::unix_now();
     let Some((project_id, body)) = with(app, |inner| {
-        let info = inner.info.as_ref()?;
-        let (project, left) = retainer_low(info)?;
-        Some((project.id.clone(), retainer_banner(project, left)))
+        let (project_id, client, left) = retainer_low(inner.info.as_ref()?, now)?;
+        Some((project_id, retainer_banner(&client, left)))
     })
     .flatten() else {
         return;
@@ -801,7 +828,7 @@ fn send<R: Runtime>(app: &AppHandle<R>, steps: Vec<(&'static str, Value)>, done:
             (Some(Outcome { ok: true, running, .. }), Then::Timer { file, notice }) => {
                 set_running(&app, running.filter(valid_running).map(unfiled_not_billable));
                 // The tracker's page shows the same timer: let it catch up.
-                let _ = window.eval("window.dispatchEvent(new CustomEvent('cbb:hourly-changed'))");
+                let _ = window.eval("window.dispatchEvent(new Event('cbb:hourly-changed'))");
                 if file.is_some() || notice.is_some() {
                     if file.is_some() {
                         with(&app, |inner| inner.to_file.clone_from(&file));
@@ -814,7 +841,7 @@ fn send<R: Runtime>(app: &AppHandle<R>, steps: Vec<(&'static str, Value)>, done:
             (Some(Outcome { ok: true, .. }), Then::Filed) => {
                 with(&app, |inner| inner.to_file = None);
                 crate::mini::push(&app);
-                let _ = window.eval("window.dispatchEvent(new CustomEvent('cbb:hourly-changed'))");
+                let _ = window.eval("window.dispatchEvent(new Event('cbb:hourly-changed'))");
             }
             (other, _) => {
                 let error = other
@@ -891,12 +918,11 @@ pub(crate) fn mini_hourly_idle<R: Runtime>(app: AppHandle<R>, choice: String) ->
     let steps = idle_steps(&choice, &ask).map_err(str::to_string)?;
     crate::mini::push(&app);
     if !steps.is_empty() {
-        let left = crate::clock::fmt_hhmm_sast(ask.from);
         // The unfiled stretch up to the idle moment is filed next, whether
         // the timer stays stopped or starts again.
-        let file = ask.running.unfiled().then(|| ask.running.id.clone());
+        let file = left_to_file(&ask.running, ask.from);
         let steps = steps.into_iter().map(|body| (TIMER_URL, body)).collect();
-        send(&app, steps, &format!("Stopped at {left}, but it didn't start again:"), Then::Timer { file, notice: None })?;
+        send(&app, steps, "", Then::Timer { file, notice: None })?;
     }
     let what = match choice.as_str() {
         "resume" => "hourly_idle_resume",
@@ -967,7 +993,7 @@ fn auto_stop<R: Runtime>(app: &AppHandle<R>, running: &Running, at: u64, back: b
         "You were away, so your timer on {label} stopped at {}, when you went idle.",
         crate::clock::fmt_hhmm_sast(at)
     );
-    let file = running.unfiled().then(|| running.id.clone());
+    let file = left_to_file(running, at);
     let then = if back {
         Then::Timer { file, notice: Some(notice) }
     } else {
@@ -1056,6 +1082,8 @@ pub(crate) fn start_polling<R: Runtime>(app: AppHandle<R>) {
             if crate::session::signed_in() {
                 read(&app);
                 maybe_nudge(&app);
+                // The running time eats into a retainer between reads too.
+                maybe_warn_retainer(&app);
             } else {
                 with(&app, |inner| *inner = Inner::default());
                 refresh_menus(&app);
@@ -1117,9 +1145,9 @@ mod tests {
         // Just start, file it later.
         assert_eq!(start_body(None, Some("Call"), &info), Ok(json!({ "action": "start", "note": "Call" })));
         assert!(start_body(Some("someone-elses"), None, &info).is_err());
-        let long = "x".repeat(500);
+        let long = "x".repeat(900);
         let body = start_body(Some("p1"), Some(&long), &info).unwrap();
-        assert_eq!(body["note"].as_str().map(str::len), Some(200));
+        assert_eq!(body["note"].as_str().map(str::len), Some(500));
         assert_eq!(stop_body(None), json!({ "action": "stop" }));
         assert_eq!(stop_body(Some(STARTED)), json!({ "action": "stop", "at": "2026-10-12T07:00:00.000Z" }));
     }
@@ -1155,10 +1183,11 @@ mod tests {
 
     #[test]
     fn an_unfiled_timer_is_never_billable() {
-        let raw = r#"{"projects":[],"running":{"id":"t9","projectId":null,"projectName":"x","billable":true,"startedAt":"2026-10-12T07:00:00.000Z","note":null}}"#;
+        let raw = r#"{"projects":[],"running":{"id":"t9","projectId":null,"projectName":"x","clientName":"y","retainerMinutesLeft":30,"billable":true,"startedAt":"2026-10-12T07:00:00.000Z","note":null}}"#;
         let running = parse(raw).and_then(|info| info.running).expect("an unfiled timer");
         assert!(running.unfiled());
         assert!(!running.billable);
+        assert_eq!((running.client_name.as_deref(), running.retainer_minutes_left), (None, None));
         assert_eq!(running_label(None, &running), "Not yet filed");
         // A bad project id drops the timer rather than showing it as unfiled.
         let bad = r#"{"projects":[],"running":{"id":"t9","projectId":"a b","startedAt":"2026-10-12T07:00:00.000Z"}}"#;
@@ -1186,19 +1215,15 @@ mod tests {
         let ask = IdleAsk { running: info().running.unwrap(), from: STARTED + 9600, to: STARTED + 11_400 };
         assert_eq!(idle_steps("keep", &ask), Ok(vec![]));
         assert_eq!(idle_steps("stop", &ask), Ok(vec![json!({ "action": "stop", "at": "2026-10-12T09:40:00.000Z" })]));
-        assert_eq!(
-            idle_steps("resume", &ask),
-            Ok(vec![
-                json!({ "action": "stop", "at": "2026-10-12T09:40:00.000Z" }),
-                json!({ "action": "start", "projectId": "p2", "note": "Grade" }),
-            ])
-        );
+        // One call, one transaction on the tracker.
+        assert_eq!(idle_steps("resume", &ask), Ok(vec![json!({ "action": "restart", "at": "2026-10-12T09:40:00.000Z" })]));
         assert!(idle_steps("delete", &ask).is_err());
-        // An unfiled timer resumes unfiled.
-        let mut unfiled = ask.clone();
-        unfiled.running.project_id = None;
-        unfiled.running.note = None;
-        assert_eq!(idle_steps("resume", &unfiled).unwrap()[1], json!({ "action": "start" }));
+        // Only an unfiled stretch that is still there is left to file.
+        assert_eq!(left_to_file(&ask.running, ask.from), None, "filed under a project");
+        let mut unfiled = ask.running.clone();
+        unfiled.project_id = None;
+        assert_eq!(left_to_file(&unfiled, ask.from).as_deref(), Some("t1"));
+        assert_eq!(left_to_file(&unfiled, STARTED), None, "ended at its start: dropped");
     }
 
     #[test]
@@ -1251,13 +1276,18 @@ mod tests {
         assert_eq!(project_label(&info.projects[1]), "Brand film");
         let running = info.running.clone().unwrap();
         assert_eq!(running_label(Some(&info), &running), "Brand film");
-        let mut on_p1 = running.clone();
-        on_p1.project_id = Some("p1".into());
-        assert_eq!(running_label(Some(&info), &on_p1), "Spirit Films · Con Spirito S1");
-        // A project not in the list: the name the tracker gave.
-        let mut elsewhere = running;
+        // The running timer's own client and project, even for a project
+        // no longer in the list.
+        let mut elsewhere = running.clone();
         elsewhere.project_id = Some("p99".into());
-        assert_eq!(running_label(Some(&info), &elsewhere), "Brand film");
+        elsewhere.project_name = Some("Logo refresh".into());
+        elsewhere.client_name = Some("Vimeo".into());
+        assert_eq!(running_label(Some(&info), &elsewhere), "Vimeo · Logo refresh");
+        // Without names on it, the list's.
+        let mut bare = running;
+        bare.project_id = Some("p1".into());
+        bare.project_name = None;
+        assert_eq!(running_label(Some(&info), &bare), "Spirit Films · Con Spirito S1");
     }
 
     #[test]
@@ -1267,21 +1297,29 @@ mod tests {
         assert_eq!(retainer_text(0), "Retainer · 0m left");
         assert_eq!(retainer_text(-60), "Retainer used · 1h over");
         assert_eq!(retainer_text(-45), "Retainer used · 45m over");
-        let raw = r#"{"projects":[{"id":"p1","name":"Logo refresh","projectNumber":"CB-1","clientName":"Vimeo","billable":true,"retainerMinutesLeft":59}],
-            "running":{"id":"t1","projectId":"p1","projectName":"Logo refresh","billable":true,"startedAt":"2026-10-12T07:00:00.000Z"}}"#;
+        // 90 minutes left from finished entries; the running timer has run
+        // 40 of them (started 07:00, now 07:40), so 50 are left: under an hour.
+        let raw = r#"{"projects":[],
+            "running":{"id":"t1","projectId":"p1","projectName":"Logo refresh","clientName":"Vimeo","billable":true,"retainerMinutesLeft":90,"startedAt":"2026-10-12T07:00:00.000Z"}}"#;
         let info = parse(raw).unwrap();
-        let (project, left) = retainer_low(&info).expect("under an hour");
-        assert_eq!(retainer_banner(project, left), "Vimeo's retainer has 59m left this month.");
-        assert_eq!(retainer_banner(project, -90), "Vimeo's retainer is used up this month (1h 30m over). More time is billed extra.");
-        let mut plenty = info.clone();
-        plenty.projects[0].retainer_minutes_left = Some(60);
-        assert!(retainer_low(&plenty).is_none());
+        let now = STARTED + 40 * 60;
+        let running = info.running.as_ref().unwrap();
+        assert_eq!(live_retainer(running, now), Some(50));
+        assert_eq!(retainer_low(&info, now), Some(("p1".into(), "Vimeo".into(), 50)));
+        assert_eq!(retainer_banner("Vimeo", 50), "Vimeo's retainer has 50m left this month.");
+        assert_eq!(retainer_banner("Vimeo", -90), "Vimeo's retainer is used up this month (1h 30m over). More time is billed extra.");
+        // Ten minutes in, 80 are left: no banner yet.
+        assert_eq!(retainer_low(&info, STARTED + 10 * 60), None);
+        // A tracked-only timer doesn't use the retainer.
+        let mut tracked = info.clone();
+        tracked.running.as_mut().unwrap().billable = false;
+        assert_eq!(live_retainer(tracked.running.as_ref().unwrap(), now), Some(90));
         let mut none = info.clone();
-        none.projects[0].retainer_minutes_left = None;
-        assert!(retainer_low(&none).is_none());
+        none.running.as_mut().unwrap().retainer_minutes_left = None;
+        assert_eq!(retainer_low(&none, now), None);
         let mut stopped = info;
         stopped.running = None;
-        assert!(retainer_low(&stopped).is_none());
+        assert_eq!(retainer_low(&stopped, now), None);
         // 2026-10-31 23:30 UTC is already November in Johannesburg.
         assert_eq!(sast_month(1_793_489_400), 202611);
         assert_eq!(sast_month(STARTED), 202610);

@@ -35,7 +35,17 @@ type HourlyProject = {
   retainerMinutesLeft?: number | null;
 };
 /** `projectId` null: started with no project, "Not yet filed" (never billable). */
-type HourlyRunning = { id: string; projectId: string | null; projectName: string | null; billable: boolean; startedAt: string; note: string | null };
+type HourlyRunning = {
+  id: string;
+  projectId: string | null;
+  projectName: string | null;
+  clientName?: string | null;
+  billable: boolean;
+  /** Finished entries only: the running time is taken off here (liveRetainer). */
+  retainerMinutesLeft?: number | null;
+  startedAt: string;
+  note: string | null;
+};
 type Hourly = {
   running: HourlyRunning | null;
   quick: HourlyProject[];
@@ -155,6 +165,7 @@ function tick() {
   const running = view.hourly?.running;
   const started = running ? Date.parse(running.startedAt) : NaN;
   el("hourly-elapsed").textContent = Number.isNaN(started) ? "" : fmtTimer(Date.now() - started);
+  if (running) renderRunningRetainer(running);
   el("today").textContent =
     view.state === "none"
       ? ""
@@ -1161,9 +1172,42 @@ function fmtMinutes(mins: number): string {
 
 /** "Retainer · 2h 30m left", "Retainer used · 1h over", or null. */
 function retainerText(p: HourlyProject | undefined): string | null {
-  const left = p?.retainerMinutesLeft;
-  if (left === null || left === undefined) return null;
+  return retainerLine(p ? liveRetainer(p.retainerMinutesLeft, p.billable, p.clientName) : null);
+}
+
+function retainerLine(left: number | null): string | null {
+  if (left === null) return null;
   return left >= 0 ? `Retainer · ${fmtMinutes(left)} left` : `Retainer used · ${fmtMinutes(left)} over`;
+}
+
+/** The running timer's label from its own client and project, or the list's. */
+function runningLabel(r: HourlyRunning, projects: HourlyProject[]): string {
+  if (r.projectId === null) return "Not yet filed";
+  const name = r.projectName?.trim();
+  if (name) {
+    const client = r.clientName?.trim();
+    return client ? `${client} · ${name}` : name;
+  }
+  const p = projects.find((x) => x.id === r.projectId);
+  return p ? projectLabel(p) : "";
+}
+
+/** Minutes the running timer has run. */
+function elapsedMinutes(r: HourlyRunning | null | undefined): number {
+  const started = r ? Date.parse(r.startedAt) : NaN;
+  return Number.isNaN(started) ? 0 : Math.max(0, Math.floor((Date.now() - started) / 60000));
+}
+
+/**
+ * A retainer as it stands now: the tracker counts finished entries only, so
+ * a billable timer running for the same client is taken off (a retainer is
+ * per client).
+ */
+function liveRetainer(left: number | null | undefined, billable: boolean, clientName: string | null | undefined): number | null {
+  if (left === null || left === undefined) return null;
+  const r = current?.hourly?.running;
+  const same = r && r.billable && billable && (r.clientName ?? null) === (clientName ?? null);
+  return same ? left - elapsedMinutes(r) : left;
 }
 
 function projectTitle(p: HourlyProject): string {
@@ -1171,6 +1215,15 @@ function projectTitle(p: HourlyProject): string {
 }
 
 const PLAY = "M8 5v14l11-7z";
+
+/** The running card's retainer line, live: called each push and each second. */
+function renderRunningRetainer(r: HourlyRunning) {
+  const left = r.projectId === null ? null : liveRetainer(r.retainerMinutesLeft, r.billable, r.clientName);
+  const text = retainerLine(left);
+  el("hourly-retainer").textContent = text ?? "";
+  el("hourly-retainer").hidden = !text;
+  el("hourly-retainer").classList.toggle("over", (left ?? 0) < 0);
+}
 
 let hourlyInfoTimer = 0;
 
@@ -1198,12 +1251,8 @@ function renderHourly(h: Hourly | null) {
   el("hourly-running").hidden = running === null;
   if (running) {
     const unfiled = running.projectId === null;
-    const project = h.projects.find((p) => p.id === running.projectId);
-    el("hourly-project").textContent = unfiled ? "Not yet filed" : project ? projectLabel(project) : running.projectName ?? "";
-    const retainer = unfiled ? null : retainerText(project);
-    el("hourly-retainer").textContent = retainer ?? "";
-    el("hourly-retainer").hidden = !retainer;
-    el("hourly-retainer").classList.toggle("over", (project?.retainerMinutesLeft ?? 0) < 0);
+    el("hourly-project").textContent = runningLabel(running, h.projects);
+    renderRunningRetainer(running);
     el("hourly-project").classList.toggle("unfiled", unfiled);
     const kind = el("hourly-kind");
     kind.hidden = unfiled;

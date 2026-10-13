@@ -1,6 +1,6 @@
 [package]
 name = "cbb-tracker-desktop"
-version = "0.2.18"
+version = "0.2.19"
 description = "CoolerBox Production Tracker — desktop shell (Tauri v2)"
 authors = ["CoolerBox Brothers"]
 edition = "2021"
@@ -50,6 +50,9 @@ gtk = "0.18"
 # same version wry already uses.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
+# The Dock menu (dock.rs): the menu crate Tauri already uses, so its clicks
+# arrive with the tray's.
+muda = { version = "0.20", default-features = false }
 
 # Clickable notifications (banner.rs): the crates tauri-plugin-notification
 # already uses underneath, at the versions it locks, so nothing new is built.
@@ -63,7 +66,7 @@ version = "4.11"
 tauri-winrt-notification = "0.8"
 # The taskbar jump list (jumplist.rs); the version Tauri already locks.
 windows = { version = "0.62", features = ["Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Variant", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_UI_Shell_PropertiesSystem", "Win32_Storage_EnhancedStorage"] }
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Registry", "Win32_System_SystemInformation", "Win32_UI_Input_KeyboardAndMouse"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Registry", "Win32_System_SystemInformation", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging", "Win32_System_Threading"] }
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-single-instance = "2"

@@ -184,6 +184,11 @@
       #dnd-choice { display: grid; grid-template-columns: repeat(5, 1fr); gap: 2px; margin: 0 16px 12px; padding: 2px; border-radius: var(--r-ctl); background: var(--tile); }
       #dnd-choice .seg { padding: 6px 2px; font-size: 12px; }
       #dnd-choice .seg:disabled { opacity: 0.55; cursor: default; }
+      #idle-row { border-bottom: 0; padding-bottom: 6px; cursor: default; }
+      #idle-row:hover { background: none; }
+      #idle-choice { display: grid; grid-template-columns: repeat(4, 1fr); gap: 2px; margin: 0 16px 12px; padding: 2px; border-radius: var(--r-ctl); background: var(--tile); }
+      #idle-choice .seg { padding: 6px 2px; font-size: 12px; }
+      #idle-settings { border-top: 0.5px solid var(--rule); }
       #quiet-chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 99px; background: rgba(255, 255, 255, 0.2); color: #fff; font-size: 11px; font-weight: 600; white-space: nowrap; }
       #quiet-chip:hover { background: rgba(255, 255, 255, 0.3); }
       #quiet-chip svg { width: 12px; height: 12px; }
@@ -252,6 +257,192 @@
       .hit .title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 500; }
       .hit .sub { font-size: 11.5px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
       #search-note { padding: 10px 16px 14px; color: var(--muted); font-size: 12.5px; }
+      /* Project timer (hourly.rs), for people who bill by the hour. */
+      #hourly { margin: 0 14px 10px; display: flex; flex-direction: column; gap: 8px; }
+      /* Nothing showing in it (no timer running, no question): no gap either. */
+      #hourly:not(:has(> :not([hidden]))) { display: none; }
+      #hourly-start { margin: 10px 14px 10px; display: flex; flex-direction: column; gap: 8px; }
+      #hourly-suggest { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border-radius: var(--r-ctl); background: var(--tile); font-size: 12.5px; border-left: 3px solid var(--pink); }
+      #hourly-suggest .h-wrap-actions button { background: var(--card); }
+      #hourly-suggest-more { font-size: 11.5px; color: var(--muted); }
+      #detector-body { padding: 0 16px 12px; display: flex; flex-direction: column; gap: 8px; border-bottom: 0.5px solid var(--rule); }
+      #detector-body .set-label { padding: 6px 0 0; }
+      #detector-apps { display: flex; flex-wrap: wrap; gap: 6px; }
+      #detector-apps .h-chip[aria-pressed="true"] { background: var(--pink); color: #fff; }
+      .d-kind { margin: 4px 0 2px; font-size: 11px; color: var(--muted); }
+      #detector-add-app, #detector-link { align-self: flex-start; font-size: 12.5px; font-weight: 600; color: var(--pink-ink); }
+      #detector-add-app:hover, #detector-link:hover { text-decoration: underline; }
+      #detector-open { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px; border-radius: var(--r-ctl); background: var(--tile); }
+      #detector-open .d-hint { width: 100%; }
+      #detector-permission { font-size: 12.5px !important; line-height: 1.45; }
+      #detector-permission p { margin: 0; }
+      .d-perm-acts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+      #detector-permission .d-perm-acts button { text-decoration: none !important; padding: 5px 10px; border-radius: var(--r-ctl); background: var(--card); color: var(--fg) !important; font-weight: 600; font-size: 12px; }
+      #detector-permission .d-perm-acts button:first-child:not([hidden]) { background: var(--pink); color: #fff !important; }
+      #detector-perm-ok { margin: 0; font-size: 12px; color: var(--tone-2-fg); background: var(--tone-2-bg); padding: 6px 10px; border-radius: var(--r-ctl); }
+      .d-app-acts { display: flex; flex-wrap: wrap; gap: 4px 16px; }
+      #detector-change-apps { align-self: flex-start; font-size: 12.5px; font-weight: 600; color: var(--pink-ink); }
+      #detector-change-apps:hover { text-decoration: underline; }
+      #timer-settings { border-bottom: 0.5px solid var(--rule); }
+      #timer-settings .set-label:first-child { padding-top: 10px; }
+      /* What "Suggest time from my work" is counting right now (no timer running). */
+      #hourly-auto { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border-radius: var(--r-ctl); border: 1px dashed var(--pink); font-size: 12.5px; }
+      #hourly-auto-text { color: var(--fg); overflow-wrap: anywhere; }
+      #hourly-auto-text b { font-weight: 600; }
+      #hourly-auto-text::before { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--pink); margin-right: 7px; vertical-align: 1px; }
+      #hourly-auto-from { color: var(--muted); font-size: 11.5px; overflow-wrap: anywhere; }
+      #hourly-auto .h-wrap-actions button { background: var(--tile); padding: 0 10px; }
+      #hourly-auto .h-wrap-actions button:hover { background: var(--tile-hover); }
+      #hourly-auto #hourly-auto-log { flex: 2; background: var(--pink); color: #fff; white-space: nowrap; }
+      #hourly-auto-warn { font-size: 11.5px; color: var(--tone-3-fg); }
+      #hourly-auto-warn button { font-weight: 600; text-decoration: underline; color: inherit; }
+      @media (prefers-reduced-motion: no-preference) { #hourly-auto-text::before { animation: auto-pulse 2s ease-in-out infinite; } }
+      @keyframes auto-pulse { 50% { opacity: 0.35; } }
+      #hourly-new { display: flex; flex-direction: column; gap: 10px; padding: 4px 16px 12px; overflow-y: auto; }
+      #hourly-new-billing { display: grid; grid-template-columns: 1fr 1fr; gap: 2px; padding: 2px; border-radius: var(--r-ctl); background: var(--tile); }
+      .h-check { display: flex; gap: 8px; align-items: flex-start; font-size: 12.5px; color: var(--fg); }
+      .h-check input { margin: 2px 0 0; accent-color: var(--pink); }
+      .h-check .hint { display: block; font-size: 11.5px; color: var(--muted); }
+      .h-row.h-new .t { color: var(--pink-ink); }
+      .d-folder { display: flex; align-items: center; gap: 8px; font-size: 12.5px; }
+      .d-folder .f { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .d-folder .p { color: var(--muted); font-size: 11.5px; display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .d-folder button { color: var(--faint); width: 24px; height: 24px; border-radius: var(--r-ctl); }
+      .d-folder button:hover { background: var(--tile); color: var(--danger-fg); }
+      #detector-link { align-self: flex-start; font-size: 12.5px; font-weight: 600; color: var(--pink-ink); }
+      #detector-link:hover { text-decoration: underline; }
+      #detector-permission { margin: 0; font-size: 12px; color: var(--tone-3-fg); background: var(--tone-3-bg); padding: 8px 10px; border-radius: var(--r-ctl); }
+      #detector-permission button { font-weight: 600; text-decoration: underline; color: inherit; }
+      .d-hint { margin: 0; font-size: 11.5px; color: var(--faint); }
+      #detector-privacy { margin: 0 16px 12px; padding: 12px; border-radius: var(--r-ctl); background: var(--tile); font-size: 12.5px; line-height: 1.45; }
+      #detector-privacy h3 { margin: 10px 0 4px; font-size: 12.5px; font-weight: 600; }
+      #detector-privacy h3:first-child { margin-top: 0; }
+      #detector-privacy ul { margin: 0; padding-left: 18px; }
+      #detector-privacy li { margin: 2px 0; }
+      #detector-privacy .lead { margin: 0 0 4px; font-weight: 600; }
+      #detector-privacy .h-choices { margin-top: 12px; }
+      #detector-privacy-open { align-self: flex-start; font-size: 12.5px; font-weight: 600; color: var(--pink-ink); }
+      #detector-privacy-open:hover { text-decoration: underline; }
+      #hourly-running { display: flex; align-items: center; gap: 10px; padding: 8px 8px 8px 12px; border-radius: var(--r-ctl); background: var(--tile); border-left: 3px solid var(--pink); }
+      #hourly-card { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 1px; text-align: left; }
+      #hourly-card:hover #hourly-project { text-decoration: underline; }
+      .h-top { display: flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; }
+      #hourly-project { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .h-kind { flex: none; font-size: 10.5px; font-weight: 600; padding: 1px 6px; border-radius: 99px; background: var(--tone-2-bg); color: var(--tone-2-fg); }
+      .h-kind.tracked { background: var(--tone-4-bg); color: var(--tone-4-fg); }
+      #hourly-retainer { font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      #hourly-retainer.over { color: var(--danger-fg); }
+      #hourly-note { font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+      #hourly-elapsed { font-weight: 600; font-variant-numeric: tabular-nums; }
+      #hourly-stop { flex: none; min-height: 30px; padding: 0 12px; border-radius: var(--r-ctl); font-weight: 600; background: var(--danger-bg); color: var(--danger-fg); }
+      #hourly-stop:disabled, .h-chip:disabled { opacity: 0.55; cursor: default; }
+      .h-label { font-size: 11px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--faint); }
+      #hourly-quick { display: flex; flex-wrap: wrap; gap: 6px; }
+      .h-chip { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; min-height: 28px; padding: 0 10px; border-radius: 99px; background: var(--tile); font-size: 12px; font-weight: 600; }
+      .h-chip:hover { background: var(--tile-hover); }
+      .h-chip span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .h-chip svg { width: 10px; height: 10px; flex: none; fill: var(--pink); stroke: none; }
+      .h-chip.other { color: var(--pink-ink); }
+      .h-chip.later { background: none; border: 1px dashed var(--rule); color: var(--muted); }
+      .h-chip.later:hover { background: var(--tile); color: var(--fg); }
+      .h-chip.later svg { fill: var(--faint); }
+      #hourly-project.unfiled { font-style: italic; }
+      #hourly-note-input, #hourly-filter { height: 28px; padding: 0 10px; border-radius: var(--r-ctl); border: 0.5px solid var(--rule); background: var(--tile); font: inherit; font-size: 12px; color: var(--fg); outline: none; user-select: text; -webkit-user-select: text; }
+      #hourly-note-input:focus, #hourly-filter:focus { outline: 2px solid var(--pink); outline-offset: -1px; }
+      #hourly-note-input::placeholder, #hourly-filter::placeholder { color: var(--faint); }
+      .h-error { margin: 0; color: var(--danger-fg); font-size: 12px; }
+      #hourly-pick { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+      #hourly-pick-head { display: flex; align-items: center; gap: 8px; padding: 12px 12px 10px; font-weight: 600; font-size: 14px; border-bottom: 0.5px solid var(--rule); }
+      #hourly-filter { margin: 10px 14px 4px; }
+      #hourly-pick-list { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; padding-bottom: 8px; }
+      .h-line { display: flex; align-items: stretch; border-top: 0.5px solid var(--rule); }
+      .h-line:hover { background: var(--tile); }
+      .h-row { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 1px; padding: 8px 6px 8px 16px; text-align: left; }
+      .h-pin { flex: none; width: 40px; display: grid; place-items: center; color: var(--faint); }
+      .h-pin:hover { color: var(--pink-ink); }
+      .h-pin svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linejoin: round; }
+      .h-pin[aria-pressed="true"] { color: var(--pink); }
+      .h-pin[aria-pressed="true"] svg { fill: currentColor; }
+      .h-chip.pinned svg { fill: var(--pink); }
+      #hourly-head { display: flex; align-items: center; gap: 8px; }
+      #hourly-head .h-label { flex: 1; }
+      .h-booked { flex: none; font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 99px; background: var(--tone-3-bg); color: var(--tone-3-fg); }
+      #hourly-wrap { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border-radius: var(--r-ctl); background: var(--tone-3-bg); color: var(--tone-3-fg); font-size: 12.5px; }
+      .h-wrap-actions { display: flex; gap: 8px; }
+      .h-wrap-actions button { flex: 1; min-height: 30px; border-radius: var(--r-ctl); font-weight: 600; background: var(--card); color: var(--fg); }
+      #hourly-add-open { font-size: 12px; font-weight: 600; color: var(--pink-ink); }
+      #hourly-add-open:hover { text-decoration: underline; }
+      #hourly-add-view { display: flex; flex-direction: column; gap: 10px; flex: 1; padding: 16px; overflow-y: auto; }
+      #hourly-add-view h2 { margin: 0; font-size: 16px; font-weight: 600; }
+      .h-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+      .h-field select, .h-field input { height: 32px; padding: 0 10px; border-radius: var(--r-ctl); border: 0.5px solid var(--rule); background: var(--tile); font: inherit; font-size: 13px; color: var(--fg); outline: none; user-select: text; -webkit-user-select: text; }
+      .h-field select:focus, .h-field input:focus { outline: 2px solid var(--pink); outline-offset: -1px; }
+      /* The project picker (mini.ts projectPicker): the app's own list, not the system's menu. */
+      .pp { position: relative; }
+      .pp-btn { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 44px; padding: 6px 10px; border-radius: var(--r-ctl); border: 0.5px solid var(--rule); background: var(--tile); text-align: left; color: var(--fg); box-sizing: border-box; }
+      .pp-btn:hover { background: var(--tile-hover); }
+      .pp-btn:focus-visible, .pp.open .pp-btn { outline: 2px solid var(--pink); outline-offset: -1px; }
+      .pp-btn .pp-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+      .pp-btn svg { width: 14px; height: 14px; flex: none; fill: none; stroke: var(--muted); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; transition: transform 0.15s; }
+      .pp.open .pp-btn svg { transform: rotate(180deg); }
+      .pp-name { font-size: 13px; font-weight: 600; color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .pp-sub { font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .pp-pop { position: absolute; left: 0; right: 0; top: calc(100% + 4px); z-index: 20; display: flex; flex-direction: column; background: var(--card); border: 0.5px solid var(--rule); border-radius: var(--r-card); box-shadow: 0 8px 24px rgba(0,0,0,0.18); overflow: hidden; }
+      .pp-pop input { margin: 8px; height: 30px; padding: 0 10px; border-radius: var(--r-ctl); border: 0.5px solid var(--rule); background: var(--tile); font: inherit; font-size: 13px; color: var(--fg); outline: none; }
+      .pp-pop input:focus { outline: 2px solid var(--pink); outline-offset: -1px; }
+      .pp-list { max-height: 240px; overflow-y: auto; padding: 0 4px 6px; }
+      .pp-section { padding: 8px 8px 4px; font-size: 10.5px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--faint); }
+      .pp-row { display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px 8px; border-radius: var(--r-ctl); text-align: left; color: var(--fg); }
+      .pp-row .pp-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+      .pp-row.active { background: var(--tile-hover); }
+      .pp-row .pp-check { width: 14px; height: 14px; flex: none; fill: none; stroke: var(--pink); stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; visibility: hidden; }
+      .pp-row[aria-selected="true"] .pp-check { visibility: visible; }
+      .pp-row[aria-selected="true"] .pp-name { color: var(--pink-ink); }
+      .pp-empty { padding: 10px 8px; font-size: 12.5px; color: var(--muted); }
+      .h-times { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; }
+      .h-times .h-day { grid-column: 1 / -1; }
+      .h-field { min-width: 0; }
+      .h-field select, .h-field input { width: 100%; min-width: 0; box-sizing: border-box; }
+      #hourly-add-view { overflow-x: hidden; margin: 0; }
+      .h-today-head { display: flex; align-items: baseline; gap: 8px; margin-top: 6px; }
+      .h-today-head .h-label { flex: 1; }
+      #hourly-today-total { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+      #hourly-today-list { display: flex; flex-direction: column; }
+      .t-row { display: flex; align-items: center; gap: 8px; padding: 7px 0; border-top: 0.5px solid var(--rule); }
+      .t-main { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 1px; text-align: left; }
+      .t-main:disabled { cursor: default; }
+      .t-main .l { font-weight: 600; font-size: 12.5px; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .t-main .w { font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .t-main:not(:disabled):hover .l { text-decoration: underline; }
+      .t-mins { font-size: 12px; font-variant-numeric: tabular-nums; color: var(--muted); }
+      .t-go { flex: none; width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; background: var(--tile); }
+      .t-go:hover { background: var(--tile-hover); }
+      .t-go svg { width: 11px; height: 11px; fill: var(--pink); stroke: none; }
+      .t-tag { font-size: 10.5px; font-weight: 600; color: var(--faint); }
+      #hourly-edit-view { display: flex; flex-direction: column; gap: 10px; flex: 1; padding: 16px; overflow-y: auto; overflow-x: hidden; margin: 0; }
+      #hourly-edit-view h2 { margin: 0; font-size: 16px; font-weight: 600; }
+      #hourly-edit-length { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+      #hourly-edit-delete { color: var(--danger-fg); }
+      #hourly-add-length { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+      .h-row .t { font-weight: 600; }
+      .h-row .s { font-size: 11.5px; color: var(--faint); }
+      .h-row.on .t::after { content: " · running"; color: var(--pink-ink); font-weight: 500; }
+      #hourly-pick-empty { padding: 10px 16px; color: var(--muted); font-size: 12.5px; }
+      #hourly-pick-hint { margin: 10px 16px 0; color: var(--muted); font-size: 12.5px; }
+      #hourly-pick-error { margin: 0 16px 6px; }
+      #hourly-pick-foot { display: flex; gap: 8px; padding: 10px 14px; border-top: 0.5px solid var(--rule); }
+      #hourly-pick-foot button { flex: 1; min-height: 34px; border-radius: var(--r-ctl); font-weight: 600; background: var(--tile); }
+      #hourly-pick-foot button:hover { background: var(--tile-hover); }
+      #hourly-info { margin: 0; font-size: 12px; color: var(--fg); padding: 8px 10px; border-radius: var(--r-ctl); background: var(--tone-3-bg); color: var(--tone-3-fg); }
+      #hourly-idle-view { display: flex; flex-direction: column; gap: 10px; flex: 1; padding: 16px; overflow-y: auto; }
+      #hourly-idle-view h2 { margin: 0; font-size: 16px; font-weight: 600; }
+      #hourly-idle-view .hint { margin: -4px 0 0; color: var(--muted); font-size: 12.5px; }
+      .h-choices { display: flex; flex-direction: column; gap: 8px; margin-top: auto; }
+      .h-choices button { min-height: 36px; border-radius: var(--r-ctl); font-weight: 600; background: var(--tile); }
+      .h-choices button:hover { background: var(--tile-hover); }
+      .h-choices button.primary { background: var(--pink); color: #fff; }
+      .h-choices button.primary:hover { background: var(--pink-ink); }
+      .h-choices button:disabled { opacity: 0.55; cursor: default; }
       /* Next call (schedule.rs): the next booking, from My Schedule. */
       #next-card { margin: 0 14px 8px; padding: 10px 12px; border-radius: var(--r-ctl); background: var(--tile); display: flex; flex-direction: column; gap: 2px; }
       .next-when { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
@@ -336,6 +527,46 @@
         <div id="actions"></div>
         <div id="no-sheet" hidden>The time sheet isn't switched on for you.</div>
 
+        <div id="hourly" hidden>
+          <div id="hourly-wrap" role="alert" hidden>
+            <span id="hourly-wrap-text"></span>
+            <div class="h-wrap-actions">
+              <button type="button" id="hourly-wrap-stop">Stop it</button>
+              <button type="button" id="hourly-wrap-keep">Keep it running</button>
+            </div>
+          </div>
+          <div id="hourly-auto" role="status" hidden>
+            <span id="hourly-auto-text"></span>
+            <span id="hourly-auto-from"></span>
+            <div class="h-wrap-actions" id="hourly-auto-acts">
+              <button type="button" id="hourly-auto-log">Start the timer</button>
+              <button type="button" id="hourly-auto-pick">Pick the project…</button>
+              <button type="button" id="hourly-auto-drop">Not this</button>
+            </div>
+            <span id="hourly-auto-warn" hidden>macOS is hiding window names, so it can only go by your folders. <button type="button" id="hourly-auto-fix">Fix…</button></span>
+          </div>
+          <div id="hourly-suggest" role="alert" hidden>
+            <span id="hourly-suggest-text"></span>
+            <div class="h-wrap-actions">
+              <button type="button" id="hourly-suggest-log">Log it</button>
+              <button type="button" id="hourly-suggest-other">Other…</button>
+              <button type="button" id="hourly-suggest-skip">Not this</button>
+            </div>
+            <span id="hourly-suggest-more" hidden></span>
+          </div>
+          <div id="hourly-running" hidden>
+            <button id="hourly-card" type="button" title="Open Hours in the tracker">
+              <span class="h-top"><span id="hourly-project"></span></span>
+              <span class="h-top"><span id="hourly-kind" class="h-kind"></span><span id="hourly-retainer" hidden></span></span>
+              <span id="hourly-note" hidden></span>
+            </button>
+            <span id="hourly-elapsed">0:00</span>
+            <button id="hourly-stop" type="button">Stop</button>
+          </div>
+          <p class="h-error" id="hourly-error" role="alert" hidden></p>
+          <p id="hourly-info" role="status" hidden></p>
+        </div>
+
         <div id="search">
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
           <input id="search-input" type="search" placeholder="Search projects, deliverables, ideas" autocomplete="off" spellcheck="false" aria-label="Search the tracker" aria-controls="search-results" />
@@ -374,6 +605,21 @@
           <span id="see-all-text">See all notifications</span>
           <svg viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
         </button>
+        <!-- The timer's one-tap starts, after the notifications so they stay
+             in view; they scroll with the lists (the running timer and its
+             questions stay above). -->
+        <div id="hourly-start" hidden>
+          <div id="hourly-head">
+            <div class="h-label" id="hourly-label">Time a project</div>
+            <button type="button" id="hourly-add-open" title="Log time you didn't run the timer for">Add time…</button>
+          </div>
+          <div id="hourly-quick"></div>
+          <input id="hourly-note-input" type="text" maxlength="500" placeholder="Note for the next timer (optional)" autocomplete="off" aria-label="Note for the next timer (optional)" />
+          <div id="hourly-today" hidden>
+            <div class="h-today-head"><span class="h-label">Today</span><span id="hourly-today-total"></span></div>
+            <div id="hourly-today-list"></div>
+          </div>
+        </div>
         </div>
 
         <div id="shortcuts">
@@ -484,12 +730,166 @@
         </form>
       </div>
 
+      <div id="hourly-pick" hidden>
+        <div id="hourly-pick-head">
+          <button class="icon-btn" id="hourly-pick-back" type="button" aria-label="Back" title="Back">
+            <svg viewBox="0 0 24 24"><path d="M19 12H5M11 18l-6-6 6-6"/></svg>
+          </button>
+          <span id="hourly-pick-title">Time a project</span>
+        </div>
+        <p id="hourly-pick-hint" hidden></p>
+        <input id="hourly-filter" type="search" placeholder="Find a project" autocomplete="off" spellcheck="false" aria-label="Find a project" />
+        <div id="hourly-pick-list"></div>
+        <form id="hourly-new" hidden>
+          <label class="h-field">Project name<input id="hourly-new-name" type="text" maxlength="200" autocomplete="off" /></label>
+          <label class="h-field">Client<select id="hourly-new-client"></select></label>
+          <label class="h-field" id="hourly-new-client-name-field" hidden>The new client's name<input id="hourly-new-client-name" type="text" maxlength="120" autocomplete="off" /></label>
+          <div id="hourly-new-billing" role="radiogroup" aria-label="How it's billed">
+            <button type="button" class="seg" data-billable="1" role="radio" aria-checked="true">Billed by the hour</button>
+            <button type="button" class="seg" data-billable="0" role="radio" aria-checked="false">Quoted</button>
+          </div>
+          <p class="h-error" id="hourly-new-error" role="alert" hidden></p>
+          <div class="h-choices">
+            <button type="submit" class="primary" id="hourly-new-save">Create</button>
+            <button type="button" id="hourly-new-cancel">Back to the list</button>
+          </div>
+        </form>
+        <p class="h-error" id="hourly-pick-error" role="alert" hidden></p>
+        <div id="hourly-pick-foot" hidden>
+          <button type="button" id="hourly-file-new" title="Make a new project for it on the website (it can add the client too)">New project…</button>
+          <button type="button" id="hourly-file-later" title="Leave it unfiled for now; file it on My Hours">Later</button>
+        </div>
+      </div>
+
+      <form id="hourly-add-view" hidden>
+        <h2>Add time</h2>
+        <label class="h-field">Project<select id="hourly-add-project" required></select></label>
+        <div class="h-times">
+          <label class="h-field h-day">Day it started<input id="hourly-add-day" type="date" required /></label>
+          <label class="h-field">From<input id="hourly-add-from" type="text" inputmode="numeric" maxlength="5" placeholder="hh:mm" autocomplete="off" required /></label>
+          <label class="h-field">To<input id="hourly-add-to" type="text" inputmode="numeric" maxlength="5" placeholder="hh:mm" autocomplete="off" required /></label>
+        </div>
+        <span id="hourly-add-length"></span>
+        <label class="h-field">Note (optional)<input id="hourly-add-note" type="text" maxlength="500" autocomplete="off" /></label>
+        <p class="h-error" id="hourly-add-error" role="alert" hidden></p>
+        <div class="h-choices">
+          <button type="submit" class="primary" id="hourly-add-save">Add</button>
+          <button type="button" id="hourly-add-cancel">Cancel</button>
+        </div>
+      </form>
+
+      <form id="hourly-edit-view" hidden>
+        <h2>Edit time</h2>
+        <label class="h-field">Project<select id="hourly-edit-project"></select></label>
+        <div class="h-times">
+          <label class="h-field">From<input id="hourly-edit-from" type="text" inputmode="numeric" maxlength="5" placeholder="hh:mm" autocomplete="off" required /></label>
+          <label class="h-field">To<input id="hourly-edit-to" type="text" inputmode="numeric" maxlength="5" placeholder="hh:mm" autocomplete="off" /></label>
+        </div>
+        <span id="hourly-edit-length"></span>
+        <label class="h-field">Note (optional)<input id="hourly-edit-note" type="text" maxlength="500" autocomplete="off" /></label>
+        <label class="h-check"><input type="checkbox" id="hourly-edit-for-client" /><span>Show the client this note<span class="hint">On their Hours page and invoice. Clients never see who worked.</span></span></label>
+        <p class="h-error" id="hourly-edit-error" role="alert" hidden></p>
+        <div class="h-choices">
+          <button type="submit" class="primary" id="hourly-edit-save">Save</button>
+          <button type="button" id="hourly-edit-delete">Delete</button>
+          <button type="button" id="hourly-edit-cancel">Cancel</button>
+        </div>
+      </form>
+
+      <div id="hourly-idle-view" hidden>
+        <h2 id="hourly-idle-title">Welcome back</h2>
+        <p class="hint" id="hourly-idle-text"></p>
+        <p class="h-error" id="hourly-idle-error" role="alert" hidden></p>
+        <div class="h-choices">
+          <!-- In the brief's order, none highlighted: the person decides. -->
+          <button type="button" id="hourly-idle-keep">Keep it</button>
+          <button type="button" id="hourly-idle-resume">Drop the idle time and keep going</button>
+          <button type="button" id="hourly-idle-stop">Drop the idle time and stop</button>
+        </div>
+      </div>
+
       <div id="settings" hidden>
         <div id="settings-head">
           <button class="icon-btn" id="close-settings" type="button" aria-label="Back" title="Back">
             <svg viewBox="0 0 24 24"><path d="M19 12H5M11 18l-6-6 6-6"/></svg>
           </button>
           Settings
+        </div>
+        <div id="timer-settings" hidden>
+          <div class="set-label">Project timer</div>
+        <div id="detector-settings" hidden>
+          <button class="set-row" id="detector-row" type="button" role="switch" aria-checked="false">
+            <span class="txt">Suggest time from my work<span class="hint" style="display:block">When you forgot the timer: asks "Worked on Vimeo · Logo refresh 09:10–10:40, log it?" from the apps and folders you choose. Off until you switch it on.</span></span>
+            <span class="switch" aria-hidden="true"></span>
+          </button>
+          <div id="detector-privacy" hidden>
+            <p class="lead">This is here only to help you: so your project time stays up to date and nothing you worked on gets missed.</p>
+            <p class="lead">Your screen and your files stay private. Nobody at CoolerBox or your company can see what you're working on.</p>
+            <h3>What it looks at, on this computer only</h3>
+            <ul>
+              <li>Which app is in front, and the name of its window (like "Logo_v3.psd"), only for the apps you pick. Every other app is ignored.</li>
+              <li>When a file was last saved in a folder you link to a project. It never opens a file or reads what's in it.</li>
+              <li>Only while this is on and no project timer is running.</li>
+            </ul>
+            <h3>What it never does</h3>
+            <ul>
+              <li>It never records your screen, takes screenshots or captures images. (macOS calls the permission it needs "Screen Recording"; the app uses it only to read window names.)</li>
+              <li>It never sends or saves window names, file names or folder contents. They're matched to a project the moment they're seen, then forgotten. ("Right now" in Settings shows the window it's looking at, on this computer only.)</li>
+              <li>It never logs time by itself.</li>
+            </ul>
+            <h3>What the tracker gets</h3>
+            <ul>
+              <li>Nothing, until you tap "Log it". Then only the project and the start and end time, the same as adding time by hand.</li>
+              <li>Your company can't switch this on for you. The app doesn't report whether it's on, or how you use it.</li>
+            </ul>
+            <h3>What stays on this computer</h3>
+            <ul>
+              <li>The apps you picked and the folders you linked.</li>
+              <li>Suggestions you haven't answered: just a project and two times, deleted after 7 days.</li>
+            </ul>
+            <p class="d-hint" style="margin-top:8px">Switching it off stops all of it straight away.</p>
+            <div class="h-choices">
+              <button type="button" class="primary" id="detector-agree">Switch it on</button>
+              <button type="button" id="detector-privacy-close">Not now</button>
+            </div>
+          </div>
+          <div id="detector-body" hidden>
+            <p id="detector-perm-ok" hidden>✓ Window names: macOS lets the app read them.</p>
+            <div id="detector-permission" role="status" hidden>
+              <p id="detector-permission-text"></p>
+              <div class="d-perm-acts">
+                <button type="button" id="detector-permission-btn">Allow it…</button>
+                <button type="button" id="detector-open-settings">Open System Settings</button>
+                <button type="button" id="detector-reset-btn">Ask macOS again</button>
+                <button type="button" id="detector-restart-btn">Restart now</button>
+              </div>
+            </div>
+            <div class="set-label">Apps to look at</div>
+            <div id="detector-apps"></div>
+            <div class="d-app-acts">
+              <button type="button" id="detector-change-apps" aria-expanded="false">Change apps…</button>
+              <button type="button" id="detector-add-app">Add another app…</button>
+            </div>
+            <div id="detector-open" hidden></div>
+            <div class="set-label">Folders</div>
+            <p class="d-hint">Link as many as you like, on any drive. Link your Work folder (or a whole drive) as "Any project" and it tells the project from the client and project folders inside.</p>
+            <div id="detector-folders"></div>
+            <button type="button" id="detector-link">Link folders…</button>
+            <p class="d-hint">Nothing about your screen, apps or files leaves this computer. Only time you say yes to goes to the tracker: the project and the times.</p>
+            <button type="button" id="detector-privacy-open">What it sees, and what it doesn't</button>
+          </div>
+        </div>
+        <div id="idle-settings" hidden>
+          <div class="set-row" id="idle-row">
+            <span class="txt">Ask about idle time after<span class="hint" style="display:block">With a project timer running and no keyboard or mouse. Unanswered, it stops at the idle moment after 30 minutes.</span></span>
+          </div>
+          <div id="idle-choice" role="radiogroup" aria-labelledby="idle-row">
+            <button type="button" class="seg" data-idle="5" role="radio" aria-checked="false">5 min</button>
+            <button type="button" class="seg" data-idle="10" role="radio" aria-checked="true">10 min</button>
+            <button type="button" class="seg" data-idle="15" role="radio" aria-checked="false">15 min</button>
+            <button type="button" class="seg" data-idle="20" role="radio" aria-checked="false">20 min</button>
+          </div>
+        </div>
         </div>
         <button class="set-row" id="autostart-row" type="button" role="switch" aria-checked="false">
           <span class="txt">Launch at login<span class="hint" style="display:block">Start CoolerBox Tracker when you sign in to this computer.</span></span>
@@ -513,6 +913,14 @@
         </button>
         <button class="set-row" id="banners-channel1" type="button" role="switch" aria-checked="false">
           <span class="txt">Channel 1<span class="hint" style="display:block">Messages to everyone in the company.</span></span>
+          <span class="switch" aria-hidden="true"></span>
+        </button>
+        <button class="set-row" id="on-top" type="button" role="switch" aria-checked="true">
+          <span class="txt">Keep this panel on top<span class="hint" style="display:block">Off, other windows can cover it and the mini timer.</span></span>
+          <span class="switch" aria-hidden="true"></span>
+        </button>
+        <button class="set-row" id="minimise-to-timer" type="button" role="switch" aria-checked="true">
+          <span class="txt">Minimising shows the small panel<span class="hint" style="display:block" id="minimise-hint">Off, minimising the tracker is a normal minimise.</span></span>
           <span class="switch" aria-hidden="true"></span>
         </button>
         <button class="set-row" id="auto-offline" type="button" role="switch" aria-checked="true">

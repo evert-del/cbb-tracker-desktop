@@ -25,13 +25,78 @@ pub(crate) struct Item {
 }
 
 /// The notes for `version`, in `os`'s words ("macos", "windows", "linux").
-/// Empty for a version with nothing to tell (no page is shown then).
-pub(crate) fn notes(version: &str, os: &str) -> Vec<Item> {
+/// Empty for a version with nothing to tell (no page is shown then). The
+/// project timer's notes are only for people who bill by the hour (`hourly`):
+/// nobody else has it, so nobody else hears about it.
+pub(crate) fn notes(version: &str, os: &str, hourly: bool) -> Vec<Item> {
     let mac = os == "macos";
     let tray = if mac { "menu bar" } else { "system tray" };
     let dock = if mac { "Dock" } else { "taskbar" };
     let item = |title: &str, how: String| Item { title: title.into(), how };
+    let panel_key = if mac { "⌘⇧M" } else { "Ctrl+Alt+M" };
+    let timer_key = if mac { "⌘⇧Y" } else { "Ctrl+Alt+Y" };
     match version {
+        "0.2.19" => {
+            let mut items = Vec::new();
+            if hourly {
+                items.push(item(
+                    "A project timer, if you bill by the hour",
+                    format!(
+                        "Start, switch or stop a project in one tap from the quick panel ({panel_key}), the {tray}{}, or {timer_key} from anywhere. Forgot to start it? Add time…, or Just start and pick the project when you stop. Away from the computer with it running, it asks what to do with the idle time.",
+                        if mac { " or the Dock icon's menu" } else { "" }
+                    ),
+                ));
+                items.push(item(
+                    "Suggests time you forgot to log",
+                    "Switch on Settings › Suggest time from my work, pick your apps (design, video, audio, 3D, code and AI, browsers, or add any app that's open) and link folders, or your whole Work folder or drive as \"Any project\". It asks \"Worked on this, log it?\" and never logs time by itself. Right now in Settings shows what it's seeing. It never records your screen or reads your files, and nobody at CoolerBox or your company can see what you work on: only time you say yes to reaches the tracker, as a project and two times."
+                        .into(),
+                ));
+            }
+            if hourly {
+                items.push(item(
+                    "Start a project, and notes for the client",
+                    "Make a new project (and client) from the project list's New project…, then start it, file time to it or link a folder to it. Tick \"Show the client this note\" on an entry to put its note on their Hours page and invoice."
+                        .into(),
+                ));
+            }
+            items.extend([
+                item(
+                    "The quick panel stays out of your way",
+                    format!("In Settings, switch off Keep this panel on top and other windows can cover it. Switch off Minimising shows the small panel to minimise the tracker to the {dock} as usual. Dragging the panel no longer closes it."),
+                ),
+                item(
+                    "Ready as soon as it opens",
+                    "After you open the app, the quick panel shows where you are on the time sheet and today's hours within a second or two, with Loading… while it reads."
+                        .into(),
+                ),
+                item(
+                    "Choose what pops up",
+                    "Settings › Notifications that pop up: tracker notifications, walkie messages and Channel 1, each on or off. Do not disturb quiets the app and the tracker website together. Call alerts still ring."
+                        .into(),
+                ),
+                item(
+                    "Click a notification to open it",
+                    format!(
+                        "A notification opens what it's about: the page, or the walkie chat.{}",
+                        if mac { " Reply to a walkie message right from the notification." } else { "" }
+                    ),
+                ),
+                item(
+                    "Search and your next call",
+                    "Start typing in the quick panel to search projects, deliverables and ideas. Your next booking shows there too, with its place and call sheet, and the next two days' call sheets are saved for offline."
+                        .into(),
+                ),
+            ]);
+            if !mac && os == "windows" {
+                items.push(item(
+                    "Drop files and right-click the taskbar",
+                    "Drag files from Explorer onto the tracker's upload areas. Right-click the taskbar \
+                     icon for the quick panel, a new window and Saved for offline."
+                        .into(),
+                ));
+            }
+            items
+        }
         "0.2.18" => {
             let mut items = vec![
                 item(
@@ -120,8 +185,10 @@ pub(crate) fn maybe_show<R: Runtime>(app: &AppHandle<R>) {
     }
     // Used before this feature existed: the one-time panel tip was shown.
     let existing = crate::mini::was_introduced(app);
-    let items = notes(VERSION, std::env::consts::OS);
-    if !should_show(last.as_deref(), existing, !items.is_empty()) {
+    // Whether there's anything to tell at all; what's told is worked out
+    // when it's shown, once the tracker has said whether they bill by the hour.
+    let any = !notes(VERSION, std::env::consts::OS, true).is_empty();
+    if !should_show(last.as_deref(), existing, any) {
         set_seen(app);
         return;
     }
@@ -131,14 +198,23 @@ pub(crate) fn maybe_show<R: Runtime>(app: &AppHandle<R>) {
         // in and the tracker is on screen (sign-in is confirmed shortly after
         // launch, and the tracker rarely reloads a whole page to try again).
         std::thread::sleep(std::time::Duration::from_secs(6));
-        for _ in 0..24 {
+        for attempt in 0..24 {
             let looking = tauri::Manager::get_webview_window(&app, "main")
                 .and_then(|main| main.is_visible().ok())
                 .unwrap_or(false);
-            if looking && crate::session::signed_in() {
+            // Which notes depends on whether they bill by the hour: wait
+            // (a little) for the tracker to have said.
+            if looking && crate::session::signed_in() && !crate::hourly::has_read(&app) && attempt < 6 {
+                crate::hourly::refresh_if_stale(&app);
+            } else if looking && crate::session::signed_in() {
                 // Marked read on "Got it" (mini_whats_new_done), so a page
                 // nobody got to read comes back on the next launch.
-                crate::mini::show_whats_new(&app, VERSION, &items);
+                let items = notes(VERSION, std::env::consts::OS, crate::hourly::info_snapshot(&app).is_some());
+                if items.is_empty() {
+                    set_seen(&app);
+                } else {
+                    crate::mini::show_whats_new(&app, VERSION, &items);
+                }
                 return;
             }
             std::thread::sleep(std::time::Duration::from_secs(5));
@@ -150,7 +226,7 @@ pub(crate) fn maybe_show<R: Runtime>(app: &AppHandle<R>) {
 
 /// Settings ▸ What's new.
 pub(crate) fn show_now<R: Runtime>(app: &AppHandle<R>) {
-    let items = notes(VERSION, std::env::consts::OS);
+    let items = notes(VERSION, std::env::consts::OS, crate::hourly::info_snapshot(app).is_some());
     crate::mini::show_whats_new(app, VERSION, &items);
 }
 
@@ -160,13 +236,40 @@ mod tests {
 
     #[test]
     fn this_version_has_notes_in_each_systems_words() {
-        let mac = notes("0.2.18", "macos");
-        let win = notes("0.2.18", "windows");
+        let mac = notes("0.2.18", "macos", false);
+        let win = notes("0.2.18", "windows", false);
         assert!(mac.len() >= 5 && win.len() >= 5);
         assert!(mac.iter().any(|i| i.how.contains("Dock")));
         assert!(!win.iter().any(|i| i.how.contains("Dock") || i.how.contains("menu bar")));
-        assert!(notes("0.0.1", "macos").is_empty());
-        assert!(!notes(VERSION, "macos").is_empty(), "add notes for {VERSION} in whats_new.rs");
+        assert!(notes("0.0.1", "macos", true).is_empty());
+        assert!(!notes(VERSION, "macos", false).is_empty(), "add notes for {VERSION} in whats_new.rs");
+    }
+
+    #[test]
+    fn the_timer_release_names_each_systems_keys() {
+        let mac = notes("0.2.19", "macos", true);
+        let win = notes("0.2.19", "windows", true);
+        assert!(mac.iter().any(|i| i.how.contains("⌘⇧Y") && i.how.contains("Dock")));
+        assert!(win.iter().any(|i| i.how.contains("Ctrl+Alt+Y")));
+        assert!(!win.iter().any(|i| i.how.contains("Dock") || i.how.contains("menu bar")));
+        assert!(win.iter().any(|i| i.title.contains("taskbar")));
+        assert!(!mac.iter().any(|i| i.title.contains("taskbar")));
+    }
+
+    #[test]
+    fn only_people_who_bill_by_the_hour_hear_about_the_timer() {
+        for os in ["macos", "windows", "linux"] {
+            let everyone = notes("0.2.19", os, false);
+            assert!(!everyone.is_empty());
+            assert!(
+                !everyone.iter().any(|i| {
+                    let text = format!("{} {}", i.title, i.how).to_lowercase();
+                    text.contains("timer") || text.contains("suggest time") || text.contains("by the hour")
+                }),
+                "{os}: {everyone:?}"
+            );
+            assert_eq!(notes("0.2.19", os, true).len(), everyone.len() + 3);
+        }
     }
 
     #[test]

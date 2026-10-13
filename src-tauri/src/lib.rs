@@ -27,9 +27,13 @@ mod banner;
 mod clock;
 mod close;
 mod desktop_entry;
+mod detector;
+#[cfg(target_os = "macos")]
+mod dock;
 mod diagnostics;
 mod download;
 mod google_sign_in;
+mod hourly;
 mod idle;
 #[cfg(windows)]
 mod jumplist;
@@ -590,6 +594,10 @@ pub(crate) fn build_tracker_window<R: Runtime>(
                     // Signed in on the dashboard (where the app opens): what's
                     // new after an update, once (whats_new.rs).
                     if has_session_cookie(&cookies) {
+                        // The page can fetch now: read the clock and the
+                        // project timer straight away, not on the next poll.
+                        clock::read_now(probe.app_handle());
+                        hourly::read_now(probe.app_handle());
                         whats_new::maybe_show(probe.app_handle());
                     }
                 }
@@ -723,7 +731,7 @@ pub(crate) fn is_extra_tracker_window(label: &str) -> bool {
 /// Windows' own "restore minimised windows", and Ctrl+Shift+I would take
 /// the browsers' developer tools from every other app.
 #[cfg(desktop)]
-fn shortcut_modifiers() -> tauri_plugin_global_shortcut::Modifiers {
+pub(crate) fn shortcut_modifiers() -> tauri_plugin_global_shortcut::Modifiers {
     use tauri_plugin_global_shortcut::Modifiers;
     if cfg!(target_os = "macos") {
         Modifiers::SUPER | Modifiers::SHIFT
@@ -814,6 +822,12 @@ pub fn run() {
                         }
                         return;
                     }
+                    // Cmd+Shift+Y (Ctrl+Alt+Y): the project timer, for
+                    // those who have one (hourly.rs registers it).
+                    if shortcut == &hourly::shortcut() {
+                        hourly::shortcut_pressed(app);
+                        return;
+                    }
                     // Cmd+Shift+M (Ctrl+Alt+M on Windows/Linux): the quick panel.
                     let panel = tauri_plugin_global_shortcut::Shortcut::new(
                         Some(shortcut_modifiers()),
@@ -844,6 +858,11 @@ pub fn run() {
                     // Extra tracker windows (tracker-<n>) really close.
                     _ => {}
                 }
+            }
+            // Back in the tracker: the project timer may have changed on the
+            // website (the board's ▶, the header), so read it again (hourly.rs).
+            if matches!(event, tauri::WindowEvent::Focused(true)) && window.label() == "main" {
+                hourly::refresh_if_stale(window.app_handle());
             }
             // macOS: keep the tab bar showing, also on a window whose tab was
             // just dragged out into its own window (tabs.rs).
@@ -884,10 +903,17 @@ pub fn run() {
             }
             // Drop-down behaviour: the quick panel hides when it loses focus,
             // unless it is pinned as a floating timer.
+            // Dragging the panel can blur it (Windows): the move keeps it open.
+            if window.label() == "mini" && matches!(event, tauri::WindowEvent::Moved(_)) {
+                mini::note_moved();
+            }
             if window.label() == "mini"
                 && matches!(event, tauri::WindowEvent::Focused(false))
+                && !mini::moved_recently()
                 && !mini::is_pinned()
                 && !mini::held_open()
+                && !detector::choosing_folder()
+                && !mini::just_opened_from_banner()
             {
                 mini::hide(window.app_handle());
             }
@@ -900,6 +926,7 @@ pub fn run() {
             offline::offline_delete,
             offline::offline_storage_info,
             mini::mini_action,
+            mini::mini_dragging,
             mini::mini_expand,
             mini::mini_expand_notifications,
             mini::mini_hide,
@@ -915,7 +942,29 @@ pub fn run() {
             mini::mini_whats_new,
             mini::mini_whats_new_done,
             walkie::mini_walkie_open,
-            walkie::mini_walkie_send
+            walkie::mini_walkie_send,
+            hourly::mini_hourly,
+            hourly::mini_hourly_idle,
+            hourly::mini_hourly_file,
+            hourly::mini_hourly_add,
+            hourly::mini_hourly_pin,
+            hourly::mini_hourly_continue,
+            hourly::mini_hourly_edit,
+            hourly::mini_hourly_delete,
+            detector::mini_detector_toggle,
+            detector::mini_detector_app,
+            detector::mini_detector_permission,
+            detector::mini_detector_link,
+            detector::mini_detector_link_project,
+            detector::mini_detector_unlink,
+            detector::mini_detector_answer,
+            hourly::mini_hourly_new_project,
+            detector::mini_detector_open_apps,
+            detector::mini_detector_restart,
+            detector::mini_detector_open_settings,
+            detector::mini_detector_reset_permission,
+            detector::mini_detector_log_now,
+            detector::mini_detector_drop_now
         ])
         .setup(|app| {
             #[cfg(target_os = "linux")]
@@ -953,6 +1002,10 @@ pub fn run() {
                 .visible(false)
                 .focused(false)
                 .build()?;
+            // Above other windows unless the person switched it off (mini.rs).
+            mini::apply_on_top(app.handle());
+            // The tracker itself never floats above other apps.
+            let _ = main_window.set_always_on_top(false);
             // macOS: Tauri turns window tabbing off app-wide whenever it
             // builds a window without a tab group (the panel, the library),
             // which hid the tracker's tab bar. Turn it back on now that every
@@ -1045,6 +1098,8 @@ pub fn run() {
                 ],
             )?;
             app.manage(clock_items);
+            // The project timer's submenu, at the top while someone has one.
+            app.manage(hourly::TrayMenu::new(app.handle(), &tray_menu)?);
             // Rows that change with signing in (session.rs).
             app.manage(session::TrayRows {
                 show: tray_show.clone(),
@@ -1057,6 +1112,7 @@ pub fn run() {
             app.manage(notify::Snapshot::default());
             app.manage(walkie::Walkie::default());
             app.manage(schedule::Schedule::default());
+            app.manage(hourly::Hourly::default());
             app.manage(notify::InboxItems {
                 rows: [inbox_1, inbox_2, inbox_3],
                 hrefs: std::sync::Mutex::new([None, None, None]),
@@ -1147,6 +1203,8 @@ pub fn run() {
                         analytics::setting_changed(app, "launch_at_login", on);
                     }
                     "tray-quit" => app.exit(0),
+                    // The project timer, from the tray or the Dock (dock.rs).
+                    id if hourly::is_menu_id(id) => hourly::menu_action(app, id),
                     _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {
@@ -1166,6 +1224,10 @@ pub fn run() {
             notify::start(app.handle().clone());
             walkie::start(app.handle().clone());
             schedule::start(app.handle().clone());
+            hourly::start_polling(app.handle().clone());
+            detector::start(app.handle().clone());
+            #[cfg(target_os = "macos")]
+            dock::install();
             #[cfg(target_os = "macos")]
             theme::start(app.handle().clone());
             idle::start(app.handle().clone());

@@ -97,6 +97,10 @@ pub(crate) struct NextCall {
     pub day: String,
     pub title: String,
     pub project: String,
+    /// The project's number alone ("CB-0412"), to match the project timer's
+    /// projects (hourly.rs).
+    #[serde(skip)]
+    pub project_number: String,
     pub place: Option<String>,
     /// Google Maps only (checked), opened in the browser.
     pub map_url: Option<String>,
@@ -114,6 +118,7 @@ pub(crate) fn next_call(ahead: &Ahead) -> Option<NextCall> {
         day: booking.day.clone(),
         title: booking.title.clone(),
         project: format!("{} {}", booking.project.number, booking.project.name).trim().to_string(),
+        project_number: booking.project.number.trim().to_string(),
         place: booking.place.clone(),
         map_url: booking.map_url.clone().filter(|url| is_map_url(url)),
         pencilled: booking.pencilled,

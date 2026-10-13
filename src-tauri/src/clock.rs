@@ -11,7 +11,13 @@
 //! read the time sheet notice yet is shown the tracker's clock instead: the
 //! notice is read there, never skipped from the tray.
 
-use std::{sync::Mutex, time::Duration};
+use std::{
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Mutex,
+    },
+    time::Duration,
+};
 
 use serde::Deserialize;
 use tauri::{menu::MenuItem, AppHandle, Manager, Runtime};
@@ -229,6 +235,8 @@ fn apply<R: Runtime>(app: &AppHandle<R>, clock: Option<Clock>) {
     let wrapped = matches!(&prev, Some(p) if p.available && (p.state == "in" || p.state == "break"))
         && matches!(&clock, Some(c) if c.available && c.state == "out");
     if wrapped {
+        // A project timer still running: ask whether to stop it too.
+        crate::hourly::on_wrap(app);
         if let Some(done) = clock.as_ref() {
             let (worked, rest) = day_totals(&done.today, unix_now());
             if worked > 0 {
@@ -246,7 +254,39 @@ fn apply<R: Runtime>(app: &AppHandle<R>, clock: Option<Clock>) {
             *slot = clock;
         }
     }
+    READ_AT.store(unix_now(), Ordering::Relaxed);
     crate::mini::push(app);
+}
+
+/// When the clock was last read (seconds since the epoch; 0 = never).
+static READ_AT: AtomicU64 = AtomicU64::new(0);
+
+/// A read this young is fresh enough for the panel opening.
+const FRESH_FOR_SECS: u64 = 5;
+
+/// Read the clock now and collect the answer shortly after, instead of on
+/// the next tick (30 s): the tracker page just loaded, or the panel opened
+/// on a stale read. A second try covers a page still settling.
+pub(crate) fn read_now<R: Runtime>(app: &AppHandle<R>) {
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let before = READ_AT.load(Ordering::Relaxed);
+        refresh(&app);
+        for _ in 0..2 {
+            std::thread::sleep(Duration::from_millis(1500));
+            refresh(&app);
+            if READ_AT.load(Ordering::Relaxed) != before {
+                return;
+            }
+        }
+    });
+}
+
+/// Read again now if the last read is more than a few seconds old.
+pub(crate) fn refresh_if_stale<R: Runtime>(app: &AppHandle<R>) {
+    if unix_now().saturating_sub(READ_AT.load(Ordering::Relaxed)) > FRESH_FOR_SECS {
+        read_now(app);
+    }
 }
 
 /// Last known connectivity. Starts online; the first poll corrects it
@@ -452,6 +492,12 @@ pub(crate) fn fmt_span(mins: u64) -> String {
     }
 }
 
+/// "09:40" in Johannesburg (UTC+2, no daylight saving) for unix seconds.
+pub(crate) fn fmt_hhmm_sast(secs: u64) -> String {
+    let tod = (secs + 2 * 3600) % 86_400;
+    format!("{:02}:{:02}", tod / 3600, (tod % 3600) / 60)
+}
+
 /// SAST is UTC+2 year-round (no daylight saving): weekday (Mon = 0) and
 /// HHMM in Johannesburg from an epoch.
 fn sast_weekday_hhmm(now: u64) -> (u64, u64) {
@@ -521,16 +567,22 @@ pub(crate) fn start<R: Runtime>(app: AppHandle<R>) {
     });
 }
 
-/// Refresh the menu-bar title from the last known clock: the live worked
-/// time while called in or on a break, nothing otherwise. Called once a
-/// second; only touches the tray when the text actually changed.
+/// Refresh the menu-bar title: a running project timer's time (hourly.rs),
+/// else the live worked time while called in or on a break, nothing
+/// otherwise. Called once a second; only touches the tray when the text
+/// actually changed.
 fn tick_title<R: Runtime>(app: &AppHandle<R>, last: &mut String) {
-    let text = app
-        .try_state::<Last>()
-        .and_then(|state| state.0.lock().ok().and_then(|slot| slot.clone()))
-        .filter(|c| c.available && (c.state == "in" || c.state == "break"))
-        .and_then(|c| elapsed_since(&c.since_iso, unix_now()))
-        .map(tray_title);
+    let now = unix_now();
+    // The project timer's tray and Dock menus show its time too.
+    crate::hourly::refresh_menus(app);
+    let project = crate::hourly::running_since(app).map(|since| format!("▶ {}", tray_title(now.saturating_sub(since))));
+    let text = project.or_else(|| {
+        app.try_state::<Last>()
+            .and_then(|state| state.0.lock().ok().and_then(|slot| slot.clone()))
+            .filter(|c| c.available && (c.state == "in" || c.state == "break"))
+            .and_then(|c| elapsed_since(&c.since_iso, now))
+            .map(tray_title)
+    });
     let next = with_walkie(text.unwrap_or_default(), crate::walkie::unread(app));
     if next != *last {
         *last = next.clone();

@@ -18,6 +18,10 @@
 //! CGEventSourceSecondsSinceLastEventType on macOS, and on Linux GNOME's idle
 //! monitor over D-Bus, else KDE Plasma's org.freedesktop.ScreenSaver. Everywhere,
 //! a gap between polls (the computer slept) counts as time away too.
+//!
+//! The same periods away also go to hourly.rs: with a project timer left
+//! running, the quick panel asks whether to keep it or drop the idle time;
+//! unanswered, it stops at the idle moment (hourly.rs).
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -224,9 +228,16 @@ pub(crate) fn start<R: Runtime>(app: AppHandle<R>) {
         let mut tracker = Tracker::default();
         loop {
             std::thread::sleep(POLL_EVERY);
-            let Some(away) = tracker.poll(unix_now(), idle_seconds()) else {
+            let now = unix_now();
+            let idle = idle_seconds();
+            // A project timer left running stops at the idle moment after
+            // 30 minutes without an answer (hourly.rs).
+            crate::hourly::on_idle(&app, now, idle);
+            let Some(away) = tracker.poll(now, idle) else {
                 continue;
             };
+            // A project timer left running asks in the quick panel.
+            crate::hourly::on_away(&app, away);
             let Some(window) = app.get_webview_window("main") else {
                 continue;
             };

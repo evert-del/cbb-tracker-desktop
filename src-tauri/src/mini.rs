@@ -38,6 +38,8 @@ pub(crate) struct View {
     pub next_call: Option<crate::schedule::NextCall>,
     /// The next days' call sheets are saved for offline (schedule.rs).
     pub auto_offline: bool,
+    /// The project timer, for someone who bills by the hour (hourly.rs).
+    pub hourly: Option<crate::hourly::PanelView>,
     pub version: String,
     pub autostart: bool,
     /// Closing the main window quits the app (close.rs) instead of hiding it.
@@ -45,6 +47,10 @@ pub(crate) struct View {
     pub pinned: bool,
     /// Shrunk to the mini timer (pinned or not).
     pub compact: bool,
+    /// The panel and mini timer float above other windows.
+    pub on_top: bool,
+    /// Minimising the tracker shows the mini timer instead of the taskbar.
+    pub minimise_to_timer: bool,
     /// "macos", "windows" or "linux": the panel follows each system's own
     /// look (corner radii, typeface, wording).
     pub platform: String,
@@ -89,12 +95,17 @@ pub(crate) fn plan(
         .map(|c| crate::clock::day_totals(&c.today, now))
         .unwrap_or((0, 0));
     View {
-        state: available.map(|c| c.state.clone()).unwrap_or_else(|| "none".into()),
-        status: planned
-            .status
-            .strip_prefix("Time sheet: ")
-            .unwrap_or(&planned.status)
-            .to_string(),
+        // Before the first read: loading, not "no time sheet".
+        state: match (clock, available) {
+            (None, _) => "loading".into(),
+            (_, Some(c)) => c.state.clone(),
+            _ => "none".into(),
+        },
+        status: if clock.is_none() {
+            "Loading…".into()
+        } else {
+            planned.status.strip_prefix("Time sheet: ").unwrap_or(&planned.status).to_string()
+        },
         actions,
         since_iso: available.map(|c| c.since_iso.clone()).unwrap_or_default(),
         worked_min,
@@ -112,10 +123,13 @@ pub(crate) fn plan(
         quiet: crate::quiet::Prefs::default(),
         next_call: None,
         auto_offline: true,
+        hourly: None,
         version: env!("CARGO_PKG_VERSION").into(),
         autostart: false,
         close_quits: false,
         pinned: false,
+        on_top: true,
+        minimise_to_timer: true,
         compact: false,
         platform: std::env::consts::OS.into(),
     }
@@ -142,12 +156,16 @@ pub(crate) fn push<R: Runtime>(app: &AppHandle<R>) {
     view.close_quits = crate::close::quits(app);
     view.pinned = is_pinned();
     view.compact = is_compact();
+    view.on_top = on_top(app);
+    view.minimise_to_timer = minimise_to_timer(app);
     view.summary = summary;
     view.walkie_unread = crate::walkie::unread(app);
     view.chats = crate::walkie::chats(app);
     view.quiet = crate::quiet::prefs(app, crate::clock::unix_now());
     view.next_call = crate::schedule::next(app);
     view.auto_offline = crate::schedule::auto_save(app);
+    view.hourly = crate::hourly::panel(app);
+    fit_height(app, view.hourly.is_some());
     let Ok(payload) = serde_json::to_string(&view) else { return };
     if let Some(mini) = app.get_webview_window("mini") {
         let script = format!("window.__cbbMiniShow && window.__cbbMiniShow({payload})");
@@ -172,15 +190,105 @@ fn is_compact() -> bool {
     COMPACT.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// Settings, stored as their opposite so both default to on (close.rs flags
+/// read false when unset).
+const NOT_ON_TOP: &str = "panel_not_on_top";
+const NOT_MINIMISE_TO_TIMER: &str = "minimise_not_to_timer";
+
+/// The panel and mini timer float above other windows (the default). Off,
+/// they sit among them like any window: some find a floating timer covers
+/// their work.
+pub(crate) fn on_top<R: Runtime>(app: &AppHandle<R>) -> bool {
+    !crate::close::flag(app, NOT_ON_TOP)
+}
+
+/// Put the panel above other windows, or among them, as set.
+pub(crate) fn apply_on_top<R: Runtime>(app: &AppHandle<R>) {
+    if let Some(mini) = app.get_webview_window("mini") {
+        let _ = mini.set_always_on_top(on_top(app));
+    }
+}
+
+/// Minimising a tracker window floats the mini timer (the default) instead
+/// of a plain minimise to the taskbar / Dock.
+pub(crate) fn minimise_to_timer<R: Runtime>(app: &AppHandle<R>) -> bool {
+    !crate::close::flag(app, NOT_MINIMISE_TO_TIMER)
+}
+
+/// When the panel was last moved or started a drag (ms since the epoch).
+static MOVED_AT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Dragging the panel can take its focus (Windows): a blur this soon after a
+/// move doesn't close it.
+const MOVE_GRACE_MS: u64 = 1500;
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// The panel moved (or a drag is starting).
+pub(crate) fn note_moved() {
+    MOVED_AT.store(now_ms(), std::sync::atomic::Ordering::Relaxed);
+}
+
+fn within_grace(moved_at: u64, now: u64) -> bool {
+    moved_at > 0 && now.saturating_sub(moved_at) < MOVE_GRACE_MS
+}
+
+/// Moved in the last moment: a lost focus now is the drag's, not a click
+/// elsewhere.
+pub(crate) fn moved_recently() -> bool {
+    within_grace(MOVED_AT.load(std::sync::atomic::Ordering::Relaxed), now_ms())
+}
+
+/// The panel is about to be dragged (mini.ts, before startDragging).
+#[tauri::command]
+pub(crate) fn mini_dragging() -> Result<(), String> {
+    note_moved();
+    Ok(())
+}
+
 /// Window sizes (logical px, including the margin the card's shadow needs).
 const FULL_SIZE: (f64, f64) = (372.0, 576.0);
+/// Taller for someone with the project timer (hourly.rs): its one-tap
+/// starts fit below the notifications without scrolling. Never taller than
+/// the screen allows.
+const FULL_HOURLY_HEIGHT: f64 = 720.0;
+
+/// The full panel's height now.
+static FULL_HEIGHT: std::sync::Mutex<f64> = std::sync::Mutex::new(FULL_SIZE.1);
+
+fn full_height() -> f64 {
+    FULL_HEIGHT.lock().map(|h| *h).unwrap_or(FULL_SIZE.1)
+}
+
+/// Grow or shrink the full panel for the timer, fitting the main screen.
+fn fit_height<R: Runtime>(app: &AppHandle<R>, hourly: bool) {
+    let Some(mini) = app.get_webview_window("mini") else { return };
+    let screen = mini
+        .primary_monitor()
+        .ok()
+        .flatten()
+        .map(|m| m.size().to_logical::<f64>(m.scale_factor()).height)
+        .unwrap_or(800.0);
+    let want = if hourly { FULL_HOURLY_HEIGHT.min(screen - 100.0).max(FULL_SIZE.1) } else { FULL_SIZE.1 };
+    let changed = FULL_HEIGHT.lock().map(|mut h| std::mem::replace(&mut *h, want) != want).unwrap_or(false);
+    if changed && !is_compact() {
+        let _ = mini.set_size(tauri::LogicalSize::new(FULL_SIZE.0, want));
+        if mini.is_visible().unwrap_or(false) && !is_pinned() {
+            place_under_tray(&mini);
+        }
+    }
+}
 /// A 300x44 row, plus the transparent room around the card for its shadow
 /// (body padding: 16px each side, 6px above, 22px below).
 const COMPACT_SIZE: (f64, f64) = (332.0, 72.0);
 
 fn set_compact<R: Runtime>(app: &AppHandle<R>, compact: bool) {
     COMPACT.store(compact, std::sync::atomic::Ordering::Relaxed);
-    let (w, h) = if compact { COMPACT_SIZE } else { FULL_SIZE };
+    let (w, h) = if compact { COMPACT_SIZE } else { (FULL_SIZE.0, full_height()) };
     if let Some(mini) = app.get_webview_window("mini") {
         let _ = mini.set_size(tauri::LogicalSize::new(w, h));
     }
@@ -258,6 +366,8 @@ pub(crate) fn show<R: Runtime>(app: &AppHandle<R>) {
         let _ = mini.show();
         let _ = mini.set_focus();
         push(app);
+        crate::clock::refresh_if_stale(app);
+        crate::hourly::refresh_if_stale(app);
     }
 }
 
@@ -267,7 +377,7 @@ pub(crate) fn show<R: Runtime>(app: &AppHandle<R>) {
 /// brings it back (bring_tracker_back). An already pinned panel keeps its
 /// size and place.
 pub(crate) fn minimised_to_panel<R: Runtime>(app: &AppHandle<R>, label: &str) {
-    if !crate::session::signed_in() {
+    if !crate::session::signed_in() || !minimise_to_timer(app) {
         return;
     }
     let Some(window) = app.get_webview_window(label) else { return };
@@ -328,6 +438,44 @@ fn place_in_main_screen_corner<R: Runtime>(mini: &tauri::WebviewWindow<R>) {
         origin.y + 30.0
     };
     let _ = mini.set_position(tauri::LogicalPosition::new(x, y));
+}
+
+/// When a clicked banner last opened the panel. Clicking a banner brings
+/// the app forward, and focus can move around while it does: the panel
+/// would lose it and hide straight away (drop-down behaviour), so the click
+/// seemed to do nothing. For a moment after, losing focus doesn't hide it.
+static OPENED_FROM_BANNER: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+
+/// Opened from a banner this recently: a blur doesn't hide the panel.
+pub(crate) fn just_opened_from_banner() -> bool {
+    OPENED_FROM_BANNER
+        .lock()
+        .ok()
+        .and_then(|at| *at)
+        .is_some_and(|at| at.elapsed() < std::time::Duration::from_millis(1500))
+}
+
+/// A clicked banner: the panel, full size, kept open and focused once the
+/// app has come forward.
+pub(crate) fn show_from_banner<R: Runtime>(app: &AppHandle<R>) {
+    if let Ok(mut at) = OPENED_FROM_BANNER.lock() {
+        *at = Some(std::time::Instant::now());
+    }
+    show(app);
+    // Again once the app is forward, in case focus went elsewhere meanwhile.
+    let app = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        let again = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            if let Some(mini) = again.get_webview_window("mini") {
+                if !mini.is_visible().unwrap_or(false) {
+                    show(&again);
+                }
+                let _ = mini.set_focus();
+            }
+        });
+    });
 }
 
 /// Toggle the panel (tray click, tray menu, Cmd+Shift+M / Ctrl+Alt+M).
@@ -576,6 +724,28 @@ pub(crate) fn ask_mood<R: Runtime>(app: &AppHandle<R>, moment: &str, greeting: O
     }
 }
 
+/// The project timer asks something in the panel (hourly.rs), opening it
+/// full size: about idle time (`__cbbMiniHourlyIdle`), or which project an
+/// unfiled stretch was for, with what happened (`__cbbMiniHourlyAfter`).
+/// It only asks; nothing changes until they answer.
+pub(crate) fn ask_hourly<R: Runtime>(app: &AppHandle<R>, callback: &str, question: &serde_json::Value) {
+    if is_compact() {
+        set_compact(app, false);
+        push(app);
+    }
+    let visible = app
+        .get_webview_window("mini")
+        .and_then(|mini| mini.is_visible().ok())
+        .unwrap_or(false);
+    if !visible {
+        show(app);
+    }
+    if let Some(mini) = app.get_webview_window("mini") {
+        let _ = mini.eval(format!("window.{callback} && window.{callback}({question})"));
+        let _ = mini.set_focus();
+    }
+}
+
 /// A clicked walkie banner (banner.rs): the panel, full size, open on that
 /// conversation's quick chat.
 pub(crate) fn open_chat<R: Runtime>(app: &AppHandle<R>, key: &str, kind: &str, name: &str) {
@@ -591,7 +761,7 @@ pub(crate) fn open_chat<R: Runtime>(app: &AppHandle<R>, key: &str, kind: &str, n
         .and_then(|mini| mini.is_visible().ok())
         .unwrap_or(false);
     if !visible {
-        show(app);
+        show_from_banner(app);
     }
     if let Some(mini) = app.get_webview_window("mini") {
         let row = serde_json::json!({ "key": key, "kind": kind, "name": name });
@@ -758,7 +928,7 @@ pub(crate) fn mini_expand_notifications<R: Runtime>(app: AppHandle<R>) -> Result
 
 /// Open one row's page in the main window (tracker host only) and bring
 /// the window forward.
-fn open_href<R: Runtime>(app: &AppHandle<R>, href: &str) {
+pub(crate) fn open_href<R: Runtime>(app: &AppHandle<R>, href: &str) {
     if !href.starts_with('/') {
         return;
     }
@@ -825,6 +995,16 @@ fn is_menu_item(item: &str) -> bool {
         "offline" | "new-window" | "update" | "diagnostics" | "autostart" | "close-keep" | "close-quit" | "quit"
     ) || crate::quiet::is_toggle(item)
         || item == "auto-offline"
+        || item == "on-top"
+        || item == "minimise-to-timer"
+        || idle_minutes_item(item).is_some()
+}
+
+/// Settings › "Ask about idle time after": `idle-10` is 10 minutes.
+fn idle_minutes_item(item: &str) -> Option<u64> {
+    item.strip_prefix("idle-")
+        .and_then(|minutes| minutes.parse().ok())
+        .filter(|minutes| crate::hourly::IDLE_CHOICES.contains(minutes))
 }
 
 /// The next call's place, in the browser: Google Maps links only.
@@ -904,6 +1084,24 @@ pub(crate) fn mini_menu<R: Runtime>(app: AppHandle<R>, item: String) -> Result<(
             crate::analytics::setting_changed(&app, "close_quits", quits);
         }
         "quit" => app.exit(0),
+        item if idle_minutes_item(item).is_some() => {
+            if let Some(minutes) = idle_minutes_item(item) {
+                crate::hourly::set_idle_minutes(&app, minutes);
+            }
+        }
+        "on-top" => {
+            let on = !on_top(&app);
+            crate::close::set_flag(&app, NOT_ON_TOP, !on);
+            apply_on_top(&app);
+            crate::analytics::setting_changed(&app, "panel_on_top", on);
+            push(&app);
+        }
+        "minimise-to-timer" => {
+            let on = !minimise_to_timer(&app);
+            crate::close::set_flag(&app, NOT_MINIMISE_TO_TIMER, !on);
+            crate::analytics::setting_changed(&app, "minimise_to_timer", on);
+            push(&app);
+        }
         "auto-offline" => {
             let on = crate::schedule::toggle_auto_save(&app);
             crate::analytics::setting_changed(&app, "auto_offline", on);
@@ -1009,12 +1207,32 @@ mod tests {
 
     #[test]
     fn nothing_to_press_without_a_time_sheet() {
-        for clock in [None, Some(crate::clock::Clock { available: false, ..clock("in", "08:00") })] {
+        for (clock, state) in [
+            (None, "loading"),
+            (Some(crate::clock::Clock { available: false, ..clock("in", "08:00") }), "none"),
+        ] {
             let view = plan(clock.as_ref(), 0, vec![], NOW);
             assert!(view.actions.is_empty());
-            assert_eq!(view.state, "none");
+            assert_eq!(view.state, state);
             assert_eq!(view.since_iso, "");
         }
+    }
+
+    #[test]
+    fn before_the_first_read_it_says_loading() {
+        let view = plan(None, 0, vec![], NOW);
+        assert_eq!(view.state, "loading");
+        assert_eq!(view.status, "Loading…");
+        assert!(!view.status.contains("not in use"));
+        assert!(view.actions.is_empty());
+    }
+
+    #[test]
+    fn a_blur_just_after_a_move_is_the_drag() {
+        assert!(within_grace(10_000, 10_000));
+        assert!(within_grace(10_000, 11_400));
+        assert!(!within_grace(10_000, 11_600));
+        assert!(!within_grace(0, 500));
     }
 
     #[test]
@@ -1088,11 +1306,12 @@ mod tests {
     fn only_known_menu_items_pass() {
         for item in [
             "offline", "new-window", "update", "diagnostics", "autostart", "close-keep", "close-quit", "quit",
-            "banners-tracker", "banners-walkie", "banners-channel1", "auto-offline",
+            "banners-tracker", "banners-walkie", "banners-channel1", "auto-offline", "idle-5", "idle-20",
+            "on-top", "minimise-to-timer",
         ] {
             assert!(is_menu_item(item), "{item}");
         }
-        for item in ["", "show", "quit;", "eval"] {
+        for item in ["", "show", "quit;", "eval", "idle-0", "idle-600", "idle-x"] {
             assert!(!is_menu_item(item), "{item}");
         }
     }

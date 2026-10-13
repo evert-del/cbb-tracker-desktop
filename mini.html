@@ -766,8 +766,8 @@
         <label class="h-field">Project<select id="hourly-add-project" required></select></label>
         <div class="h-times">
           <label class="h-field h-day">Day it started<input id="hourly-add-day" type="date" required /></label>
-          <label class="h-field">From<input id="hourly-add-from" type="time" step="300" required /></label>
-          <label class="h-field">To<input id="hourly-add-to" type="time" step="300" required /></label>
+          <label class="h-field">From<input id="hourly-add-from" type="text" inputmode="numeric" maxlength="5" placeholder="hh:mm" autocomplete="off" required /></label>
+          <label class="h-field">To<input id="hourly-add-to" type="text" inputmode="numeric" maxlength="5" placeholder="hh:mm" autocomplete="off" required /></label>
         </div>
         <span id="hourly-add-length"></span>
         <label class="h-field">Note (optional)<input id="hourly-add-note" type="text" maxlength="500" autocomplete="off" /></label>
@@ -782,8 +782,8 @@
         <h2>Edit time</h2>
         <label class="h-field">Project<select id="hourly-edit-project"></select></label>
         <div class="h-times">
-          <label class="h-field">From<input id="hourly-edit-from" type="time" step="60" required /></label>
-          <label class="h-field">To<input id="hourly-edit-to" type="time" step="60" /></label>
+          <label class="h-field">From<input id="hourly-edit-from" type="text" inputmode="numeric" maxlength="5" placeholder="hh:mm" autocomplete="off" required /></label>
+          <label class="h-field">To<input id="hourly-edit-to" type="text" inputmode="numeric" maxlength="5" placeholder="hh:mm" autocomplete="off" /></label>
         </div>
         <span id="hourly-edit-length"></span>
         <label class="h-field">Note (optional)<input id="hourly-edit-note" type="text" maxlength="500" autocomplete="off" /></label>

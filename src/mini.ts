@@ -1541,7 +1541,8 @@ function editStretch(): { from: Date; to: Date | null } | null {
   if (hourlyEdit.endedAt === null) return { from, to: null };
   const to = new Date(`${day}T${timeOf("hourly-edit-to")}`);
   if (Number.isNaN(to.getTime())) return null;
-  if (to <= from) to.setDate(to.getDate() + 1);
+  // Only an end before the start runs past midnight; the same time is 0m.
+  if (to < from) to.setDate(to.getDate() + 1);
   return { from, to };
 }
 
@@ -1581,7 +1582,10 @@ function openHourlyEdit(e: TodayEntry) {
   toInput.placeholder = e.endedAt === null ? "Running" : "";
   el<HTMLInputElement>("hourly-edit-note").value = e.note ?? "";
   el<HTMLInputElement>("hourly-edit-for-client").checked = !!e.noteForClient;
-  el<HTMLButtonElement>("hourly-edit-delete").hidden = e.endedAt === null;
+  const del = el<HTMLButtonElement>("hourly-edit-delete");
+  del.hidden = e.endedAt === null;
+  del.dataset.confirm = "";
+  del.textContent = "Delete";
   el("hourly-edit-error").hidden = true;
   document.querySelectorAll<HTMLButtonElement>("#hourly-edit-view .h-choices button").forEach((b) => (b.disabled = false));
   renderEditLength();
@@ -1629,12 +1633,10 @@ function deleteHourlyEdit() {
   const button = el<HTMLButtonElement>("hourly-edit-delete");
   // A second tap confirms: nothing is deleted on one stray click.
   if (button.dataset.confirm !== "1") {
+    // Armed until the form closes (openHourlyEdit resets it): a timer
+    // here disarmed it again between two unhurried taps.
     button.dataset.confirm = "1";
     button.textContent = "Tap again to delete";
-    window.setTimeout(() => {
-      button.dataset.confirm = "";
-      button.textContent = "Delete";
-    }, 4000);
     return;
   }
   button.dataset.confirm = "";
@@ -2383,7 +2385,7 @@ function closeHourlyIdle() {
 
 function answerHourlyIdle(choice: "keep" | "resume" | "stop") {
   if (!hourlyIdle) return;
-  document.querySelectorAll<HTMLButtonElement>(".h-choices button").forEach((b) => (b.disabled = true));
+  document.querySelectorAll<HTMLButtonElement>("#hourly-idle-view .h-choices button").forEach((b) => (b.disabled = true));
   // The view goes when the tracker has the answer (the next push says
   // nothing is being asked); a refusal shows here and can be answered again.
   invoke("mini_hourly_idle", { choice })
@@ -2396,7 +2398,7 @@ function answerHourlyIdle(choice: "keep" | "resume" | "stop") {
 function idleError(text: string) {
   el("hourly-idle-error").textContent = text;
   el("hourly-idle-error").hidden = false;
-  document.querySelectorAll<HTMLButtonElement>(".h-choices button").forEach((b) => (b.disabled = false));
+  document.querySelectorAll<HTMLButtonElement>("#hourly-idle-view .h-choices button").forEach((b) => (b.disabled = false));
 }
 
 declare global {

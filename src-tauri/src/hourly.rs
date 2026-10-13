@@ -110,6 +110,8 @@ const TAKE_RESULT_JS: &str =
 const TIMER_URL: &str = "/api/me/project-timer";
 const FILE_URL: &str = "/api/me/project-time/file";
 const TIME_URL: &str = "/api/me/project-time";
+/// In a step's URL: the id of the timer the step before started.
+const RUNNING_ID: &str = "{running}";
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -631,6 +633,18 @@ pub(crate) fn start_body(project_id: Option<&str>, note: Option<&str>, info: &In
     Ok(body)
 }
 
+/// The requests for a start: the start, then marking its note for the
+/// client when asked (and there is a note).
+pub(crate) fn start_steps(project_id: Option<&str>, note: Option<&str>, for_client: bool, info: &Info) -> Result<Vec<Step>, &'static str> {
+    let body = start_body(project_id, note, info)?;
+    let has_note = body.get("note").is_some();
+    let mut steps = vec![post(TIMER_URL, body)];
+    if for_client && has_note {
+        steps.push(("PATCH", format!("{TIME_URL}/{RUNNING_ID}"), json!({ "noteForClient": true })));
+    }
+    Ok(steps)
+}
+
 /// A stop now, or at `at` (unix seconds: the moment idling began).
 pub(crate) fn stop_body(at: Option<u64>) -> Value {
     match at {
@@ -666,14 +680,18 @@ pub(crate) fn post_script(steps: &[Step], done: &str) -> String {
         steps.iter().map(|(method, url, body)| json!({ "method": method, "url": url, "body": body })).collect(),
     );
     let done = Value::String(done.to_string());
+    let running = Value::String(RUNNING_ID.to_string());
     format!(
         r#"(function (steps, done) {{
   window.__cbbHourlyResult = '';
   function post(i, last, body) {{
     if (i >= steps.length) {{ window.__cbbHourlyResult = JSON.stringify({{ ok: true, running: last, body: body }}); return; }}
+    // A step on the timer just started: its id, and it keeps that timer.
+    var onRunning = steps[i].url.indexOf({running}) >= 0;
+    var url = onRunning ? steps[i].url.replace({running}, last && last.id ? last.id : '') : steps[i].url;
     var init = {{ method: steps[i].method, credentials: 'same-origin' }};
     if (steps[i].body !== null) {{ init.headers = {{ 'Content-Type': 'application/json' }}; init.body = JSON.stringify(steps[i].body); }}
-    fetch(steps[i].url, init)
+    fetch(url, init)
       .then(function (r) {{ return r.json().catch(function () {{ return {{}}; }}).then(function (b) {{ return {{ ok: r.ok, b: b || {{}} }}; }}); }})
       .then(function (x) {{
         if (!x.ok) {{
@@ -681,7 +699,7 @@ pub(crate) fn post_script(steps: &[Step], done: &str) -> String {
           window.__cbbHourlyResult = JSON.stringify({{ ok: false, error: i > 0 && done ? done + ' ' + error : error }});
           return;
         }}
-        post(i + 1, x.b.running || null, x.b);
+        post(i + 1, onRunning ? last : x.b.running || null, x.b);
       }})
       .catch(function () {{ window.__cbbHourlyResult = JSON.stringify({{ ok: false, error: 'You seem to be offline. Try again in a moment.' }}); }});
   }}
@@ -1393,9 +1411,23 @@ fn ends_unfiled(info: &Info) -> Option<String> {
 
 /// Start (or switch to) a project, or an unfiled timer with `None`.
 fn start<R: Runtime>(app: &AppHandle<R>, project_id: Option<&str>, note: Option<&str>, from: &'static str, tell: bool) -> Result<(), String> {
+    start_with(app, project_id, note, false, from, tell)
+}
+
+/// `start`, also showing the client the note (the tracker's start takes no
+/// such flag, so the new entry is marked right after).
+fn start_with<R: Runtime>(
+    app: &AppHandle<R>,
+    project_id: Option<&str>,
+    note: Option<&str>,
+    for_client: bool,
+    from: &'static str,
+    tell: bool,
+) -> Result<(), String> {
     let info = current(app)?;
-    let body = start_body(project_id, note, &info).map_err(str::to_string)?;
-    send(app, vec![post(TIMER_URL, body)], "", Then::Timer { file: ends_unfiled(&info), notice: None, say: tell, auto: None })?;
+    let steps = start_steps(project_id, note, for_client, &info).map_err(str::to_string)?;
+    let done = if steps.len() > 1 { "Started, but the note isn't shown to the client:" } else { "" };
+    send(app, steps, done, Then::Timer { file: ends_unfiled(&info), notice: None, say: tell, auto: None })?;
     let what = match (info.running.is_some(), project_id.is_some()) {
         (true, _) => "hourly_switch",
         (false, false) => "hourly_start_unfiled",
@@ -1668,7 +1700,7 @@ pub(crate) fn mini_hourly_continue<R: Runtime>(app: AppHandle<R>, entry_id: Stri
             return Err("You can't time that project any more.".into());
         }
     }
-    start(&app, project, entry.note.as_deref(), "panel", false)?;
+    start_with(&app, project, entry.note.as_deref(), entry.note_for_client, "panel", false)?;
     crate::analytics::action(&app, "hourly_continue", "panel");
     Ok(())
 }
@@ -1965,6 +1997,14 @@ mod tests {
         // Just start, file it later.
         assert_eq!(start_body(None, Some("Call"), &info), Ok(json!({ "action": "start", "note": "Call" })));
         assert!(start_body(Some("someone-elses"), None, &info).is_err());
+        // Carrying on a note the client sees: the new entry is marked too.
+        let steps = start_steps(Some("p1"), Some("Call"), true, &info).unwrap();
+        assert_eq!(steps.len(), 2);
+        assert_eq!((steps[1].0, steps[1].1.as_str()), ("PATCH", "/api/me/project-time/{running}"));
+        assert_eq!(steps[1].2, json!({ "noteForClient": true }));
+        assert_eq!(start_steps(Some("p1"), None, true, &info).unwrap().len(), 1);
+        assert_eq!(start_steps(Some("p1"), Some("Call"), false, &info).unwrap().len(), 1);
+        assert!(post_script(&steps, "").contains("indexOf(\"{running}\")"));
         let long = "x".repeat(900);
         let body = start_body(Some("p1"), Some(&long), &info).unwrap();
         assert_eq!(body["note"].as_str().map(str::len), Some(500));
@@ -1986,7 +2026,7 @@ mod tests {
     fn the_script_posts_each_step_and_stops_at_a_refusal() {
         let js = post_script(&[post(TIMER_URL, json!({ "action": "stop" })), post(FILE_URL, json!({ "entryId": "t", "projectId": "p" }))], "Stopped.");
         assert!(js.contains("var init = { method: steps[i].method, credentials: 'same-origin' };"));
-        assert!(js.contains("fetch(steps[i].url, init)"));
+        assert!(js.contains("fetch(url, init)"));
         assert!(js.ends_with(
             r#"})([{"body":{"action":"stop"},"method":"POST","url":"/api/me/project-timer"},{"body":{"entryId":"t","projectId":"p"},"method":"POST","url":"/api/me/project-time/file"}], "Stopped.")"#
         ));

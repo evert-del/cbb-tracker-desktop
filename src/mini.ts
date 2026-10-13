@@ -1639,6 +1639,9 @@ function deleteHourlyEdit() {
 
 // ── "Suggest time from my work" (detector.rs) ──
 
+/** "Change apps…" has the whole list open. */
+let detectorAppsOpen = false;
+
 /** The privacy explainer: "ask" before switching on, "read" from the link. */
 let detectorPrivacy: "ask" | "read" | null = null;
 
@@ -1650,6 +1653,7 @@ function showDetectorPrivacy(mode: "ask" | "read" | null) {
 
 function renderDetector(d: Detector | null) {
   el("detector-settings").hidden = d === null;
+  el("timer-settings").hidden = d === null;
   const card = el("hourly-suggest");
   const s = d?.suggestion ?? null;
   card.hidden = s === null;
@@ -1663,9 +1667,26 @@ function renderDetector(d: Detector | null) {
   el("detector-privacy-close").textContent = detectorPrivacy === "ask" ? "Not now" : "Close";
   const apps = el("detector-apps");
   apps.replaceChildren();
-  // By kind: Design, Video, Audio, 3D, Code & AI, Browser, Documents, Yours.
+  // Just the picked apps, until "Change apps…" (or while none is picked)
+  // opens the whole list, by kind: Design, Video, Audio, 3D, Code & AI,
+  // Browser, Documents, Yours.
+  const anyPicked = d.apps.some((a) => a.on);
+  const showAll = detectorAppsOpen || !anyPicked;
+  el("detector-change-apps").hidden = !anyPicked;
+  el("detector-change-apps").textContent = detectorAppsOpen ? "Done" : "Change apps…";
+  el("detector-change-apps").setAttribute("aria-expanded", String(detectorAppsOpen));
+  el("detector-add-app").hidden = !showAll || !d.titlesSupported;
   let kind = "";
   for (const a of d.apps) {
+    if (!showAll && !a.on) continue;
+    if (!showAll) {
+      const chip = document.createElement("span");
+      chip.className = "h-chip";
+      chip.setAttribute("aria-pressed", "true");
+      chip.textContent = a.label;
+      apps.appendChild(chip);
+      continue;
+    }
     if (a.kind !== kind) {
       kind = a.kind;
       const head = document.createElement("div");
@@ -1684,9 +1705,11 @@ function renderDetector(d: Detector | null) {
     apps.appendChild(chip);
   }
   apps.hidden = !d.titlesSupported;
-  el("detector-add-app").hidden = !d.titlesSupported;
-  if (!d.titlesSupported) el("detector-open").hidden = true;
-  renderPermission(d.on ? d.permission ?? null : null);
+  if (!d.titlesSupported || !showAll) el("detector-open").hidden = true;
+  renderPermission(
+    d.on ? d.permission ?? null : null,
+    d.on && d.titlesSupported && d.titlesAllowed && d.apps.some((a) => a.on),
+  );
   renderDetectorNow(d);
   const folders = el("detector-folders");
   folders.replaceChildren();
@@ -1727,8 +1750,9 @@ function renderDetector(d: Detector | null) {
 /** macOS's Screen Recording permission: what to do, by where it's stuck. */
 const SETTINGS_STEPS =
   "In System Settings, remove CoolerBox Tracker with −, add it again with + (from Applications), switch it on, then restart.";
-function renderPermission(state: "ask" | "restart" | "stuck" | null) {
+function renderPermission(state: "ask" | "restart" | "stuck" | null, ok = false) {
   el("detector-permission").hidden = state === null;
+  el("detector-perm-ok").hidden = state !== null || !ok;
   if (state === null) return;
   el("detector-permission-text").textContent = {
     ask:
@@ -1745,14 +1769,21 @@ function renderPermission(state: "ask" | "restart" | "stuck" | null) {
   el("detector-reset-btn").hidden = state !== "stuck";
 }
 
-/** "Right now": what it's looking at, and what it's counting. */
+/** "Right now": what it's looking at, and what it's counting. Always there
+ * while it's on (a placeholder before the first look), so nothing below
+ * moves under a click when it fills in. */
 function renderDetectorNow(d: Detector) {
   const box = el("detector-now");
   const n = d.now ?? null;
-  box.hidden = !d.on || n === null;
-  if (!n) return;
+  box.hidden = !d.on;
   const what = el("detector-now-what");
   what.replaceChildren();
+  if (!n) {
+    what.textContent = "Looking… it checks every 15 seconds.";
+    el("detector-now-counting").hidden = true;
+    el("detector-now-log").hidden = true;
+    return;
+  }
   const bold = (text: string) => {
     const b = document.createElement("b");
     b.textContent = text;
@@ -2449,6 +2480,10 @@ window.addEventListener("DOMContentLoaded", () => {
       .catch((error) => hourlyError(String(error)));
   });
   click("detector-restart-btn", () => void invoke("mini_detector_restart"));
+  click("detector-change-apps", () => {
+    detectorAppsOpen = !detectorAppsOpen;
+    renderDetector(current?.hourly?.detector ?? null);
+  });
   click("detector-open-settings", () => void invoke("mini_detector_open_settings"));
   click("detector-reset-btn", () => {
     invoke("mini_detector_reset_permission").catch((error) => {

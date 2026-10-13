@@ -144,6 +144,8 @@ type View = {
   quiet: Quiet;
   next_call: NextCall | null;
   auto_offline: boolean;
+  on_top: boolean;
+  minimise_to_timer: boolean;
   hourly: Hourly | null;
   version: string;
   autostart: boolean;
@@ -415,6 +417,8 @@ window.__cbbMiniShow = (view) => {
   renderNext(view.next_call);
   renderHourly(view.hourly);
   el("auto-offline").setAttribute("aria-checked", String(view.auto_offline));
+  el("on-top").setAttribute("aria-checked", String(view.on_top));
+  el("minimise-to-timer").setAttribute("aria-checked", String(view.minimise_to_timer));
   renderActions(view);
   renderNeeds(view);
   renderSummary(view);
@@ -2485,6 +2489,8 @@ window.addEventListener("DOMContentLoaded", () => {
   click("banners-walkie", () => menu("banners-walkie"));
   click("banners-channel1", () => menu("banners-channel1"));
   click("auto-offline", () => menu("auto-offline"));
+  click("on-top", () => menu("on-top"));
+  click("minimise-to-timer", () => menu("minimise-to-timer"));
   click("hourly-stop", () => hourlyTap("stop"));
   click("hourly-add-open", openHourlyAdd);
   click("hourly-edit-cancel", closeHourlyEdit);
@@ -2703,13 +2709,15 @@ window.addEventListener("DOMContentLoaded", () => {
   // it stays where it was pinned: unpin to move it.
   el("compact-view").addEventListener("mousedown", (e) => {
     if (e.button !== 0 || current?.pinned || (e.target as HTMLElement).closest("button")) return;
-    void getCurrentWindow().startDragging();
+    // Told first: the drag can take the panel's focus (Windows), which
+    // would otherwise close it.
+    void invoke("mini_dragging").finally(() => getCurrentWindow().startDragging());
   });
   // Unpinned, the header drags the window (not from its buttons).
   el("head").addEventListener("mousedown", (e) => {
     if (e.button !== 0 || el("head").classList.contains("pinned")) return;
     if ((e.target as HTMLElement).closest("button")) return;
-    void getCurrentWindow().startDragging();
+    void invoke("mini_dragging").finally(() => getCurrentWindow().startDragging());
   });
   const search = el<HTMLInputElement>("search-input");
   search.addEventListener("input", onSearchInput);

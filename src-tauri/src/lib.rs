@@ -903,8 +903,13 @@ pub fn run() {
             }
             // Drop-down behaviour: the quick panel hides when it loses focus,
             // unless it is pinned as a floating timer.
+            // Dragging the panel can blur it (Windows): the move keeps it open.
+            if window.label() == "mini" && matches!(event, tauri::WindowEvent::Moved(_)) {
+                mini::note_moved();
+            }
             if window.label() == "mini"
                 && matches!(event, tauri::WindowEvent::Focused(false))
+                && !mini::moved_recently()
                 && !mini::is_pinned()
                 && !mini::held_open()
                 && !detector::choosing_folder()
@@ -921,6 +926,7 @@ pub fn run() {
             offline::offline_delete,
             offline::offline_storage_info,
             mini::mini_action,
+            mini::mini_dragging,
             mini::mini_expand,
             mini::mini_expand_notifications,
             mini::mini_hide,
@@ -996,6 +1002,10 @@ pub fn run() {
                 .visible(false)
                 .focused(false)
                 .build()?;
+            // Above other windows unless the person switched it off (mini.rs).
+            mini::apply_on_top(app.handle());
+            // The tracker itself never floats above other apps.
+            let _ = main_window.set_always_on_top(false);
             // macOS: Tauri turns window tabbing off app-wide whenever it
             // builds a window without a tab group (the panel, the library),
             // which hid the tracker's tab bar. Turn it back on now that every

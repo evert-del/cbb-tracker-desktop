@@ -61,6 +61,10 @@ pub(crate) fn notes(version: &str, os: &str, hourly: bool) -> Vec<Item> {
             }
             items.extend([
                 item(
+                    "The quick panel stays out of your way",
+                    format!("In Settings, switch off Keep this panel on top and other windows can cover it. Switch off Minimising shows the small panel to minimise the tracker to the {dock} as usual. Dragging the panel no longer closes it."),
+                ),
+                item(
                     "Ready as soon as it opens",
                     "After you open the app, the quick panel shows where you are on the time sheet and today's hours within a second or two, with Loading… while it reads."
                         .into(),

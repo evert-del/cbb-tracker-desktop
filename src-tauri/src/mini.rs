@@ -47,6 +47,10 @@ pub(crate) struct View {
     pub pinned: bool,
     /// Shrunk to the mini timer (pinned or not).
     pub compact: bool,
+    /// The panel and mini timer float above other windows.
+    pub on_top: bool,
+    /// Minimising the tracker shows the mini timer instead of the taskbar.
+    pub minimise_to_timer: bool,
     /// "macos", "windows" or "linux": the panel follows each system's own
     /// look (corner radii, typeface, wording).
     pub platform: String,
@@ -124,6 +128,8 @@ pub(crate) fn plan(
         autostart: false,
         close_quits: false,
         pinned: false,
+        on_top: true,
+        minimise_to_timer: true,
         compact: false,
         platform: std::env::consts::OS.into(),
     }
@@ -150,6 +156,8 @@ pub(crate) fn push<R: Runtime>(app: &AppHandle<R>) {
     view.close_quits = crate::close::quits(app);
     view.pinned = is_pinned();
     view.compact = is_compact();
+    view.on_top = on_top(app);
+    view.minimise_to_timer = minimise_to_timer(app);
     view.summary = summary;
     view.walkie_unread = crate::walkie::unread(app);
     view.chats = crate::walkie::chats(app);
@@ -180,6 +188,66 @@ static COMPACT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::n
 
 fn is_compact() -> bool {
     COMPACT.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Settings, stored as their opposite so both default to on (close.rs flags
+/// read false when unset).
+const NOT_ON_TOP: &str = "panel_not_on_top";
+const NOT_MINIMISE_TO_TIMER: &str = "minimise_not_to_timer";
+
+/// The panel and mini timer float above other windows (the default). Off,
+/// they sit among them like any window: some find a floating timer covers
+/// their work.
+pub(crate) fn on_top<R: Runtime>(app: &AppHandle<R>) -> bool {
+    !crate::close::flag(app, NOT_ON_TOP)
+}
+
+/// Put the panel above other windows, or among them, as set.
+pub(crate) fn apply_on_top<R: Runtime>(app: &AppHandle<R>) {
+    if let Some(mini) = app.get_webview_window("mini") {
+        let _ = mini.set_always_on_top(on_top(app));
+    }
+}
+
+/// Minimising a tracker window floats the mini timer (the default) instead
+/// of a plain minimise to the taskbar / Dock.
+pub(crate) fn minimise_to_timer<R: Runtime>(app: &AppHandle<R>) -> bool {
+    !crate::close::flag(app, NOT_MINIMISE_TO_TIMER)
+}
+
+/// When the panel was last moved or started a drag (ms since the epoch).
+static MOVED_AT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Dragging the panel can take its focus (Windows): a blur this soon after a
+/// move doesn't close it.
+const MOVE_GRACE_MS: u64 = 1500;
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// The panel moved (or a drag is starting).
+pub(crate) fn note_moved() {
+    MOVED_AT.store(now_ms(), std::sync::atomic::Ordering::Relaxed);
+}
+
+fn within_grace(moved_at: u64, now: u64) -> bool {
+    moved_at > 0 && now.saturating_sub(moved_at) < MOVE_GRACE_MS
+}
+
+/// Moved in the last moment: a lost focus now is the drag's, not a click
+/// elsewhere.
+pub(crate) fn moved_recently() -> bool {
+    within_grace(MOVED_AT.load(std::sync::atomic::Ordering::Relaxed), now_ms())
+}
+
+/// The panel is about to be dragged (mini.ts, before startDragging).
+#[tauri::command]
+pub(crate) fn mini_dragging() -> Result<(), String> {
+    note_moved();
+    Ok(())
 }
 
 /// Window sizes (logical px, including the margin the card's shadow needs).
@@ -309,7 +377,7 @@ pub(crate) fn show<R: Runtime>(app: &AppHandle<R>) {
 /// brings it back (bring_tracker_back). An already pinned panel keeps its
 /// size and place.
 pub(crate) fn minimised_to_panel<R: Runtime>(app: &AppHandle<R>, label: &str) {
-    if !crate::session::signed_in() {
+    if !crate::session::signed_in() || !minimise_to_timer(app) {
         return;
     }
     let Some(window) = app.get_webview_window(label) else { return };
@@ -927,6 +995,8 @@ fn is_menu_item(item: &str) -> bool {
         "offline" | "new-window" | "update" | "diagnostics" | "autostart" | "close-keep" | "close-quit" | "quit"
     ) || crate::quiet::is_toggle(item)
         || item == "auto-offline"
+        || item == "on-top"
+        || item == "minimise-to-timer"
         || idle_minutes_item(item).is_some()
 }
 
@@ -1018,6 +1088,19 @@ pub(crate) fn mini_menu<R: Runtime>(app: AppHandle<R>, item: String) -> Result<(
             if let Some(minutes) = idle_minutes_item(item) {
                 crate::hourly::set_idle_minutes(&app, minutes);
             }
+        }
+        "on-top" => {
+            let on = !on_top(&app);
+            crate::close::set_flag(&app, NOT_ON_TOP, !on);
+            apply_on_top(&app);
+            crate::analytics::setting_changed(&app, "panel_on_top", on);
+            push(&app);
+        }
+        "minimise-to-timer" => {
+            let on = !minimise_to_timer(&app);
+            crate::close::set_flag(&app, NOT_MINIMISE_TO_TIMER, !on);
+            crate::analytics::setting_changed(&app, "minimise_to_timer", on);
+            push(&app);
         }
         "auto-offline" => {
             let on = crate::schedule::toggle_auto_save(&app);
@@ -1145,6 +1228,14 @@ mod tests {
     }
 
     #[test]
+    fn a_blur_just_after_a_move_is_the_drag() {
+        assert!(within_grace(10_000, 10_000));
+        assert!(within_grace(10_000, 11_400));
+        assert!(!within_grace(10_000, 11_600));
+        assert!(!within_grace(0, 500));
+    }
+
+    #[test]
     fn tip_names_where_the_panel_lives() {
         assert!(tip_text("macos").1.contains("top of your screen"));
         assert!(tip_text("windows").1.contains("^ arrow"));
@@ -1216,6 +1307,7 @@ mod tests {
         for item in [
             "offline", "new-window", "update", "diagnostics", "autostart", "close-keep", "close-quit", "quit",
             "banners-tracker", "banners-walkie", "banners-channel1", "auto-offline", "idle-5", "idle-20",
+            "on-top", "minimise-to-timer",
         ] {
             assert!(is_menu_item(item), "{item}");
         }

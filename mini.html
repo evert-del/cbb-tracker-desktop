@@ -291,8 +291,30 @@
       #hourly-pick-head { display: flex; align-items: center; gap: 8px; padding: 12px 12px 10px; font-weight: 600; font-size: 14px; border-bottom: 0.5px solid var(--rule); }
       #hourly-filter { margin: 10px 14px 4px; }
       #hourly-pick-list { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; padding-bottom: 8px; }
-      .h-row { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; padding: 8px 16px; text-align: left; border-top: 0.5px solid var(--rule); }
-      .h-row:hover { background: var(--tile); }
+      .h-line { display: flex; align-items: stretch; border-top: 0.5px solid var(--rule); }
+      .h-line:hover { background: var(--tile); }
+      .h-row { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 1px; padding: 8px 6px 8px 16px; text-align: left; }
+      .h-pin { flex: none; width: 40px; display: grid; place-items: center; color: var(--faint); }
+      .h-pin:hover { color: var(--pink-ink); }
+      .h-pin svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linejoin: round; }
+      .h-pin[aria-pressed="true"] { color: var(--pink); }
+      .h-pin[aria-pressed="true"] svg { fill: currentColor; }
+      .h-chip.pinned svg { fill: var(--pink); }
+      #hourly-head { display: flex; align-items: center; gap: 8px; }
+      #hourly-head .h-label { flex: 1; }
+      #hourly-add-open { font-size: 12px; font-weight: 600; color: var(--pink-ink); }
+      #hourly-add-open:hover { text-decoration: underline; }
+      #hourly-add-view { display: flex; flex-direction: column; gap: 10px; flex: 1; padding: 16px; overflow-y: auto; }
+      #hourly-add-view h2 { margin: 0; font-size: 16px; font-weight: 600; }
+      .h-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+      .h-field select, .h-field input { height: 32px; padding: 0 10px; border-radius: var(--r-ctl); border: 0.5px solid var(--rule); background: var(--tile); font: inherit; font-size: 13px; color: var(--fg); outline: none; user-select: text; -webkit-user-select: text; }
+      .h-field select:focus, .h-field input:focus { outline: 2px solid var(--pink); outline-offset: -1px; }
+      .h-times { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; }
+      .h-times .h-day { grid-column: 1 / -1; }
+      .h-field { min-width: 0; }
+      .h-field select, .h-field input { width: 100%; min-width: 0; box-sizing: border-box; }
+      #hourly-add-view { overflow-x: hidden; margin: 0; }
+      #hourly-add-length { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
       .h-row .t { font-weight: 600; }
       .h-row .s { font-size: 11.5px; color: var(--faint); }
       .h-row.on .t::after { content: " · running"; color: var(--pink-ink); font-weight: 500; }
@@ -406,7 +428,10 @@
             <span id="hourly-elapsed">0:00</span>
             <button id="hourly-stop" type="button">Stop</button>
           </div>
-          <div class="h-label" id="hourly-label">Time a project</div>
+          <div id="hourly-head">
+            <div class="h-label" id="hourly-label">Time a project</div>
+            <button type="button" id="hourly-add-open" title="Log time you didn't run the timer for">Add time…</button>
+          </div>
           <div id="hourly-quick"></div>
           <input id="hourly-note-input" type="text" maxlength="500" placeholder="Note for the next timer (optional)" autocomplete="off" aria-label="Note for the next timer (optional)" />
           <p class="h-error" id="hourly-error" role="alert" hidden></p>
@@ -577,6 +602,23 @@
           <button type="button" id="hourly-file-later" title="Leave it unfiled for now; file it on My Hours">Later</button>
         </div>
       </div>
+
+      <form id="hourly-add-view" hidden>
+        <h2>Add time</h2>
+        <label class="h-field">Project<select id="hourly-add-project" required></select></label>
+        <div class="h-times">
+          <label class="h-field h-day">Day<input id="hourly-add-day" type="date" required /></label>
+          <label class="h-field">From<input id="hourly-add-from" type="time" step="300" required /></label>
+          <label class="h-field">To<input id="hourly-add-to" type="time" step="300" required /></label>
+        </div>
+        <span id="hourly-add-length"></span>
+        <label class="h-field">Note (optional)<input id="hourly-add-note" type="text" maxlength="500" autocomplete="off" /></label>
+        <p class="h-error" id="hourly-add-error" role="alert" hidden></p>
+        <div class="h-choices">
+          <button type="submit" class="primary" id="hourly-add-save">Add</button>
+          <button type="button" id="hourly-add-cancel">Cancel</button>
+        </div>
+      </form>
 
       <div id="hourly-idle-view" hidden>
         <h2 id="hourly-idle-title">Welcome back</h2>

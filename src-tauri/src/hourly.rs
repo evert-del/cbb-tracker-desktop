@@ -29,6 +29,11 @@
 //!   project, when the running project's retainer drops under an hour, a
 //!   banner says so.
 //!
+//! - Cmd+Shift+Y (Ctrl+Alt+Y) starts the last project or stops the timer,
+//!   from anywhere, for those with a timer (it isn't taken from anyone else).
+//! - "Add time…" logs a stretch after the fact (`POST /api/me/project-time`),
+//!   and favourite projects are pinned ahead of the recent ones.
+//!
 //! Everything is named "Client · Project" ("Vimeo · Logo refresh"), never
 //! by the project code.
 //!
@@ -85,6 +90,7 @@ const TAKE_RESULT_JS: &str =
 
 const TIMER_URL: &str = "/api/me/project-timer";
 const FILE_URL: &str = "/api/me/project-time/file";
+const TIME_URL: &str = "/api/me/project-time";
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -270,11 +276,58 @@ pub(crate) fn new_project_href(entry_id: &str) -> Option<String> {
     valid_id(entry_id).then(|| format!("/hours?entry={entry_id}&panel=new-project"))
 }
 
-/// The one-tap starts: the four projects timed most recently, leaving out
-/// the one running now.
-pub(crate) fn quick(info: &Info) -> Vec<Project> {
+/// The one-tap starts: the person's pinned projects first, then the ones
+/// timed most recently, leaving out the one running now. Four, or as many as
+/// are pinned (up to six).
+pub(crate) fn quick(info: &Info, pinned: &[String]) -> Vec<Project> {
     let running = info.running.as_ref().and_then(|running| running.project_id.as_deref());
-    info.projects.iter().filter(|project| Some(project.id.as_str()) != running).take(4).cloned().collect()
+    let open = |project: &&Project| Some(project.id.as_str()) != running;
+    let pins: Vec<Project> = pinned
+        .iter()
+        .filter_map(|id| info.projects.iter().find(|project| &project.id == id))
+        .filter(open)
+        .cloned()
+        .collect();
+    let room = pins.len().clamp(4, PINS_MAX);
+    let recent = info.projects.iter().filter(open).filter(|project| !pinned.contains(&project.id)).cloned();
+    pins.clone().into_iter().chain(recent).take(room.max(pins.len())).collect()
+}
+
+/// Pinned projects (`settings.json`), at most six.
+const PINNED: &str = "hourly_pinned";
+const PINS_MAX: usize = 6;
+
+/// Pin or unpin `project_id`; returns the new list.
+pub(crate) fn toggle_pin(pinned: &[String], project_id: &str, pin: bool) -> Vec<String> {
+    let mut list: Vec<String> = pinned.iter().filter(|id| *id != project_id).cloned().collect();
+    if pin {
+        list.push(project_id.to_string());
+    }
+    list.truncate(PINS_MAX);
+    list
+}
+
+/// A stretch logged after the fact (`POST /api/me/project-time`): one of
+/// the person's projects, ended after it started, not in the future (a
+/// minute of clock drift allowed) and at most 24 hours.
+pub(crate) fn add_body(project_id: &str, started: u64, ended: u64, note: Option<&str>, info: &Info, now: u64) -> Result<Value, &'static str> {
+    if !info.projects.iter().any(|project| project.id == project_id) {
+        return Err("That project isn't one of yours.");
+    }
+    if ended <= started {
+        return Err("The end has to be after the start.");
+    }
+    if ended > now + 60 {
+        return Err("That's in the future.");
+    }
+    if ended - started > 24 * 3600 {
+        return Err("Keep it to 24 hours or less.");
+    }
+    let mut body = json!({ "projectId": project_id, "startedAt": iso_utc(started), "endedAt": iso_utc(ended) });
+    if let Some(note) = clean_note(note) {
+        body["note"] = Value::String(note);
+    }
+    Ok(body)
 }
 
 /// What the panel shows.
@@ -291,6 +344,10 @@ pub(crate) struct PanelView {
     pub filing: bool,
     /// Settings: minutes without input before idle time counts.
     pub idle_minutes: u64,
+    /// Pinned project ids, in order.
+    pub pinned: Vec<String>,
+    /// The global shortcut, as this system writes it ("⌘⇧Y", "Ctrl+Alt+Y").
+    pub shortcut: String,
 }
 
 /// A note as it is sent: trimmed, one line, at most 500 characters (the
@@ -494,9 +551,10 @@ pub(crate) struct MenuModel {
 pub(crate) const MENU_STOP: &str = "hourly-stop";
 pub(crate) const MENU_LATER: &str = "hourly-later";
 pub(crate) const MENU_HOURS: &str = "hourly-hours";
+pub(crate) const MENU_ADD: &str = "hourly-add";
 const MENU_START: &str = "hourly-start-";
 
-pub(crate) fn menu_model(info: &Info, now: u64) -> MenuModel {
+pub(crate) fn menu_model(info: &Info, pinned: &[String], now: u64) -> MenuModel {
     let title = match &info.running {
         Some(running) => {
             let since = crate::clock::parse_iso(&running.started_at).unwrap_or(now);
@@ -504,7 +562,7 @@ pub(crate) fn menu_model(info: &Info, now: u64) -> MenuModel {
         }
         None => "Project timer".into(),
     };
-    let projects = quick(info)
+    let projects = quick(info, pinned)
         .into_iter()
         .map(|project| (format!("{MENU_START}{}", project.id), menu_label(&project)))
         .collect();
@@ -523,7 +581,7 @@ pub(crate) fn menu_project(id: &str) -> Option<&str> {
 }
 
 pub(crate) fn is_menu_id(id: &str) -> bool {
-    matches!(id, MENU_STOP | MENU_LATER | MENU_HOURS) || menu_project(id).is_some()
+    matches!(id, MENU_STOP | MENU_LATER | MENU_HOURS | MENU_ADD) || menu_project(id).is_some()
 }
 
 /// The Dock menu's latest model (dock.rs builds the menu when asked).
@@ -558,7 +616,8 @@ impl<R: Runtime> TrayMenu<R> {
 /// called every second by the menu-bar ticker in clock.rs).
 pub(crate) fn refresh_menus<R: Runtime>(app: &AppHandle<R>) {
     let now = crate::clock::unix_now();
-    let model = with(app, |inner| inner.info.as_ref().map(|info| menu_model(info, now))).flatten();
+    let pinned = crate::close::strings(app, PINNED);
+    let model = with(app, |inner| inner.info.as_ref().map(|info| menu_model(info, &pinned, now))).flatten();
     if let Ok(mut dock) = DOCK.lock() {
         dock.clone_from(&model);
     }
@@ -611,6 +670,7 @@ fn fill_submenu<R: Runtime>(app: &AppHandle<R>, sub: &Submenu<R>, model: &MenuMo
         sub.append(&projects)?;
     }
     sub.append(&MenuItem::with_id(app, MENU_LATER, "Just start, file it later", true, None::<&str>)?)?;
+    sub.append(&MenuItem::with_id(app, MENU_ADD, "Add time…", true, None::<&str>)?)?;
     sub.append(&PredefinedMenuItem::separator(app)?)?;
     sub.append(&MenuItem::with_id(app, MENU_HOURS, "Open My Hours", true, None::<&str>)?)?;
     Ok(())
@@ -619,15 +679,19 @@ fn fill_submenu<R: Runtime>(app: &AppHandle<R>, sub: &Submenu<R>, model: &MenuMo
 /// A click on one of the timer's tray or Dock items.
 pub(crate) fn menu_action<R: Runtime>(app: &AppHandle<R>, id: &str) {
     let result = match id {
-        MENU_STOP => stop(app, "menu"),
-        MENU_LATER => start(app, None, None, "menu"),
+        MENU_STOP => stop(app, "menu", true),
+        MENU_LATER => start(app, None, None, "menu", true),
+        MENU_ADD => {
+            crate::mini::ask_hourly(app, "__cbbMiniHourlyAdd", &json!({}));
+            Ok(())
+        }
         MENU_HOURS => {
             crate::mini::open_href(app, "/hours");
             crate::analytics::action(app, "hourly_open_hours", "menu");
             Ok(())
         }
         id => match menu_project(id) {
-            Some(project) => start(app, Some(project), None, "menu"),
+            Some(project) => start(app, Some(project), None, "menu", true),
             None => Ok(()),
         },
     };
@@ -685,15 +749,18 @@ pub(crate) fn set_idle_minutes<R: Runtime>(app: &AppHandle<R>, minutes: u64) -> 
 /// The panel's view, or `None` (hidden) for someone without a timer.
 pub(crate) fn panel<R: Runtime>(app: &AppHandle<R>) -> Option<PanelView> {
     let idle_minutes = idle_minutes(app);
+    let pinned = crate::close::strings(app, PINNED);
     with(app, |inner| {
         let info = inner.info.as_ref()?;
         Some(PanelView {
             running: info.running.clone(),
-            quick: quick(info),
+            quick: quick(info, &pinned),
             projects: info.projects.clone(),
             asking: inner.ask.is_some(),
             filing: inner.to_file.is_some(),
             idle_minutes,
+            pinned: pinned.clone(),
+            shortcut: shortcut_label(std::env::consts::OS).into(),
         })
     })
     .flatten()
@@ -727,6 +794,67 @@ fn set_info<R: Runtime>(app: &AppHandle<R>, info: Option<Info>) {
     refresh_menus(app);
     crate::mini::push(app);
     maybe_warn_retainer(app);
+    let on = with(app, |inner| inner.info.is_some()).unwrap_or(false);
+    sync_shortcut(app, on);
+}
+
+/// Cmd+Shift+Y on macOS, Ctrl+Alt+Y elsewhere (the app's other shortcuts'
+/// keys, and free in the browsers and Adobe apps people use here).
+pub(crate) fn shortcut() -> tauri_plugin_global_shortcut::Shortcut {
+    tauri_plugin_global_shortcut::Shortcut::new(Some(crate::shortcut_modifiers()), tauri_plugin_global_shortcut::Code::KeyY)
+}
+
+pub(crate) fn shortcut_label(os: &str) -> &'static str {
+    if os == "macos" {
+        "⌘⇧Y"
+    } else {
+        "Ctrl+Alt+Y"
+    }
+}
+
+static SHORTCUT_ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The shortcut is registered only while the person has a timer, so it
+/// isn't taken from other apps for anyone else.
+fn sync_shortcut<R: Runtime>(app: &AppHandle<R>, on: bool) {
+    use std::sync::atomic::Ordering;
+    use tauri_plugin_global_shortcut::GlobalShortcutExt;
+    if SHORTCUT_ON.load(Ordering::Relaxed) == on {
+        return;
+    }
+    let done = if on {
+        app.global_shortcut().register(shortcut()).is_ok()
+    } else {
+        app.global_shortcut().unregister(shortcut()).is_ok()
+    };
+    if done {
+        SHORTCUT_ON.store(on, Ordering::Relaxed);
+    }
+}
+
+/// The shortcut: stop the running timer, or start the last project timed
+/// (an unfiled timer when there's none). A notification says which.
+pub(crate) fn shortcut_pressed<R: Runtime>(app: &AppHandle<R>) {
+    let Ok(info) = current(app) else { return };
+    let result = match (&info.running, info.projects.first()) {
+        (Some(_), _) => stop(app, "shortcut", true),
+        (None, Some(project)) => start(app, Some(&project.id), None, "shortcut", true),
+        (None, None) => start(app, None, None, "shortcut", true),
+    };
+    if let Err(error) = result {
+        say(app, &error);
+    }
+}
+
+/// A native notification about the timer (for the shortcut and menus,
+/// where the panel isn't showing).
+fn say<R: Runtime>(app: &AppHandle<R>, body: &str) {
+    use tauri_plugin_notification::NotificationExt;
+    let _ = app.notification().builder().title("Project timer").body(body).show();
+}
+
+fn panel_showing<R: Runtime>(app: &AppHandle<R>) -> bool {
+    app.get_webview_window("mini").is_some_and(|mini| mini.is_visible().unwrap_or(false))
 }
 
 /// Once a month per project: the running project's retainer is under an
@@ -807,9 +935,12 @@ enum Then {
         file: Option<String>,
         /// Tell them this (the timer stopped while they were idle).
         notice: Option<String>,
+        /// Say what happened in a notification (shortcut, menus).
+        say: bool,
     },
-    /// Filed: nothing more to ask.
-    Filed,
+    /// Saved without changing the running timer (filed, or time added):
+    /// `filed` clears the question; `notice` is said in the panel.
+    Saved { filed: bool, notice: Option<String> },
 }
 
 /// Sends `steps` through the page and hands the outcome on.
@@ -825,8 +956,19 @@ fn send<R: Runtime>(app: &AppHandle<R>, steps: Vec<(&'static str, Value)>, done:
         let outcome = crate::walkie::collect(&window, TAKE_RESULT_JS, 40)
             .and_then(|raw| serde_json::from_str::<Outcome>(&raw).ok());
         match (outcome, then) {
-            (Some(Outcome { ok: true, running, .. }), Then::Timer { file, notice }) => {
-                set_running(&app, running.filter(valid_running).map(unfiled_not_billable));
+            (Some(Outcome { ok: true, running, .. }), Then::Timer { file, notice, say: tell }) => {
+                let running = running.filter(valid_running).map(unfiled_not_billable);
+                if tell && !panel_showing(&app) {
+                    let what = match &running {
+                        Some(running) => {
+                            let label = with(&app, |inner| running_label(inner.info.as_ref(), running)).unwrap_or_default();
+                            format!("Started {label}.")
+                        }
+                        None => "Stopped.".to_string(),
+                    };
+                    say(&app, &what);
+                }
+                set_running(&app, running);
                 // The tracker's page shows the same timer: let it catch up.
                 let _ = window.eval("window.dispatchEvent(new Event('cbb:hourly-changed'))");
                 if file.is_some() || notice.is_some() {
@@ -838,10 +980,15 @@ fn send<R: Runtime>(app: &AppHandle<R>, steps: Vec<(&'static str, Value)>, done:
                     crate::mini::ask_hourly(&app, "__cbbMiniHourlyAfter", &after);
                 }
             }
-            (Some(Outcome { ok: true, .. }), Then::Filed) => {
-                with(&app, |inner| inner.to_file = None);
+            (Some(Outcome { ok: true, .. }), Then::Saved { filed, notice }) => {
+                if filed {
+                    with(&app, |inner| inner.to_file = None);
+                }
                 crate::mini::push(&app);
                 let _ = window.eval("window.dispatchEvent(new Event('cbb:hourly-changed'))");
+                if let Some(notice) = notice {
+                    crate::mini::ask_hourly(&app, "__cbbMiniHourlyAfter", &json!({ "file": false, "notice": notice }));
+                }
             }
             (other, _) => {
                 let error = other
@@ -855,10 +1002,15 @@ fn send<R: Runtime>(app: &AppHandle<R>, steps: Vec<(&'static str, Value)>, done:
     Ok(())
 }
 
+/// A refusal: in the panel when it's showing, else as a notification (the
+/// shortcut, the menus).
 fn panel_error<R: Runtime>(app: &AppHandle<R>, error: &str) {
-    if let Some(mini) = app.get_webview_window("mini") {
-        let text = Value::String(error.to_string());
-        let _ = mini.eval(format!("window.__cbbMiniHourlyError && window.__cbbMiniHourlyError({text})"));
+    match app.get_webview_window("mini").filter(|mini| mini.is_visible().unwrap_or(false)) {
+        Some(mini) => {
+            let text = Value::String(error.to_string());
+            let _ = mini.eval(format!("window.__cbbMiniHourlyError && window.__cbbMiniHourlyError({text})"));
+        }
+        None => say(app, error),
     }
 }
 
@@ -872,10 +1024,10 @@ fn ends_unfiled(info: &Info) -> Option<String> {
 }
 
 /// Start (or switch to) a project, or an unfiled timer with `None`.
-fn start<R: Runtime>(app: &AppHandle<R>, project_id: Option<&str>, note: Option<&str>, from: &'static str) -> Result<(), String> {
+fn start<R: Runtime>(app: &AppHandle<R>, project_id: Option<&str>, note: Option<&str>, from: &'static str, tell: bool) -> Result<(), String> {
     let info = current(app)?;
     let body = start_body(project_id, note, &info).map_err(str::to_string)?;
-    send(app, vec![(TIMER_URL, body)], "", Then::Timer { file: ends_unfiled(&info), notice: None })?;
+    send(app, vec![(TIMER_URL, body)], "", Then::Timer { file: ends_unfiled(&info), notice: None, say: tell })?;
     let what = match (info.running.is_some(), project_id.is_some()) {
         (true, _) => "hourly_switch",
         (false, false) => "hourly_start_unfiled",
@@ -885,12 +1037,12 @@ fn start<R: Runtime>(app: &AppHandle<R>, project_id: Option<&str>, note: Option<
     Ok(())
 }
 
-fn stop<R: Runtime>(app: &AppHandle<R>, from: &'static str) -> Result<(), String> {
+fn stop<R: Runtime>(app: &AppHandle<R>, from: &'static str, tell: bool) -> Result<(), String> {
     let info = current(app)?;
     if info.running.is_none() {
         return Err("No timer is running.".into());
     }
-    send(app, vec![(TIMER_URL, stop_body(None))], "", Then::Timer { file: ends_unfiled(&info), notice: None })?;
+    send(app, vec![(TIMER_URL, stop_body(None))], "", Then::Timer { file: ends_unfiled(&info), notice: None, say: tell })?;
     crate::analytics::action(app, "hourly_stop", from);
     Ok(())
 }
@@ -904,8 +1056,8 @@ pub(crate) fn mini_hourly<R: Runtime>(
     note: Option<String>,
 ) -> Result<(), String> {
     match action.as_str() {
-        "start" => start(&app, project_id.as_deref(), note.as_deref(), "panel"),
-        "stop" => stop(&app, "panel"),
+        "start" => start(&app, project_id.as_deref(), note.as_deref(), "panel", false),
+        "stop" => stop(&app, "panel", false),
         _ => Err("Unknown action.".into()),
     }
 }
@@ -922,7 +1074,7 @@ pub(crate) fn mini_hourly_idle<R: Runtime>(app: AppHandle<R>, choice: String) ->
         // the timer stays stopped or starts again.
         let file = left_to_file(&ask.running, ask.from);
         let steps = steps.into_iter().map(|body| (TIMER_URL, body)).collect();
-        send(&app, steps, "", Then::Timer { file, notice: None })?;
+        send(&app, steps, "", Then::Timer { file, notice: None, say: false })?;
     }
     let what = match choice.as_str() {
         "resume" => "hourly_idle_resume",
@@ -942,7 +1094,7 @@ pub(crate) fn mini_hourly_file<R: Runtime>(app: AppHandle<R>, choice: String, pr
         "file" => {
             let info = current(&app)?;
             let body = file_body(&entry, project_id.as_deref().unwrap_or_default(), &info).map_err(str::to_string)?;
-            send(&app, vec![(FILE_URL, body)], "", Then::Filed)?;
+            send(&app, vec![(FILE_URL, body)], "", Then::Saved { filed: true, notice: None })?;
             crate::analytics::action(&app, "hourly_file", "panel");
         }
         "new" => {
@@ -959,6 +1111,43 @@ pub(crate) fn mini_hourly_file<R: Runtime>(app: AppHandle<R>, choice: String, pr
         }
         _ => return Err("Unknown choice.".into()),
     }
+    Ok(())
+}
+
+/// "Add time…": a stretch the person confirmed, logged after the fact.
+/// `started_at` and `ended_at` are ISO moments from the panel's inputs.
+#[tauri::command]
+pub(crate) fn mini_hourly_add<R: Runtime>(
+    app: AppHandle<R>,
+    project_id: String,
+    started_at: String,
+    ended_at: String,
+    note: Option<String>,
+) -> Result<(), String> {
+    let info = current(&app)?;
+    let (Some(started), Some(ended)) = (crate::clock::parse_iso(&started_at), crate::clock::parse_iso(&ended_at)) else {
+        return Err("Those times don't read right.".into());
+    };
+    let body = add_body(&project_id, started, ended, note.as_deref(), &info, crate::clock::unix_now()).map_err(str::to_string)?;
+    let label = info.projects.iter().find(|project| project.id == project_id).map(project_label).unwrap_or_default();
+    let notice = format!("Added {} to {label}.", fmt_minutes((ended - started) / 60));
+    send(&app, vec![(TIME_URL, body)], "", Then::Saved { filed: false, notice: Some(notice) })?;
+    crate::analytics::action(&app, "hourly_add_time", "panel");
+    Ok(())
+}
+
+/// Pin a project to the front of the one-tap starts, or unpin it.
+#[tauri::command]
+pub(crate) fn mini_hourly_pin<R: Runtime>(app: AppHandle<R>, project_id: String, pinned: bool) -> Result<(), String> {
+    let info = current(&app)?;
+    if !info.projects.iter().any(|project| project.id == project_id) {
+        return Err("That project isn't one of yours.".into());
+    }
+    let list = toggle_pin(&crate::close::strings(&app, PINNED), &project_id, pinned);
+    crate::close::set_strings(&app, PINNED, &list);
+    refresh_menus(&app);
+    crate::mini::push(&app);
+    crate::analytics::setting_changed(&app, "hourly_pin", pinned);
     Ok(())
 }
 
@@ -995,7 +1184,7 @@ fn auto_stop<R: Runtime>(app: &AppHandle<R>, running: &Running, at: u64, back: b
     );
     let file = left_to_file(running, at);
     let then = if back {
-        Then::Timer { file, notice: Some(notice) }
+        Then::Timer { file, notice: Some(notice), say: false }
     } else {
         with(app, |inner| {
             inner.notice = Some(notice);
@@ -1004,7 +1193,7 @@ fn auto_stop<R: Runtime>(app: &AppHandle<R>, running: &Running, at: u64, back: b
                 inner.to_file.clone_from(&file);
             }
         });
-        Then::Timer { file: None, notice: None }
+        Then::Timer { file: None, notice: None, say: false }
     };
     let _ = send(app, vec![(TIMER_URL, stop_body(Some(at)))], "", then);
     crate::analytics::action(app, "hourly_idle_auto_stop", "idle");
@@ -1126,12 +1315,23 @@ mod tests {
 
     #[test]
     fn one_tap_starts_are_the_four_latest_but_the_running_one() {
-        let ids: Vec<String> = quick(&info()).into_iter().map(|p| p.id).collect();
+        let ids: Vec<String> = quick(&info(), &[]).into_iter().map(|p| p.id).collect();
         assert_eq!(ids, ["p1", "p3", "p4", "p5"]);
         let mut stopped = info();
         stopped.running = None;
-        let ids: Vec<String> = quick(&stopped).into_iter().map(|p| p.id).collect();
+        let ids: Vec<String> = quick(&stopped, &[]).into_iter().map(|p| p.id).collect();
         assert_eq!(ids, ["p1", "p2", "p3", "p4"]);
+        // Pinned first; a pin that isn't one of theirs any more is skipped.
+        let pins = vec!["p5".to_string(), "gone".to_string()];
+        let ids: Vec<String> = quick(&stopped, &pins).into_iter().map(|p| p.id).collect();
+        assert_eq!(ids, ["p5", "p1", "p2", "p3"]);
+        // Many pins: all of them, up to six.
+        let pins: Vec<String> = ["p5", "p4", "p3", "p2", "p1"].iter().map(|s| s.to_string()).collect();
+        let ids: Vec<String> = quick(&stopped, &pins).into_iter().map(|p| p.id).collect();
+        assert_eq!(ids, ["p5", "p4", "p3", "p2", "p1"]);
+        // The running project is never a one-tap start, pinned or not.
+        let ids: Vec<String> = quick(&info(), &["p2".to_string()]).into_iter().map(|p| p.id).collect();
+        assert_eq!(ids, ["p1", "p3", "p4", "p5"]);
     }
 
     #[test]
@@ -1247,19 +1447,19 @@ mod tests {
 
     #[test]
     fn the_menus_show_the_timer_and_the_recent_projects() {
-        let model = menu_model(&info(), STARTED + 65 * 60);
+        let model = menu_model(&info(), &[], STARTED + 65 * 60);
         assert_eq!(model.title, "Brand film · 1h 05m");
         assert!(model.running);
         assert_eq!(model.projects[0], ("hourly-start-p1".to_string(), "Spirit Films · Con Spirito S1 (Billable)".to_string()));
         assert_eq!(model.projects.len(), 4);
         let mut stopped = info();
         stopped.running = None;
-        assert_eq!(menu_model(&stopped, STARTED).title, "Project timer");
+        assert_eq!(menu_model(&stopped, &[], STARTED).title, "Project timer");
         let mut unfiled = info();
         unfiled.running.as_mut().unwrap().project_id = None;
         unfiled.running.as_mut().unwrap().project_name = None;
-        assert_eq!(menu_model(&unfiled, STARTED + 600).title, "Not yet filed · 10m");
-        for id in [MENU_STOP, MENU_LATER, MENU_HOURS, "hourly-start-p1"] {
+        assert_eq!(menu_model(&unfiled, &[], STARTED + 600).title, "Not yet filed · 10m");
+        for id in [MENU_STOP, MENU_LATER, MENU_HOURS, MENU_ADD, "hourly-start-p1"] {
             assert!(is_menu_id(id), "{id}");
         }
         assert_eq!(menu_project("hourly-start-p1"), Some("p1"));
@@ -1323,6 +1523,38 @@ mod tests {
         // 2026-10-31 23:30 UTC is already November in Johannesburg.
         assert_eq!(sast_month(1_793_489_400), 202611);
         assert_eq!(sast_month(STARTED), 202610);
+    }
+
+    #[test]
+    fn pins_toggle_and_stay_at_six() {
+        let pins = toggle_pin(&[], "p1", true);
+        assert_eq!(pins, ["p1"]);
+        let pins = toggle_pin(&pins, "p2", true);
+        assert_eq!(toggle_pin(&pins, "p1", true), ["p2", "p1"], "pinning again moves it last, once");
+        assert_eq!(toggle_pin(&pins, "p1", false), ["p2"]);
+        let many: Vec<String> = (0..9).map(|n| format!("p{n}")).collect();
+        assert_eq!(toggle_pin(&many, "x", true).len(), 6);
+    }
+
+    #[test]
+    fn added_time_is_checked_before_it_is_sent() {
+        let info = info();
+        let now = STARTED + 8 * 3600;
+        assert_eq!(
+            add_body("p1", STARTED, STARTED + 5400, Some(" Rough cut "), &info, now),
+            Ok(json!({ "projectId": "p1", "startedAt": "2026-10-12T07:00:00.000Z", "endedAt": "2026-10-12T08:30:00.000Z", "note": "Rough cut" }))
+        );
+        assert!(add_body("nope", STARTED, STARTED + 60, None, &info, now).is_err());
+        assert!(add_body("p1", STARTED, STARTED, None, &info, now).is_err(), "ends at its start");
+        assert!(add_body("p1", now, now + 600, None, &info, now).is_err(), "in the future");
+        assert!(add_body("p1", now - 600, now + 30, None, &info, now).is_ok(), "a little clock drift");
+        assert!(add_body("p1", STARTED - 25 * 3600, STARTED, None, &info, now).is_err(), "over 24 hours");
+    }
+
+    #[test]
+    fn the_shortcut_is_written_each_systems_way() {
+        assert_eq!(shortcut_label("macos"), "⌘⇧Y");
+        assert_eq!(shortcut_label("windows"), "Ctrl+Alt+Y");
     }
 
     #[test]

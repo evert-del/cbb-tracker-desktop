@@ -49,6 +49,22 @@ pub(crate) fn set_number<R: Runtime>(app: &AppHandle<R>, key: &str, value: u64) 
     }
 }
 
+/// A list of strings in `settings.json` (empty when unset).
+pub(crate) fn strings<R: Runtime>(app: &AppHandle<R>, key: &str) -> Vec<String> {
+    app.store(STORE)
+        .ok()
+        .and_then(|store| store.get(key))
+        .and_then(|value| serde_json::from_value(value).ok())
+        .unwrap_or_default()
+}
+
+pub(crate) fn set_strings<R: Runtime>(app: &AppHandle<R>, key: &str, values: &[String]) {
+    if let Ok(store) = app.store(STORE) {
+        store.set(key, serde_json::json!(values));
+        let _ = store.save();
+    }
+}
+
 pub(crate) fn quits<R: Runtime>(app: &AppHandle<R>) -> bool {
     flag(app, QUITS)
 }

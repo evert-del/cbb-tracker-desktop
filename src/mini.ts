@@ -56,6 +56,10 @@ type Hourly = {
   filing: boolean;
   /** Settings: minutes without input before idle time counts. */
   idleMinutes: number;
+  /** Pinned project ids (favourites), in order. */
+  pinned: string[];
+  /** The global start/stop shortcut ("⌘⇧Y", "Ctrl+Alt+Y"). */
+  shortcut: string;
 };
 
 type ChatRow = {
@@ -307,11 +311,13 @@ function renderMode(view: View) {
     el("settings").hidden = true;
     el("hourly-pick").hidden = true;
     el("hourly-idle-view").hidden = true;
+    el("hourly-add-view").hidden = true;
     return;
   }
   el("hourly-idle-view").hidden = !hourlyIdle;
   el("hourly-pick").hidden = !hourlyPick || !!hourlyIdle;
-  if (hourlyPick || hourlyIdle) el("main-view").hidden = true;
+  el("hourly-add-view").hidden = !hourlyAdd || !!hourlyIdle || !!hourlyPick;
+  if (hourlyPick || hourlyIdle || hourlyAdd) el("main-view").hidden = true;
   else if (el("settings").hidden && !mood && !chat && !whatsNew) {
     el("main-view").hidden = false;
   }
@@ -1215,6 +1221,96 @@ function projectTitle(p: HourlyProject): string {
 }
 
 const PLAY = "M8 5v14l11-7z";
+const STAR = "M12 3.5l2.6 5.3 5.8.8-4.2 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8-4.2-4.1 5.8-.8z";
+
+// ── "Add time…": a stretch logged after the fact ──
+
+let hourlyAdd = false;
+
+function pad2(n: number): string {
+  return String(n).padStart(2, "0");
+}
+
+/** Local yyyy-mm-dd and hh:mm, five-minute steps. */
+function localDay(d: Date): string {
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+function localTime(d: Date): string {
+  return `${pad2(d.getHours())}:${pad2(d.getMinutes() - (d.getMinutes() % 5))}`;
+}
+
+/** The form's stretch as moments, or null while it doesn't read right. */
+function addStretch(): { from: Date; to: Date } | null {
+  const day = el<HTMLInputElement>("hourly-add-day").value;
+  const from = new Date(`${day}T${el<HTMLInputElement>("hourly-add-from").value}`);
+  const to = new Date(`${day}T${el<HTMLInputElement>("hourly-add-to").value}`);
+  if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) return null;
+  // "22:00 to 01:00" runs past midnight.
+  if (to <= from) to.setDate(to.getDate() + 1);
+  return { from, to };
+}
+
+function renderAddLength() {
+  const s = addStretch();
+  el("hourly-add-length").textContent = s ? `${fmtMinutes((s.to.getTime() - s.from.getTime()) / 60000)}` : "";
+}
+
+function openHourlyAdd() {
+  const h = current?.hourly;
+  if (!h) return;
+  if (chat) closeChat();
+  showSettings(false);
+  hourlyPick = null;
+  hourlyAdd = true;
+  const select = el<HTMLSelectElement>("hourly-add-project");
+  select.replaceChildren();
+  for (const [label, billable] of [["Billed by the hour", true], ["Quoted", false]] as const) {
+    const rows = h.projects.filter((p) => p.billable === billable);
+    if (rows.length === 0) continue;
+    const group = document.createElement("optgroup");
+    group.label = label;
+    for (const p of rows) group.appendChild(new Option(projectLabel(p), p.id));
+    select.appendChild(group);
+  }
+  // The last project timed, an hour ago until now.
+  select.value = h.running?.projectId ?? h.projects[0]?.id ?? "";
+  const now = new Date();
+  el<HTMLInputElement>("hourly-add-day").value = localDay(now);
+  el<HTMLInputElement>("hourly-add-from").value = localTime(new Date(now.getTime() - 3600_000));
+  el<HTMLInputElement>("hourly-add-to").value = localTime(now);
+  el<HTMLInputElement>("hourly-add-note").value = "";
+  el("hourly-add-error").hidden = true;
+  el<HTMLButtonElement>("hourly-add-save").disabled = false;
+  renderAddLength();
+  if (current) renderMode(current);
+  select.focus();
+}
+
+function closeHourlyAdd() {
+  hourlyAdd = false;
+  if (current) renderMode(current);
+}
+
+function addError(text: string) {
+  el("hourly-add-error").textContent = text;
+  el("hourly-add-error").hidden = false;
+  el<HTMLButtonElement>("hourly-add-save").disabled = false;
+}
+
+function saveHourlyAdd() {
+  const s = addStretch();
+  if (!s) return addError("Pick a day and the times.");
+  el<HTMLButtonElement>("hourly-add-save").disabled = true;
+  el("hourly-add-error").hidden = true;
+  const note = el<HTMLInputElement>("hourly-add-note").value.trim();
+  // Saved when the tracker says so (__cbbMiniHourlyAfter closes the form).
+  invoke("mini_hourly_add", {
+    projectId: el<HTMLSelectElement>("hourly-add-project").value,
+    startedAt: s.from.toISOString(),
+    endedAt: s.to.toISOString(),
+    note: note || null,
+  }).catch((error) => addError(String(error)));
+}
 
 /** The running card's retainer line, live: called each push and each second. */
 function renderRunningRetainer(r: HourlyRunning) {
@@ -1268,6 +1364,8 @@ function renderHourly(h: Hourly | null) {
   }
   const others = h.projects.filter((p) => p.id !== running?.projectId);
   el("hourly-label").textContent = running ? "Switch to" : "Time a project";
+  el("hourly-label").title = `${running ? "Stop" : "Start your last project"} from anywhere: ${h.shortcut}`;
+  el("hourly-add-open").hidden = h.projects.length === 0;
   el("hourly-label").hidden = running !== null && others.length === 0;
   // With nothing running, "Just start" is always there, projects or not.
   el("hourly-note-input").hidden = running !== null && others.length === 0;
@@ -1280,7 +1378,9 @@ function renderHourly(h: Hourly | null) {
     chip.title = `${running ? "Switch to" : "Start"} ${projectTitle(p)}`;
     const name = document.createElement("span");
     name.textContent = projectLabel(p);
-    chip.append(svg(PLAY), name);
+    const pinned = h.pinned.includes(p.id);
+    if (pinned) chip.classList.add("pinned");
+    chip.append(svg(pinned ? STAR : PLAY), name);
     chip.addEventListener("click", () => hourlyTap("start", p.id));
     quick.appendChild(chip);
   }
@@ -1351,7 +1451,23 @@ function renderHourlyPick() {
         if (!on) hourlyTap("start", p.id);
         closeHourlyPick();
       });
-      list.appendChild(row);
+      const line = document.createElement("div");
+      line.className = "h-line";
+      line.appendChild(row);
+      if (!filing) {
+        // Pin a favourite to the front of the one-tap starts.
+        const pinned = h.pinned.includes(p.id);
+        const pin = document.createElement("button");
+        pin.type = "button";
+        pin.className = "h-pin";
+        pin.setAttribute("aria-pressed", String(pinned));
+        pin.setAttribute("aria-label", `${pinned ? "Unpin" : "Pin"} ${projectLabel(p)}`);
+        pin.title = pinned ? "Unpin" : "Pin to the top";
+        pin.appendChild(svg(STAR));
+        pin.addEventListener("click", () => void invoke("mini_hourly_pin", { projectId: p.id, pinned: !pinned }));
+        line.appendChild(pin);
+      }
+      list.appendChild(line);
       shown += 1;
     }
   }
@@ -1459,24 +1575,30 @@ declare global {
     __cbbMiniHourlyError?: (text: string) => void;
     __cbbMiniHourlyIdle?: (ask: HourlyIdleAsk) => void;
     __cbbMiniHourlyAfter?: (after: { file: boolean; notice: string | null }) => void;
+    __cbbMiniHourlyAdd?: () => void;
   }
 }
 window.__cbbMiniHourlyError = (text) => {
+  if (hourlyAdd) return addError(text);
   hourlyTapped = null;
   restHourlyButtons();
   hourlyError(text);
 };
 window.__cbbMiniHourlyIdle = (ask) => openHourlyIdle(ask);
+// "Add time…" from the tray or Dock menu.
+window.__cbbMiniHourlyAdd = () => openHourlyAdd();
 // An unfiled timer ended (ask which project it was for), and/or the timer
 // stopped while they were idle (say so).
 window.__cbbMiniHourlyAfter = (after) => {
   if (hourlyIdle) closeHourlyIdle();
+  if (hourlyAdd) closeHourlyAdd();
   if (after.file) openHourlyPick("file", after.notice);
   else hourlyInfo(after.notice);
 };
 
 function showSettings(open: boolean) {
   if (!el("compact-view").hidden || mood || chat || whatsNew || hourlyIdle) return;
+  if (hourlyAdd) closeHourlyAdd();
   if (hourlyPick) closeHourlyPick();
   el("main-view").hidden = open;
   el("settings").hidden = !open;
@@ -1511,6 +1633,15 @@ window.addEventListener("DOMContentLoaded", () => {
   click("banners-channel1", () => menu("banners-channel1"));
   click("auto-offline", () => menu("auto-offline"));
   click("hourly-stop", () => hourlyTap("stop"));
+  click("hourly-add-open", openHourlyAdd);
+  click("hourly-add-cancel", closeHourlyAdd);
+  el("hourly-add-view").addEventListener("submit", (e) => {
+    e.preventDefault();
+    saveHourlyAdd();
+  });
+  for (const id of ["hourly-add-day", "hourly-add-from", "hourly-add-to"]) {
+    el(id).addEventListener("input", renderAddLength);
+  }
   click("hourly-card", () => void invoke("mini_open", { href: "/hours" }));
   click("hourly-pick-back", closeHourlyPick);
   click("hourly-idle-resume", () => answerHourlyIdle("resume"));
@@ -1639,6 +1770,7 @@ window.addEventListener("DOMContentLoaded", () => {
     if (whatsNew) { closeWhatsNew(); return; }
     // The question about time away is only closed by an answer.
     if (hourlyIdle) return;
+    if (hourlyAdd) { closeHourlyAdd(); return; }
     if (hourlyPick) {
       // "Which project was it for?" is closed by an answer, or Later.
       if (hourlyPick === "file" || el<HTMLInputElement>("hourly-filter").value !== "") return;

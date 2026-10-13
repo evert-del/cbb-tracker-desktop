@@ -37,6 +37,7 @@ fn build(model: &crate::hourly::MenuModel) -> Option<Menu> {
         menu.append(&projects).ok()?;
     }
     menu.append(&MenuItem::with_id(crate::hourly::MENU_LATER, "Just start, file it later", true, None)).ok()?;
+    menu.append(&MenuItem::with_id(crate::hourly::MENU_ADD, "Add time…", true, None)).ok()?;
     menu.append(&PredefinedMenuItem::separator()).ok()?;
     menu.append(&MenuItem::with_id(crate::hourly::MENU_HOURS, "Open My Hours", true, None)).ok()?;
     Some(menu)

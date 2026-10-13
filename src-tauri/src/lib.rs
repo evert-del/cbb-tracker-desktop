@@ -726,7 +726,7 @@ pub(crate) fn is_extra_tracker_window(label: &str) -> bool {
 /// Windows' own "restore minimised windows", and Ctrl+Shift+I would take
 /// the browsers' developer tools from every other app.
 #[cfg(desktop)]
-fn shortcut_modifiers() -> tauri_plugin_global_shortcut::Modifiers {
+pub(crate) fn shortcut_modifiers() -> tauri_plugin_global_shortcut::Modifiers {
     use tauri_plugin_global_shortcut::Modifiers;
     if cfg!(target_os = "macos") {
         Modifiers::SUPER | Modifiers::SHIFT
@@ -815,6 +815,12 @@ pub fn run() {
                         if let Some(label) = analytics::clock_label(action) {
                             analytics::clock_tapped(app, label, "shortcut");
                         }
+                        return;
+                    }
+                    // Cmd+Shift+Y (Ctrl+Alt+Y): the project timer, for
+                    // those who have one (hourly.rs registers it).
+                    if shortcut == &hourly::shortcut() {
+                        hourly::shortcut_pressed(app);
                         return;
                     }
                     // Cmd+Shift+M (Ctrl+Alt+M on Windows/Linux): the quick panel.
@@ -926,7 +932,9 @@ pub fn run() {
             walkie::mini_walkie_send,
             hourly::mini_hourly,
             hourly::mini_hourly_idle,
-            hourly::mini_hourly_file
+            hourly::mini_hourly_file,
+            hourly::mini_hourly_add,
+            hourly::mini_hourly_pin
         ])
         .setup(|app| {
             #[cfg(target_os = "linux")]

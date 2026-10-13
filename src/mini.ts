@@ -216,7 +216,7 @@ function tick() {
   if (!view) return;
   const onClock = view.state === "in" || view.state === "break";
   const since = Date.parse(view.since_iso);
-  const timer = !onClock ? "0:00" : Number.isNaN(since) ? "—" : fmtTimer(Date.now() - since);
+  const timer = view.state === "loading" ? "—" : !onClock ? "0:00" : Number.isNaN(since) ? "—" : fmtTimer(Date.now() - since);
   el("timer").textContent = timer;
   el("c-timer").textContent = timer;
   // Today's totals were worked out at the last push; the open stretch keeps
@@ -1536,10 +1536,10 @@ let hourlyEdit: TodayEntry | null = null;
 function editStretch(): { from: Date; to: Date | null } | null {
   if (!hourlyEdit) return null;
   const day = localDay(new Date(hourlyEdit.startedAt));
-  const from = new Date(`${day}T${el<HTMLInputElement>("hourly-edit-from").value}`);
+  const from = new Date(`${day}T${timeOf("hourly-edit-from")}`);
   if (Number.isNaN(from.getTime())) return null;
   if (hourlyEdit.endedAt === null) return { from, to: null };
-  const to = new Date(`${day}T${el<HTMLInputElement>("hourly-edit-to").value}`);
+  const to = new Date(`${day}T${timeOf("hourly-edit-to")}`);
   if (Number.isNaN(to.getTime())) return null;
   if (to <= from) to.setDate(to.getDate() + 1);
   return { from, to };
@@ -1611,8 +1611,8 @@ function saveHourlyEdit() {
   // Only times that were changed (the inputs are to the minute; the entry
   // keeps its seconds otherwise).
   const pad = (d: Date) => `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
-  const fromChanged = el<HTMLInputElement>("hourly-edit-from").value !== pad(new Date(e.startedAt));
-  const toChanged = e.endedAt !== null && el<HTMLInputElement>("hourly-edit-to").value !== pad(new Date(e.endedAt));
+  const fromChanged = timeOf("hourly-edit-from") !== pad(new Date(e.startedAt));
+  const toChanged = e.endedAt !== null && timeOf("hourly-edit-to") !== pad(new Date(e.endedAt));
   invoke("mini_hourly_edit", {
     entryId: e.id,
     startedAt: fromChanged ? s.from.toISOString() : null,
@@ -1644,6 +1644,9 @@ function deleteHourlyEdit() {
 }
 
 // ── "Suggest time from my work" (detector.rs) ──
+
+/** The folder chooser is open (its focus isn't a click away). */
+let choosingFolder = false;
 
 /** "Change apps…" has the whole list open. */
 let detectorAppsOpen = false;
@@ -1763,16 +1766,16 @@ function renderPermission(state: "ask" | "restart" | "stuck" | null, ok = false)
   el("detector-permission-text").textContent = {
     ask:
       `To read window names, macOS needs the permission it calls "Screen Recording". The app never records or captures your screen. ` +
-      `Already switched on there, and still seeing this? ${SETTINGS_STEPS}`,
+      `Already switched on there, and still seeing this? Tap Ask macOS again, allow it, then restart.`,
     restart:
       `Once Screen Recording is switched on for CoolerBox Tracker in System Settings, restart the app to finish. ` +
-      `If it was on already: ${SETTINGS_STEPS}`,
+      `If it was on already, tap Ask macOS again, allow it, then restart.`,
     stuck:
       "macOS is still hiding window names from CoolerBox Tracker, even though Screen Recording looks switched on. " +
-      `Test builds and their updates need it given again. ${SETTINGS_STEPS} Or let the app ask macOS again. Linked folders keep working meanwhile.`,
+      `Tap Ask macOS again, allow it, then restart. If that doesn't do it: ${SETTINGS_STEPS} Linked folders keep working meanwhile.`,
   }[state];
   el("detector-permission-btn").hidden = state !== "ask";
-  el("detector-reset-btn").hidden = state !== "stuck";
+  el("detector-reset-btn").hidden = false;
 }
 
 /**
@@ -1812,8 +1815,17 @@ function renderAutoCard() {
     b.textContent = n.counting ?? "";
     text.append("Working on ", b, `, since ${since} (${mins})`);
   }
+  // What's in front now, and what it matches (it takes over the stretch
+  // after two minutes, so it can differ for a moment).
+  const sameAsCounting = !!n.project && n.project === n.counting;
   el("hourly-auto-from").textContent =
-    n.kind === "app" && n.picked ? `From ${n.app}${n.title ? ` · ${n.title}` : ""}` : n.kind === "away" ? "You're away from the computer." : "";
+    n.kind === "away"
+      ? "You're away from the computer."
+      : n.kind === "app" && n.picked
+        ? `Now: ${n.app}${n.title ? ` · ${n.title}` : ""}${sameAsCounting ? "" : n.project ? ` → ${n.project}` : " → no project recognised"}`
+        : n.kind === "app"
+          ? `Now: ${n.app} (not one of your apps)`
+          : "";
   el("hourly-auto-from").hidden = !el("hourly-auto-from").textContent;
   el<HTMLButtonElement>("hourly-auto-log").hidden = unknown || !n.canLog;
   el("hourly-auto-log").textContent = `Start timer from ${since}`;
@@ -1843,6 +1855,27 @@ function pad2(n: number): string {
 function localDay(d: Date): string {
   return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 }
+/** A typed time as "HH:MM": "1055", "10:55", "10.55", "9:5", "9" (9:00). Null when it isn't one. */
+function readTime(raw: string): string | null {
+  const text = raw.trim();
+  let h: number;
+  let m: number;
+  const parts = text.split(/[:.h\s]+/).filter(Boolean);
+  if (parts.length === 2 && parts.every((p) => /^\d{1,2}$/.test(p))) {
+    h = Number(parts[0]);
+    m = Number(parts[1]);
+  } else if (/^\d{1,4}$/.test(text)) {
+    h = text.length <= 2 ? Number(text) : Number(text.slice(0, text.length - 2));
+    m = text.length <= 2 ? 0 : Number(text.slice(-2));
+  } else return null;
+  return h < 24 && m < 60 ? `${pad2(h)}:${pad2(m)}` : null;
+}
+
+/** A time field's value, read as typed. */
+function timeOf(id: string): string {
+  return readTime(el<HTMLInputElement>(id).value) ?? "";
+}
+
 function localTime(d: Date): string {
   return `${pad2(d.getHours())}:${pad2(d.getMinutes() - (d.getMinutes() % 5))}`;
 }
@@ -1850,8 +1883,8 @@ function localTime(d: Date): string {
 /** The form's stretch as moments, or null while it doesn't read right. */
 function addStretch(): { from: Date; to: Date } | null {
   const day = el<HTMLInputElement>("hourly-add-day").value;
-  const from = new Date(`${day}T${el<HTMLInputElement>("hourly-add-from").value}`);
-  const to = new Date(`${day}T${el<HTMLInputElement>("hourly-add-to").value}`);
+  const from = new Date(`${day}T${timeOf("hourly-add-from")}`);
+  const to = new Date(`${day}T${timeOf("hourly-add-to")}`);
   if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) return null;
   // "22:00 to 01:00" runs past midnight.
   if (to <= from) to.setDate(to.getDate() + 1);
@@ -1944,7 +1977,13 @@ function hourlyInfo(text: string | null) {
   if (text) hourlyInfoTimer = window.setTimeout(() => hourlyInfo(null), 30000);
 }
 
+/** The running timer the last render saw, to drop notices about an older one. */
+let lastRunningId: string | null | undefined;
+
 function renderHourly(h: Hourly | null) {
+  const runningId = h?.running?.id ?? null;
+  if (lastRunningId !== undefined && runningId !== lastRunningId) hourlyInfo(null);
+  lastRunningId = runningId;
   el("hourly").hidden = h === null;
   el("hourly-start").hidden = h === null;
   renderDetector(h?.detector ?? null);
@@ -2329,7 +2368,11 @@ function openHourlyIdle(ask: HourlyIdleAsk) {
     `${timer} kept running while you were idle for ${away}, from ${left} to ${TRACKER_TIME.format(to)}. ` +
     `Dropping the idle time ends it at ${left}.`;
   el("hourly-idle-error").hidden = true;
-  document.querySelectorAll<HTMLButtonElement>(".h-choices button").forEach((b) => (b.disabled = false));
+  // The question opens while someone is coming back: a click already on
+  // its way mustn't answer it.
+  const buttons = document.querySelectorAll<HTMLButtonElement>("#hourly-idle-view .h-choices button");
+  buttons.forEach((b) => (b.disabled = true));
+  window.setTimeout(() => buttons.forEach((b) => (b.disabled = false)), 1200);
   if (current) renderMode(current);
 }
 
@@ -2533,7 +2576,12 @@ window.addEventListener("DOMContentLoaded", () => {
   });
   click("detector-privacy-close", () => showDetectorPrivacy(null));
   click("detector-privacy-open", () => showDetectorPrivacy("read"));
-  click("detector-link", () => void invoke("mini_detector_link").catch((error) => hourlyError(String(error))));
+  click("detector-link", () => {
+    choosingFolder = true;
+    invoke("mini_detector_link")
+      .catch((error) => hourlyError(String(error)))
+      .finally(() => (choosingFolder = false));
+  });
   click("detector-permission-btn", () => void invoke("mini_detector_permission"));
   click("hourly-wrap-stop", () => {
     el("hourly-wrap").hidden = true;
@@ -2546,7 +2594,18 @@ window.addEventListener("DOMContentLoaded", () => {
     saveHourlyAdd();
   });
   for (const id of ["hourly-add-day", "hourly-add-from", "hourly-add-to"]) {
-    el(id).addEventListener("input", renderAddLength);
+    el(id).addEventListener("input", () => {
+      renderAddLength();
+      el("hourly-add-error").hidden = true;
+    });
+  }
+  // Times typed as 1055, 10.55 or 9:5 read as 10:55, 10:55, 09:05.
+  for (const id of ["hourly-add-from", "hourly-add-to", "hourly-edit-from", "hourly-edit-to"]) {
+    el(id).addEventListener("blur", () => {
+      const input = el<HTMLInputElement>(id);
+      const time = readTime(input.value);
+      if (time) input.value = time;
+    });
   }
   click("hourly-card", () => void invoke("mini_open", { href: "/hours" }));
   click("hourly-pick-back", closeHourlyPick);
@@ -2700,6 +2759,7 @@ window.addEventListener("DOMContentLoaded", () => {
     // an unsent reply is kept for when the conversation is opened again.
     if (chat && !current?.pinned) closeChat();
     if (hourlyPick === "start" && !current?.pinned) closeHourlyPick();
-    showSettings(false);
+    // The folder chooser takes focus; Settings is where it comes back to.
+    if (!choosingFolder) showSettings(false);
   });
 });

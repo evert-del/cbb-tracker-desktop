@@ -91,12 +91,17 @@ pub(crate) fn plan(
         .map(|c| crate::clock::day_totals(&c.today, now))
         .unwrap_or((0, 0));
     View {
-        state: available.map(|c| c.state.clone()).unwrap_or_else(|| "none".into()),
-        status: planned
-            .status
-            .strip_prefix("Time sheet: ")
-            .unwrap_or(&planned.status)
-            .to_string(),
+        // Before the first read: loading, not "no time sheet".
+        state: match (clock, available) {
+            (None, _) => "loading".into(),
+            (_, Some(c)) => c.state.clone(),
+            _ => "none".into(),
+        },
+        status: if clock.is_none() {
+            "Loading your day…".into()
+        } else {
+            planned.status.strip_prefix("Time sheet: ").unwrap_or(&planned.status).to_string()
+        },
         actions,
         since_iso: available.map(|c| c.since_iso.clone()).unwrap_or_default(),
         worked_min,
@@ -1118,10 +1123,13 @@ mod tests {
 
     #[test]
     fn nothing_to_press_without_a_time_sheet() {
-        for clock in [None, Some(crate::clock::Clock { available: false, ..clock("in", "08:00") })] {
+        for (clock, state) in [
+            (None, "loading"),
+            (Some(crate::clock::Clock { available: false, ..clock("in", "08:00") }), "none"),
+        ] {
             let view = plan(clock.as_ref(), 0, vec![], NOW);
             assert!(view.actions.is_empty());
-            assert_eq!(view.state, "none");
+            assert_eq!(view.state, state);
             assert_eq!(view.since_iso, "");
         }
     }

@@ -348,7 +348,8 @@ pub(crate) struct Entry {
     /// The note shows on the client's Hours page and invoice.
     #[serde(default)]
     pub note_for_client: bool,
-    #[serde(default)]
+    /// The tracker sends a decimal (12.53): rounded to whole minutes.
+    #[serde(default, deserialize_with = "whole_minutes")]
     pub minutes: u64,
 }
 
@@ -370,6 +371,12 @@ pub(crate) struct Today {
 /// Reads `GET /api/me/project-time`'s answer (`{ s, b }` as START_JS
 /// leaves it): the day, or `None` (not shipped yet, or unreadable: the
 /// list just doesn't show).
+/// A number of minutes, whole or not, as whole minutes (never negative).
+fn whole_minutes<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<u64, D::Error> {
+    let value = Option::<f64>::deserialize(deserializer)?.unwrap_or(0.0);
+    Ok(if value.is_finite() && value > 0.0 { value.round() as u64 } else { 0 })
+}
+
 pub(crate) fn read_today(raw: &str) -> Option<Today> {
     #[derive(Deserialize)]
     struct Answer {
@@ -2253,7 +2260,7 @@ mod tests {
     fn todays_list_reads_only_a_real_answer() {
         let body = r#"{"from":"2026-10-12","to":"2026-10-12","entries":[
             {"id":"e1","projectId":null,"projectName":null,"clientName":null,"billable":true,"billed":false,"startedAt":"2026-10-12T09:00:00.000Z","endedAt":null,"minutes":5,"note":null,"source":"DESKTOP"},
-            {"id":"e2","projectId":"p1","projectName":"Logo refresh","clientName":"Vimeo","billable":true,"billed":false,"startedAt":"2026-10-12T07:00:00.000Z","endedAt":"2026-10-12T08:30:00.000Z","minutes":90,"note":"Grade","source":"WEB"},
+            {"id":"e2","projectId":"p1","projectName":"Logo refresh","clientName":"Vimeo","billable":true,"billed":false,"startedAt":"2026-10-12T07:00:00.000Z","endedAt":"2026-10-12T08:30:00.000Z","minutes":89.6,"note":"Grade","source":"WEB"},
             {"id":"bad id","startedAt":"x"}]}"#;
         let today = read_today(&json!({ "s": 200, "b": body }).to_string()).expect("a day");
         assert_eq!(today.day, "2026-10-12");

@@ -386,7 +386,9 @@ impl Tracker {
                 // Work nothing was recognised in, and then a save in a folder
                 // linked to a project: it was that project.
                 if from_save {
-                    if let Some(current) = self.current.as_mut().filter(|c| c.project.is_empty()) {
+                    // Only work in an app that names its window after the
+                    // document (not Claude or a terminal before it).
+                    if let Some(current) = self.current.as_mut().filter(|c| c.project.is_empty() && c.app.as_deref().is_some_and(names_documents)) {
                         current.project = project.clone();
                         current.app = None;
                     }
@@ -1742,6 +1744,14 @@ mod tests {
         }
         t.step(T0 + 16 * 60, Some(Hit::Project { project: "p4".into(), app: None }));
         assert_eq!(t.close(), Some(known("p4", T0, T0 + 16 * 60)));
+        // Not work in an app that doesn't name documents (Claude, a terminal).
+        let mut t = Tracker::default();
+        for minute in 0..=15 {
+            t.step(T0 + minute * 60, Some(Hit::Unknown("claude".into())));
+        }
+        t.step(T0 + 16 * 60, Some(Hit::Project { project: "p4".into(), app: None }));
+        let done = t.close().expect("the Claude stretch");
+        assert_eq!((done.project.as_str(), done.app.as_deref()), ("", Some("claude")));
         // Another picked app is another stretch.
         let mut t = Tracker::default();
         for minute in 0..=12 {

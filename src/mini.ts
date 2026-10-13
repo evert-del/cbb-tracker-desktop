@@ -57,7 +57,7 @@ type Hourly = {
   /** Settings: minutes without input before idle time counts. */
   idleMinutes: number;
   /** Pinned project ids (favourites), in order. */
-  pinned: string[];
+  pinned?: string[];
   /** The global start/stop shortcut ("⌘⇧Y", "Ctrl+Alt+Y"). */
   shortcut: string;
   /** The project they're booked on today (My Schedule), first in `quick`. */
@@ -1276,9 +1276,12 @@ function openHourlyAdd() {
   }
   // The last project timed, an hour ago until now.
   select.value = h.running?.projectId ?? h.projects[0]?.id ?? "";
+  // The day is the start's: just after midnight, the hour before began
+  // yesterday (and ends today, after it).
   const now = new Date();
-  el<HTMLInputElement>("hourly-add-day").value = localDay(now);
-  el<HTMLInputElement>("hourly-add-from").value = localTime(new Date(now.getTime() - 3600_000));
+  const hourAgo = new Date(now.getTime() - 3600_000);
+  el<HTMLInputElement>("hourly-add-day").value = localDay(hourAgo);
+  el<HTMLInputElement>("hourly-add-from").value = localTime(hourAgo);
   el<HTMLInputElement>("hourly-add-to").value = localTime(now);
   el<HTMLInputElement>("hourly-add-note").value = "";
   el("hourly-add-error").hidden = true;
@@ -1382,7 +1385,7 @@ function renderHourly(h: Hourly | null) {
     chip.title = `${running ? "Switch to" : "Start"} ${projectTitle(p)}`;
     const name = document.createElement("span");
     name.textContent = projectLabel(p);
-    const pinned = h.pinned.includes(p.id);
+    const pinned = (h.pinned ?? []).includes(p.id);
     if (pinned) chip.classList.add("pinned");
     chip.append(svg(pinned ? STAR : PLAY), name);
     if (p.id === h.booked) {
@@ -1416,6 +1419,8 @@ function renderHourly(h: Hourly | null) {
   }
   // Filed meanwhile (on the website, say), or put off: nothing to ask.
   if (hourlyPick === "file" && !h.filing) closeHourlyPick();
+  // Still waiting for its project (the view was left): ask again.
+  if (h.filing && hourlyPick === null && !hourlyIdle && !hourlyAdd && !mood && !whatsNew && !h.asking) openHourlyPick("file");
   if (hourlyPick) renderHourlyPick();
   // A question whose timer stopped meanwhile (on the website, say) is moot.
   if (hourlyIdle && !h.asking) closeHourlyIdle();
@@ -1467,7 +1472,7 @@ function renderHourlyPick() {
       line.appendChild(row);
       if (!filing) {
         // Pin a favourite to the front of the one-tap starts.
-        const pinned = h.pinned.includes(p.id);
+        const pinned = (h.pinned ?? []).includes(p.id);
         const pin = document.createElement("button");
         pin.type = "button";
         pin.className = "h-pin";
@@ -1572,13 +1577,19 @@ function closeHourlyIdle() {
 function answerHourlyIdle(choice: "keep" | "resume" | "stop") {
   if (!hourlyIdle) return;
   document.querySelectorAll<HTMLButtonElement>(".h-choices button").forEach((b) => (b.disabled = true));
+  // The view goes when the tracker has the answer (the next push says
+  // nothing is being asked); a refusal shows here and can be answered again.
   invoke("mini_hourly_idle", { choice })
-    .then(() => closeHourlyIdle())
-    .catch((error) => {
-      // Nothing more to answer (it stopped meanwhile): back to the panel.
-      closeHourlyIdle();
-      hourlyError(String(error));
-    });
+    .then(() => {
+      if (choice === "keep") closeHourlyIdle();
+    })
+    .catch((error) => idleError(String(error)));
+}
+
+function idleError(text: string) {
+  el("hourly-idle-error").textContent = text;
+  el("hourly-idle-error").hidden = false;
+  document.querySelectorAll<HTMLButtonElement>(".h-choices button").forEach((b) => (b.disabled = false));
 }
 
 declare global {
@@ -1592,6 +1603,7 @@ declare global {
 }
 window.__cbbMiniHourlyError = (text) => {
   if (hourlyAdd) return addError(text);
+  if (hourlyIdle) return idleError(text);
   hourlyTapped = null;
   restHourlyButtons();
   hourlyError(text);
@@ -1615,8 +1627,14 @@ window.__cbbMiniHourlyAfter = (after) => {
 
 function showSettings(open: boolean) {
   if (!el("compact-view").hidden || mood || chat || whatsNew || hourlyIdle) return;
-  if (hourlyAdd) closeHourlyAdd();
-  if (hourlyPick) closeHourlyPick();
+  // Opening Settings leaves the timer's views; closing it (as on blur)
+  // keeps a filing question or a half-typed Add time.
+  if (open && hourlyAdd) closeHourlyAdd();
+  if (open && hourlyPick) closeHourlyPick();
+  if (!open && (hourlyAdd || hourlyPick)) {
+    el("settings").hidden = true;
+    return;
+  }
   el("main-view").hidden = open;
   el("settings").hidden = !open;
 }

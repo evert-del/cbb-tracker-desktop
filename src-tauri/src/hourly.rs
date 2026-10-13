@@ -80,11 +80,14 @@ pub(crate) const NUDGE_AFTER_SECS: u64 = 30 * 60;
 
 const NOTE_MAX: usize = 500;
 
+/// Leaves `{ s: status, b: body }` on `window.__cbbHourly` (`s: 0` when the
+/// tracker couldn't be reached), so a failed read isn't taken for "not
+/// hourly" (see `read_answer`).
 const START_JS: &str = r#"(function () {
   fetch('/api/me/hourly', { credentials: 'same-origin', cache: 'no-store' })
-    .then(function (r) { return r.ok ? r.text() : 'null'; })
-    .then(function (t) { window.__cbbHourly = t; })
-    .catch(function () { window.__cbbHourly = 'null'; });
+    .then(function (r) { return r.text().catch(function () { return ''; }).then(function (t) { return { s: r.status, b: t }; }); })
+    .then(function (x) { window.__cbbHourly = JSON.stringify(x); })
+    .catch(function () { window.__cbbHourly = JSON.stringify({ s: 0, b: '' }); });
 })()"#;
 
 const TAKE_JS: &str =
@@ -270,6 +273,33 @@ fn unfiled_not_billable(mut running: Running) -> Running {
     running
 }
 
+/// What a read of `GET /api/me/hourly` means.
+#[derive(Debug, PartialEq)]
+pub(crate) enum Read {
+    /// The person's timer.
+    Hourly(Info),
+    /// Not hourly (404 / 403), or signed out (401): hide everything.
+    Off,
+    /// Offline, a server error, or an answer that doesn't read: keep what
+    /// is known (a pending question must not be lost to a blip).
+    Keep,
+}
+
+pub(crate) fn read_answer(raw: &str) -> Read {
+    #[derive(Deserialize)]
+    struct Answer {
+        s: u16,
+        #[serde(default)]
+        b: String,
+    }
+    let Ok(answer) = serde_json::from_str::<Answer>(raw) else { return Read::Keep };
+    match answer.s {
+        200 => parse(&answer.b).map_or(Read::Keep, Read::Hourly),
+        401 | 403 | 404 => Read::Off,
+        _ => Read::Keep,
+    }
+}
+
 /// The tracker's ids (uuid or cuid): nothing that could reach a script.
 pub(crate) fn valid_id(id: &str) -> bool {
     (1..=64).contains(&id.len()) && id.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
@@ -300,6 +330,14 @@ pub(crate) fn quick(info: &Info, pinned: &[String]) -> Vec<Project> {
 
 /// Pinned projects (`settings.json`), at most six.
 const PINNED: &str = "hourly_pinned";
+
+/// The pins, read from settings once and kept (the menus ask every second).
+static PINS: Mutex<Option<Vec<String>>> = Mutex::new(None);
+
+fn pins<R: Runtime>(app: &AppHandle<R>) -> Vec<String> {
+    let Ok(mut cached) = PINS.lock() else { return crate::close::strings(app, PINNED) };
+    cached.get_or_insert_with(|| crate::close::strings(app, PINNED)).clone()
+}
 const PINS_MAX: usize = 6;
 
 /// Pin or unpin `project_id`; returns the new list.
@@ -647,13 +685,16 @@ impl<R: Runtime> TrayMenu<R> {
 /// called every second by the menu-bar ticker in clock.rs).
 pub(crate) fn refresh_menus<R: Runtime>(app: &AppHandle<R>) {
     let now = crate::clock::unix_now();
-    let pinned = crate::close::strings(app, PINNED);
+    let pinned = pins(app);
     let model = with(app, |inner| inner.info.as_ref().map(|info| menu_model(info, &pinned, now))).flatten();
     if let Ok(mut dock) = DOCK.lock() {
         dock.clone_from(&model);
     }
     let Some(tray) = app.try_state::<TrayMenu<R>>() else { return };
-    let Ok(mut shown) = tray.shown.lock() else { return };
+    // Never wait for it: the menu calls below wait for the main thread, and
+    // a command on the main thread may be here too. A skipped refresh is
+    // done by the next tick.
+    let Ok(mut shown) = tray.shown.try_lock() else { return };
     if *shown == model {
         return;
     }
@@ -780,7 +821,7 @@ pub(crate) fn set_idle_minutes<R: Runtime>(app: &AppHandle<R>, minutes: u64) -> 
 /// The panel's view, or `None` (hidden) for someone without a timer.
 pub(crate) fn panel<R: Runtime>(app: &AppHandle<R>) -> Option<PanelView> {
     let idle_minutes = idle_minutes(app);
-    let pinned = crate::close::strings(app, PINNED);
+    let pinned = pins(app);
     let next = crate::schedule::next(app);
     let now = crate::clock::unix_now();
     with(app, |inner| {
@@ -905,11 +946,13 @@ fn maybe_warn_retainer<R: Runtime>(app: &AppHandle<R>) {
     };
     let key = format!("retainer_warned_{project_id}");
     let month = sast_month(crate::clock::unix_now());
-    if crate::close::number(app, &key, 0) == month {
+    // Held back while quiet (do not disturb, muted): it's shown later, not
+    // used up unseen.
+    if crate::close::number(app, &key, 0) == month || !crate::quiet::allowed(app, crate::quiet::Kind::Tracker) {
         return;
     }
     crate::close::set_number(app, &key, month);
-    if crate::quiet::allowed(app, crate::quiet::Kind::Tracker) {
+    {
         crate::banner::show(
             app,
             "Retainer",
@@ -935,17 +978,35 @@ fn set_running<R: Runtime>(app: &AppHandle<R>, running: Option<Running>) {
             }
             info.running = running;
         }
+        // A question about a timer that has just ended (or restarted) is
+        // answered.
+        let still = inner.info.as_ref().and_then(|info| info.running.as_ref()).map(|running| running.id.clone());
+        if inner.ask.as_ref().is_some_and(|ask| Some(&ask.running.id) != still.as_ref()) {
+            inner.ask = None;
+        }
     });
     refresh_menus(app);
     crate::mini::push(app);
 }
 
+/// Read the timer from the tracker (blocking: call it off the main thread).
 fn read<R: Runtime>(app: &AppHandle<R>) {
     let Some(window) = crate::walkie::tracker_window(app) else { return };
     let _ = window.eval(START_JS);
-    if let Some(raw) = crate::walkie::collect(&window, TAKE_JS, 30) {
-        set_info(app, parse(&raw));
+    let Some(raw) = crate::walkie::collect(&window, TAKE_JS, 30) else { return };
+    match read_answer(&raw) {
+        Read::Hourly(info) => set_info(app, Some(info)),
+        Read::Off => set_info(app, None),
+        Read::Keep => {}
     }
+}
+
+/// The timer the tracker says is running now, read afresh (blocking). After
+/// sleep or time away the cached one can be stale, and a stop names no
+/// timer: so check before ending anything.
+fn running_now<R: Runtime>(app: &AppHandle<R>) -> Option<Running> {
+    read(app);
+    with(app, |inner| inner.info.as_ref().and_then(|info| info.running.clone())).flatten()
 }
 
 /// Read again soon if the last read is stale (the panel opened, or the
@@ -972,6 +1033,8 @@ enum Then {
         notice: Option<String>,
         /// Say what happened in a notification (shortcut, menus).
         say: bool,
+        /// An idle auto-stop (see `auto_stop`).
+        auto: Option<AutoStop>,
     },
     /// Saved without changing the running timer (filed, or time added):
     /// `filed` clears the question; `notice` is said in the panel.
@@ -991,7 +1054,21 @@ fn send<R: Runtime>(app: &AppHandle<R>, steps: Vec<(&'static str, Value)>, done:
         let outcome = crate::walkie::collect(&window, TAKE_RESULT_JS, 40)
             .and_then(|raw| serde_json::from_str::<Outcome>(&raw).ok());
         match (outcome, then) {
-            (Some(Outcome { ok: true, running, .. }), Then::Timer { file, notice, say: tell }) => {
+            (Some(Outcome { ok: true, running, .. }), Then::Timer { file, notice, auto: Some(AutoStop { later: true, .. }), .. }) => {
+                // Stopped while they're away: tell them, and ask for the
+                // project, when they're back.
+                set_running(&app, running.filter(valid_running).map(unfiled_not_billable));
+                let _ = window.eval("window.dispatchEvent(new Event('cbb:hourly-changed'))");
+                with(&app, |inner| {
+                    inner.notice = notice;
+                    inner.ask = None;
+                    if file.is_some() {
+                        inner.to_file = file;
+                    }
+                });
+                crate::mini::push(&app);
+            }
+            (Some(Outcome { ok: true, running, .. }), Then::Timer { file, notice, say: tell, .. }) => {
                 let running = running.filter(valid_running).map(unfiled_not_billable);
                 if tell && !panel_showing(&app) {
                     let what = match &running {
@@ -1025,7 +1102,15 @@ fn send<R: Runtime>(app: &AppHandle<R>, steps: Vec<(&'static str, Value)>, done:
                     crate::mini::ask_hourly(&app, "__cbbMiniHourlyAfter", &json!({ "file": false, "notice": notice }));
                 }
             }
-            (other, _) => {
+            (other, then) => {
+                // A failed auto-stop is tried again on the next idle poll.
+                if let Then::Timer { auto: Some(auto), .. } = &then {
+                    with(&app, |inner| {
+                        if inner.auto_stopped.as_deref() == Some(auto.timer.as_str()) {
+                            inner.auto_stopped = None;
+                        }
+                    });
+                }
                 let error = other
                     .and_then(|outcome| outcome.error)
                     .unwrap_or_else(|| "The tracker could not be reached.".into());
@@ -1062,7 +1147,7 @@ fn ends_unfiled(info: &Info) -> Option<String> {
 fn start<R: Runtime>(app: &AppHandle<R>, project_id: Option<&str>, note: Option<&str>, from: &'static str, tell: bool) -> Result<(), String> {
     let info = current(app)?;
     let body = start_body(project_id, note, &info).map_err(str::to_string)?;
-    send(app, vec![(TIMER_URL, body)], "", Then::Timer { file: ends_unfiled(&info), notice: None, say: tell })?;
+    send(app, vec![(TIMER_URL, body)], "", Then::Timer { file: ends_unfiled(&info), notice: None, say: tell, auto: None })?;
     let what = match (info.running.is_some(), project_id.is_some()) {
         (true, _) => "hourly_switch",
         (false, false) => "hourly_start_unfiled",
@@ -1077,7 +1162,7 @@ fn stop<R: Runtime>(app: &AppHandle<R>, from: &'static str, tell: bool) -> Resul
     if info.running.is_none() {
         return Err("No timer is running.".into());
     }
-    send(app, vec![(TIMER_URL, stop_body(None))], "", Then::Timer { file: ends_unfiled(&info), notice: None, say: tell })?;
+    send(app, vec![(TIMER_URL, stop_body(None))], "", Then::Timer { file: ends_unfiled(&info), notice: None, say: tell, auto: None })?;
     crate::analytics::action(app, "hourly_stop", from);
     Ok(())
 }
@@ -1101,15 +1186,33 @@ pub(crate) fn mini_hourly<R: Runtime>(
 /// and stop" (`keep`, `resume`, `stop`).
 #[tauri::command]
 pub(crate) fn mini_hourly_idle<R: Runtime>(app: AppHandle<R>, choice: String) -> Result<(), String> {
-    let ask = with(&app, |inner| inner.ask.take()).flatten().ok_or("That timer has already stopped.")?;
+    // The question stays until the answer has worked (a failed request can
+    // be answered again); it goes when the timer it's about stops.
+    let ask = with(&app, |inner| inner.ask.clone()).flatten().ok_or("That timer has already stopped.")?;
     let steps = idle_steps(&choice, &ask).map_err(str::to_string)?;
-    crate::mini::push(&app);
-    if !steps.is_empty() {
-        // The unfiled stretch up to the idle moment is filed next, whether
-        // the timer stays stopped or starts again.
-        let file = left_to_file(&ask.running, ask.from);
-        let steps = steps.into_iter().map(|body| (TIMER_URL, body)).collect();
-        send(&app, steps, "", Then::Timer { file, notice: None, say: false })?;
+    if steps.is_empty() {
+        with(&app, |inner| inner.ask = None);
+        crate::mini::push(&app);
+    } else {
+        crate::walkie::tracker_window(&app).ok_or("Open the tracker first.")?;
+        let app = app.clone();
+        std::thread::spawn(move || {
+            // Only the timer the question is about: it may have been
+            // stopped or switched elsewhere meanwhile.
+            if running_now(&app).as_ref().map(|running| &running.id) != Some(&ask.running.id) {
+                with(&app, |inner| inner.ask = None);
+                crate::mini::push(&app);
+                return panel_error(&app, "That timer was stopped or switched elsewhere, so nothing changed.");
+            }
+            // The unfiled stretch up to the idle moment is filed next,
+            // whether the timer stays stopped or starts again.
+            let file = left_to_file(&ask.running, ask.from);
+            let steps = steps.into_iter().map(|body| (TIMER_URL, body)).collect();
+            let then = Then::Timer { file, notice: None, say: false, auto: None };
+            if let Err(error) = send(&app, steps, "", then) {
+                panel_error(&app, &error);
+            }
+        });
     }
     let what = match choice.as_str() {
         "resume" => "hourly_idle_resume",
@@ -1192,8 +1295,11 @@ pub(crate) fn mini_hourly_pin<R: Runtime>(app: AppHandle<R>, project_id: String,
     if !info.projects.iter().any(|project| project.id == project_id) {
         return Err("That project isn't one of yours.".into());
     }
-    let list = toggle_pin(&crate::close::strings(&app, PINNED), &project_id, pinned);
+    let list = toggle_pin(&pins(&app), &project_id, pinned);
     crate::close::set_strings(&app, PINNED, &list);
+    if let Ok(mut cached) = PINS.lock() {
+        *cached = Some(list);
+    }
     refresh_menus(&app);
     crate::mini::push(&app);
     crate::analytics::setting_changed(&app, "hourly_pin", pinned);
@@ -1226,26 +1332,38 @@ pub(crate) fn on_idle<R: Runtime>(app: &AppHandle<R>, now: u64, idle: Option<u64
 /// Stops `running` at `at` (when idling began) and tells the person: now if
 /// they're `back`, else when they come back (on_away).
 fn auto_stop<R: Runtime>(app: &AppHandle<R>, running: &Running, at: u64, back: bool) {
-    let label = with(app, |inner| running_label(inner.info.as_ref(), running)).unwrap_or_else(|| "Not yet filed".into());
-    let notice = format!(
-        "You were away, so your timer on {label} stopped at {}, when you went idle.",
-        crate::clock::fmt_hhmm_sast(at)
-    );
-    let file = left_to_file(running, at);
-    let then = if back {
-        Then::Timer { file, notice: Some(notice), say: false }
-    } else {
-        with(app, |inner| {
-            inner.notice = Some(notice);
-            inner.ask = None;
-            if file.is_some() {
-                inner.to_file.clone_from(&file);
-            }
-        });
-        Then::Timer { file: None, notice: None, say: false }
-    };
-    let _ = send(app, vec![(TIMER_URL, stop_body(Some(at)))], "", then);
-    crate::analytics::action(app, "hourly_idle_auto_stop", "idle");
+    let app = app.clone();
+    let running = running.clone();
+    std::thread::spawn(move || {
+        // Only the timer that was running when idling began, as the tracker
+        // has it now: after sleep the cached one can be stale, and a stop
+        // names no timer.
+        if running_now(&app).as_ref().map(|now| &now.id) != Some(&running.id) {
+            return;
+        }
+        let label = with(&app, |inner| running_label(inner.info.as_ref(), &running)).unwrap_or_else(|| "Not yet filed".into());
+        let notice = format!(
+            "You were away, so your timer on {label} stopped at {}, when you went idle.",
+            crate::clock::fmt_hhmm_sast(at)
+        );
+        let then = Then::Timer {
+            file: left_to_file(&running, at),
+            notice: Some(notice),
+            say: false,
+            auto: Some(AutoStop { timer: running.id.clone(), later: !back }),
+        };
+        if send(&app, vec![(TIMER_URL, stop_body(Some(at)))], "", then).is_err() {
+            with(&app, |inner| inner.auto_stopped = None);
+        }
+        crate::analytics::action(&app, "hourly_idle_auto_stop", "idle");
+    });
+}
+
+/// An idle auto-stop in flight: `later` keeps what to tell for when the
+/// person is back (on_away); a failure lets it be tried again.
+struct AutoStop {
+    timer: String,
+    later: bool,
 }
 
 /// Back from idle time (idle.rs).
@@ -1257,8 +1375,9 @@ pub(crate) fn on_away<R: Runtime>(app: &AppHandle<R>, away: crate::idle::Away) {
         crate::mini::ask_hourly(app, "__cbbMiniHourlyAfter", &json!({ "file": filing, "notice": notice }));
         return;
     }
-    let running = with(app, |inner| inner.info.as_ref().and_then(|info| info.running.clone())).flatten();
-    let Some(running) = running else { return };
+    // Afresh: after sleep the cached timer can be stale (on idle.rs's
+    // thread, so a blocking read is fine here).
+    let Some(running) = running_now(app) else { return };
     match idle_call(Some(&running), away.from, away.to, idle_minutes(app) * 60) {
         IdleCall::Nothing => {}
         // The computer slept through it: the same rule, now they're back.
@@ -1291,6 +1410,10 @@ fn maybe_nudge<R: Runtime>(app: &AppHandle<R>) {
         .and_then(|last| last.0.lock().ok().and_then(|slot| slot.clone()))
         .filter(|clock| clock.available && clock.state == "in")
         .and_then(|clock| crate::clock::parse_iso(&clock.since_iso));
+    // Held back while quiet, not used up.
+    if !crate::quiet::allowed(app, crate::quiet::Kind::Tracker) {
+        return;
+    }
     let nudge = with(app, |inner| {
         let eligible = inner.info.as_ref().is_some_and(|info| info.running.is_none() && !info.projects.is_empty());
         if eligible && should_nudge(in_since, inner.last_timer_at, inner.nudged_for, now) {
@@ -1301,7 +1424,7 @@ fn maybe_nudge<R: Runtime>(app: &AppHandle<R>) {
         }
     })
     .unwrap_or(false);
-    if nudge && crate::quiet::allowed(app, crate::quiet::Kind::Tracker) {
+    if nudge {
         crate::banner::show(
             app,
             "Working on something?",
@@ -1318,13 +1441,16 @@ pub(crate) fn start_polling<R: Runtime>(app: AppHandle<R>) {
         std::thread::sleep(FIRST_AFTER);
         loop {
             if crate::session::signed_in() {
+                // read() checks the retainer too (set_info).
                 read(&app);
                 maybe_nudge(&app);
-                // The running time eats into a retainer between reads too.
-                maybe_warn_retainer(&app);
-            } else {
+            } else if with(&app, |inner| inner.info.is_some()).unwrap_or(false) {
+                // Signed out: nothing of the timer stays, and the shortcut
+                // is given back to other apps.
                 with(&app, |inner| *inner = Inner::default());
+                sync_shortcut(&app, false);
                 refresh_menus(&app);
+                crate::mini::push(&app);
             }
             std::thread::sleep(POLL_EVERY);
         }
@@ -1624,6 +1750,22 @@ mod tests {
     fn the_shortcut_is_written_each_systems_way() {
         assert_eq!(shortcut_label("macos"), "⌘⇧Y");
         assert_eq!(shortcut_label("windows"), "Ctrl+Alt+Y");
+    }
+
+    #[test]
+    fn only_404_403_401_hide_the_timer_and_blips_keep_it() {
+        let ok = serde_json::to_string(&json!({ "s": 200, "b": ANSWER })).unwrap();
+        assert!(matches!(read_answer(&ok), Read::Hourly(_)));
+        for s in [401, 403, 404] {
+            assert_eq!(read_answer(&json!({ "s": s, "b": "{\"error\":\"Not found.\"}" }).to_string()), Read::Off, "{s}");
+        }
+        for s in [0, 500, 502, 503] {
+            assert_eq!(read_answer(&json!({ "s": s, "b": "" }).to_string()), Read::Keep, "{s}");
+        }
+        // A 200 that doesn't read, or no answer at all: keep what's known.
+        assert_eq!(read_answer(&json!({ "s": 200, "b": "<html>" }).to_string()), Read::Keep);
+        assert_eq!(read_answer("null"), Read::Keep);
+        assert_eq!(read_answer(""), Read::Keep);
     }
 
     #[test]

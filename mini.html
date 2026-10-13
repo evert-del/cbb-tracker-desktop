@@ -269,6 +269,24 @@
       #detector-body .set-label { padding: 6px 0 0; }
       #detector-apps { display: flex; flex-wrap: wrap; gap: 6px; }
       #detector-apps .h-chip[aria-pressed="true"] { background: var(--pink); color: #fff; }
+      .d-kind { margin: 4px 0 2px; font-size: 11px; color: var(--muted); }
+      #detector-add-app, #detector-link { align-self: flex-start; font-size: 12.5px; font-weight: 600; color: var(--pink-ink); }
+      #detector-add-app:hover, #detector-link:hover { text-decoration: underline; }
+      #detector-open { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px; border-radius: var(--r-ctl); background: var(--tile); }
+      #detector-open .d-hint { width: 100%; }
+      #detector-restart { margin: 0; font-size: 12px; color: var(--tone-3-fg); background: var(--tone-3-bg); padding: 8px 10px; border-radius: var(--r-ctl); }
+      #detector-restart button { font-weight: 600; text-decoration: underline; color: inherit; }
+      #detector-now { display: flex; flex-direction: column; gap: 4px; padding: 8px 10px; border-radius: var(--r-ctl); border: 0.5px solid var(--rule); font-size: 12px; color: var(--muted); }
+      #detector-now .d-now-head { font-size: 10.5px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--faint); }
+      #detector-now .d-now-what { color: var(--fg); overflow-wrap: anywhere; }
+      #detector-now .d-now-what b { font-weight: 600; }
+      #detector-now-log { align-self: flex-start; margin-top: 2px; padding: 5px 10px; border-radius: var(--r-ctl); background: var(--pink); color: #fff; font-weight: 600; font-size: 12px; }
+      #hourly-new { display: flex; flex-direction: column; gap: 10px; padding: 4px 16px 12px; overflow-y: auto; }
+      #hourly-new-billing { display: grid; grid-template-columns: 1fr 1fr; gap: 2px; padding: 2px; border-radius: var(--r-ctl); background: var(--tile); }
+      .h-check { display: flex; gap: 8px; align-items: flex-start; font-size: 12.5px; color: var(--fg); }
+      .h-check input { margin: 2px 0 0; accent-color: var(--pink); }
+      .h-check .hint { display: block; font-size: 11.5px; color: var(--muted); }
+      .h-row.h-new .t { color: var(--pink-ink); }
       .d-folder { display: flex; align-items: center; gap: 8px; font-size: 12.5px; }
       .d-folder .f { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
       .d-folder .p { color: var(--muted); font-size: 11.5px; display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -695,6 +713,20 @@
         <p id="hourly-pick-hint" hidden></p>
         <input id="hourly-filter" type="search" placeholder="Find a project" autocomplete="off" spellcheck="false" aria-label="Find a project" />
         <div id="hourly-pick-list"></div>
+        <form id="hourly-new" hidden>
+          <label class="h-field">Project name<input id="hourly-new-name" type="text" maxlength="200" autocomplete="off" /></label>
+          <label class="h-field">Client<select id="hourly-new-client"></select></label>
+          <label class="h-field" id="hourly-new-client-name-field" hidden>The new client's name<input id="hourly-new-client-name" type="text" maxlength="120" autocomplete="off" /></label>
+          <div id="hourly-new-billing" role="radiogroup" aria-label="How it's billed">
+            <button type="button" class="seg" data-billable="1" role="radio" aria-checked="true">Billed by the hour</button>
+            <button type="button" class="seg" data-billable="0" role="radio" aria-checked="false">Quoted</button>
+          </div>
+          <p class="h-error" id="hourly-new-error" role="alert" hidden></p>
+          <div class="h-choices">
+            <button type="submit" class="primary" id="hourly-new-save">Create</button>
+            <button type="button" id="hourly-new-cancel">Back to the list</button>
+          </div>
+        </form>
         <p class="h-error" id="hourly-pick-error" role="alert" hidden></p>
         <div id="hourly-pick-foot" hidden>
           <button type="button" id="hourly-file-new" title="Make a new project for it on the website (it can add the client too)">New project…</button>
@@ -728,6 +760,7 @@
         </div>
         <span id="hourly-edit-length"></span>
         <label class="h-field">Note (optional)<input id="hourly-edit-note" type="text" maxlength="500" autocomplete="off" /></label>
+        <label class="h-check"><input type="checkbox" id="hourly-edit-for-client" /><span>Show the client this note<span class="hint">On their Hours page and invoice. Clients never see who worked.</span></span></label>
         <p class="h-error" id="hourly-edit-error" role="alert" hidden></p>
         <div class="h-choices">
           <button type="submit" class="primary" id="hourly-edit-save">Save</button>
@@ -821,7 +854,7 @@
             <h3>What it never does</h3>
             <ul>
               <li>It never records your screen, takes screenshots or captures images. (macOS calls the permission it needs "Screen Recording"; the app uses it only to read window names.)</li>
-              <li>It never sends or saves window names, file names or folder contents. They're matched to a project the moment they're seen, then forgotten.</li>
+              <li>It never sends or saves window names, file names or folder contents. They're matched to a project the moment they're seen, then forgotten. ("Right now" in Settings shows the window it's looking at, on this computer only.)</li>
               <li>It never logs time by itself.</li>
             </ul>
             <h3>What the tracker gets</h3>
@@ -841,12 +874,22 @@
             </div>
           </div>
           <div id="detector-body" hidden>
+            <div id="detector-now" hidden>
+              <span class="d-now-head">Right now</span>
+              <span class="d-now-what" id="detector-now-what"></span>
+              <span id="detector-now-counting"></span>
+              <button type="button" id="detector-now-log" hidden>Log it and start the timer</button>
+            </div>
+            <p id="detector-restart" hidden>Once Screen Recording is switched on for CoolerBox Tracker in System Settings, restart the app to finish. <button type="button" id="detector-restart-btn">Restart now</button></p>
+            <p id="detector-permission" hidden>To read these apps' window names, macOS needs the permission it calls "Screen Recording". The app never records or captures your screen. <button type="button" id="detector-permission-btn">Allow it…</button></p>
             <div class="set-label">Apps to look at</div>
             <div id="detector-apps"></div>
-            <p id="detector-permission" hidden>To read these apps' window names, macOS needs the permission it calls "Screen Recording". The app never records or captures your screen. <button type="button" id="detector-permission-btn">Allow it…</button></p>
-            <div class="set-label">Folders linked to a project</div>
+            <button type="button" id="detector-add-app">Add another app…</button>
+            <div id="detector-open" hidden></div>
+            <div class="set-label">Folders</div>
+            <p class="d-hint">Link as many as you like, on any drive. Link your Work folder (or a whole drive) as "Any project" and it tells the project from the client and project folders inside.</p>
             <div id="detector-folders"></div>
-            <button type="button" id="detector-link">Link a folder…</button>
+            <button type="button" id="detector-link">Link folders…</button>
             <p class="d-hint">Nothing about your screen, apps or files leaves this computer. Only time you say yes to goes to the tracker: the project and the times.</p>
             <button type="button" id="detector-privacy-open">What it sees, and what it doesn't</button>
           </div>

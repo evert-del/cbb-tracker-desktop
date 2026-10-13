@@ -48,7 +48,14 @@ pub(crate) fn notes(version: &str, os: &str, hourly: bool) -> Vec<Item> {
                 ));
                 items.push(item(
                     "Suggests time you forgot to log",
-                    "Switch on Settings › Suggest time from my work, pick your apps (Illustrator, Photoshop, Figma, …) and link folders to projects. It asks \"Worked on this, log it?\" and never logs time by itself. It never records your screen or reads your files, and nobody at CoolerBox or your company can see what you work on: only time you say yes to reaches the tracker, as a project and two times."
+                    "Switch on Settings › Suggest time from my work, pick your apps (design, video, audio, 3D, code and AI, browsers, or add any app that's open) and link folders, or your whole Work folder or drive as \"Any project\". It asks \"Worked on this, log it?\" and never logs time by itself. Right now in Settings shows what it's seeing. It never records your screen or reads your files, and nobody at CoolerBox or your company can see what you work on: only time you say yes to reaches the tracker, as a project and two times."
+                        .into(),
+                ));
+            }
+            if hourly {
+                items.push(item(
+                    "Start a project, and notes for the client",
+                    "Make a new project (and client) from the project list's New project…, then start it, file time to it or link a folder to it. Tick \"Show the client this note\" on an entry to put its note on their Hours page and invoice."
                         .into(),
                 ));
             }
@@ -248,7 +255,7 @@ mod tests {
                 }),
                 "{os}: {everyone:?}"
             );
-            assert_eq!(notes("0.2.19", os, true).len(), everyone.len() + 2);
+            assert_eq!(notes("0.2.19", os, true).len(), everyone.len() + 3);
         }
     }
 

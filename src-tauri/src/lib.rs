@@ -903,6 +903,7 @@ pub fn run() {
                 && matches!(event, tauri::WindowEvent::Focused(false))
                 && !mini::is_pinned()
                 && !mini::held_open()
+                && !detector::choosing_folder()
             {
                 mini::hide(window.app_handle());
             }
@@ -945,7 +946,11 @@ pub fn run() {
             detector::mini_detector_link,
             detector::mini_detector_link_project,
             detector::mini_detector_unlink,
-            detector::mini_detector_answer
+            detector::mini_detector_answer,
+            hourly::mini_hourly_new_project,
+            detector::mini_detector_open_apps,
+            detector::mini_detector_restart,
+            detector::mini_detector_log_now
         ])
         .setup(|app| {
             #[cfg(target_os = "linux")]

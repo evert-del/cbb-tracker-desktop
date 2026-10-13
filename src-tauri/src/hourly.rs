@@ -255,6 +255,18 @@ pub(crate) struct Info {
     pub projects: Vec<Project>,
     #[serde(default)]
     pub running: Option<Running>,
+    /// The company's clients, for starting a project from the app. Empty
+    /// for freelancers, who never start projects.
+    #[serde(default)]
+    pub clients: Vec<Client>,
+}
+
+/// A client a new project can be for.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub(crate) struct Client {
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
 }
 
 /// What `GET /api/me/hourly` says, or `None` for anything else (404 while it
@@ -265,6 +277,7 @@ pub(crate) fn parse(raw: &str) -> Option<Info> {
     value.get("projects")?.as_array()?;
     let mut info: Info = serde_json::from_value(value).ok()?;
     info.projects.retain(|project| valid_id(&project.id));
+    info.clients.retain(|client| valid_id(&client.id) && !client.name.trim().is_empty());
     info.running = info.running.filter(valid_running).map(unfiled_not_billable);
     Some(info)
 }
@@ -288,7 +301,7 @@ fn unfiled_not_billable(mut running: Running) -> Running {
 #[derive(Debug, PartialEq)]
 pub(crate) enum Read {
     /// The person's timer.
-    Hourly(Info),
+    Hourly(Box<Info>),
     /// Not hourly (404 / 403), or signed out (401): hide everything.
     Off,
     /// Offline, a server error, or an answer that doesn't read: keep what
@@ -305,7 +318,7 @@ pub(crate) fn read_answer(raw: &str) -> Read {
     }
     let Ok(answer) = serde_json::from_str::<Answer>(raw) else { return Read::Keep };
     match answer.s {
-        200 => parse(&answer.b).map_or(Read::Keep, Read::Hourly),
+        200 => parse(&answer.b).map_or(Read::Keep, |info| Read::Hourly(Box::new(info))),
         401 | 403 | 404 => Read::Off,
         _ => Read::Keep,
     }
@@ -332,6 +345,9 @@ pub(crate) struct Entry {
     /// On an invoice: it can't be changed.
     #[serde(default)]
     pub billed: bool,
+    /// The note shows on the client's Hours page and invoice.
+    #[serde(default)]
+    pub note_for_client: bool,
     #[serde(default)]
     pub minutes: u64,
 }
@@ -388,7 +404,9 @@ pub(crate) struct Change {
     pub file_to: Option<String>,
 }
 
-/// The panel's edit view's changes, checked as far as the app can.
+/// The panel's edit view's changes, checked as far as the app can. One
+/// argument per field of the form.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn entry_change(
     entry: &Entry,
     started: Option<u64>,
@@ -397,6 +415,7 @@ pub(crate) fn entry_change(
     project_id: Option<&str>,
     info: &Info,
     now: u64,
+    for_client: Option<bool>,
 ) -> Result<Change, &'static str> {
     if entry.billed {
         return Err("These hours are on an invoice already.");
@@ -429,6 +448,9 @@ pub(crate) fn entry_change(
         if note != entry.note {
             body["note"] = note.map_or(Value::Null, Value::String);
         }
+    }
+    if let Some(for_client) = for_client.filter(|tick| *tick != entry.note_for_client) {
+        body["noteForClient"] = Value::Bool(for_client);
     }
     let mut file_to = None;
     if let Some(project_id) = project_id.filter(|id| Some(*id) != entry.project_id.as_deref()) {
@@ -543,6 +565,9 @@ pub(crate) struct PanelView {
     /// Today's entries and totals; `None` while the tracker doesn't have
     /// the list yet.
     pub today: Option<Today>,
+    /// The company's clients, for "New project…" (empty: they can't start
+    /// projects).
+    pub clients: Vec<Client>,
 }
 
 /// The project timer's project for today's booking: the booking is today
@@ -637,8 +662,8 @@ pub(crate) fn post_script(steps: &[Step], done: &str) -> String {
     format!(
         r#"(function (steps, done) {{
   window.__cbbHourlyResult = '';
-  function post(i, last) {{
-    if (i >= steps.length) {{ window.__cbbHourlyResult = JSON.stringify({{ ok: true, running: last }}); return; }}
+  function post(i, last, body) {{
+    if (i >= steps.length) {{ window.__cbbHourlyResult = JSON.stringify({{ ok: true, running: last, body: body }}); return; }}
     var init = {{ method: steps[i].method, credentials: 'same-origin' }};
     if (steps[i].body !== null) {{ init.headers = {{ 'Content-Type': 'application/json' }}; init.body = JSON.stringify(steps[i].body); }}
     fetch(steps[i].url, init)
@@ -649,11 +674,11 @@ pub(crate) fn post_script(steps: &[Step], done: &str) -> String {
           window.__cbbHourlyResult = JSON.stringify({{ ok: false, error: i > 0 && done ? done + ' ' + error : error }});
           return;
         }}
-        post(i + 1, x.b.running || null);
+        post(i + 1, x.b.running || null, x.b);
       }})
       .catch(function () {{ window.__cbbHourlyResult = JSON.stringify({{ ok: false, error: 'You seem to be offline. Try again in a moment.' }}); }});
   }}
-  post(0, null);
+  post(0, null, null);
 }})({steps}, {done})"#
     )
 }
@@ -666,6 +691,9 @@ pub(crate) struct Outcome {
     pub running: Option<Running>,
     #[serde(default)]
     pub error: Option<String>,
+    /// The last answer's body (a new project).
+    #[serde(default)]
+    pub body: Option<Value>,
 }
 
 /// `2026-10-12T09:40:00.000Z` for unix seconds (UTC).
@@ -1004,6 +1032,7 @@ pub(crate) fn panel<R: Runtime>(app: &AppHandle<R>) -> Option<PanelView> {
             detector,
             today: inner.today.clone(),
             projects: info.projects.clone(),
+            clients: info.clients.clone(),
             asking: inner.ask.is_some(),
             filing: inner.to_file.is_some(),
             idle_minutes,
@@ -1168,7 +1197,7 @@ fn read<R: Runtime>(app: &AppHandle<R>) {
     let Some(raw) = crate::walkie::collect(&window, TAKE_JS, 30) else { return };
     match read_answer(&raw) {
         Read::Hourly(info) => {
-            set_info(app, Some(info));
+            set_info(app, Some(*info));
             read_entries(app);
         }
         Read::Off => set_info(app, None),
@@ -1466,6 +1495,102 @@ pub(crate) fn log_stretch<R: Runtime>(app: &AppHandle<R>, project_id: &str, star
     send(app, vec![post(TIME_URL, body)], "", Then::Saved { filed: false, notice: Some(notice), logged: Some(id) })
 }
 
+const PROJECTS_URL: &str = "/api/me/projects";
+
+/// `POST /api/me/projects`'s body: a name, and an existing client or a new
+/// one's name (reused when the tracker has it already).
+pub(crate) fn new_project_body(name: &str, client_id: Option<&str>, new_client: Option<&str>, billable: bool, info: &Info) -> Result<Value, &'static str> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("Give the project a name.");
+    }
+    if name.chars().count() > 200 {
+        return Err("Keep the name shorter.");
+    }
+    let mut body = json!({ "name": name, "billable": billable });
+    match (client_id.filter(|id| !id.is_empty()), new_client.map(str::trim).filter(|n| !n.is_empty())) {
+        (Some(id), _) => {
+            if !info.clients.iter().any(|client| client.id == id) {
+                return Err("Pick the client again.");
+            }
+            body["clientId"] = Value::String(id.to_string());
+        }
+        (None, Some(client)) => {
+            if !(2..=120).contains(&client.chars().count()) {
+                return Err("A client's name is 2 to 120 characters.");
+            }
+            body["newClientName"] = Value::String(client.to_string());
+        }
+        (None, None) => return Err("Pick the client, or type a new one."),
+    }
+    Ok(body)
+}
+
+/// "New project…": made on the tracker, then added to the list straight
+/// away and handed back, so the panel can start it, file to it or link to
+/// it. Making it doesn't start the timer.
+#[tauri::command]
+pub(crate) async fn mini_hourly_new_project<R: Runtime>(
+    app: AppHandle<R>,
+    name: String,
+    client_id: Option<String>,
+    new_client_name: Option<String>,
+    billable: bool,
+) -> Result<Project, String> {
+    let info = current(&app)?;
+    let body = new_project_body(&name, client_id.as_deref(), new_client_name.as_deref(), billable, &info).map_err(str::to_string)?;
+    let window = crate::walkie::tracker_window(&app).ok_or("Open the tracker first.")?;
+    let script = post_script(&[post(PROJECTS_URL, body)], "");
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
+        let _one = SENDING.lock();
+        window.eval(&script).ok()?;
+        let outcome = crate::walkie::collect(&window, TAKE_RESULT_JS, 40).and_then(|raw| serde_json::from_str::<Outcome>(&raw).ok());
+        if outcome.as_ref().is_some_and(|o| o.ok) {
+            let _ = window.eval("window.dispatchEvent(new Event('cbb:hourly-changed'))");
+        }
+        outcome
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .ok_or("The tracker didn't answer. Try again.")?;
+    if !outcome.ok {
+        return Err(outcome.error.unwrap_or_else(|| "That didn't save. Try again.".into()));
+    }
+    let project = outcome
+        .body
+        .and_then(|body| body.get("project").cloned())
+        .and_then(|project| serde_json::from_value::<Project>(project).ok())
+        .filter(|project| valid_id(&project.id))
+        .ok_or("Made, but the answer didn't read: refresh the panel.")?;
+    with(&app, |inner| {
+        if let Some(info) = inner.info.as_mut() {
+            info.projects.retain(|p| p.id != project.id);
+            info.projects.insert(0, project.clone());
+        }
+    });
+    refresh_menus(&app);
+    crate::mini::push(&app);
+    // A new client's id comes with the next read.
+    let reader = app.clone();
+    std::thread::spawn(move || read(&reader));
+    Ok(project)
+}
+
+/// "Log it and start the timer" (detector.rs): the time worked so far on a
+/// project, then the timer on it from now.
+pub(crate) fn log_and_start<R: Runtime>(app: &AppHandle<R>, project_id: &str, start: u64, end: u64) -> Result<(), String> {
+    let info = current(app)?;
+    if info.running.is_some() {
+        return Err("The timer's already running.".into());
+    }
+    let add = add_body(project_id, start, end, None, &info, crate::clock::unix_now()).map_err(str::to_string)?;
+    let begin = start_body(Some(project_id), None, &info).map_err(str::to_string)?;
+    let label = info.projects.iter().find(|project| project.id == project_id).map(project_label).unwrap_or_default();
+    let notice = format!("Logged {} on {label}, and the timer's running.", fmt_minutes((end - start) / 60));
+    let then = Then::Timer { file: None, notice: Some(notice), say: false, auto: None };
+    send(app, vec![post(TIME_URL, add), post(TIMER_URL, begin)], "Logged the time, but the timer didn't start:", then)
+}
+
 /// Wrapped on the time sheet (clock.rs) with a project timer still running:
 /// the panel asks "Stop the timer too?". Stopping is the person's tap.
 pub(crate) fn on_wrap<R: Runtime>(app: &AppHandle<R>) {
@@ -1537,6 +1662,7 @@ pub(crate) fn mini_hourly_edit<R: Runtime>(
     ended_at: Option<String>,
     note: Option<String>,
     project_id: Option<String>,
+    note_for_client: Option<bool>,
 ) -> Result<(), String> {
     let entry = today_entry(&app, &entry_id)?;
     let info = current(&app)?;
@@ -1554,6 +1680,7 @@ pub(crate) fn mini_hourly_edit<R: Runtime>(
         project_id.as_deref(),
         &info,
         crate::clock::unix_now(),
+        note_for_client,
     )
     .map_err(str::to_string)?;
     // The project first (the tracker's "file"), then the times and note.
@@ -1850,7 +1977,7 @@ mod tests {
     #[test]
     fn outcomes_read_both_ways() {
         let ok: Outcome = serde_json::from_str(r#"{"ok":true,"running":null}"#).unwrap();
-        assert_eq!(ok, Outcome { ok: true, running: None, error: None });
+        assert_eq!(ok, Outcome { ok: true, running: None, error: None, body: None });
         let refused: Outcome = serde_json::from_str(r#"{"ok":false,"error":"That project is closed."}"#).unwrap();
         assert_eq!(refused.error.as_deref(), Some("That project is closed."));
     }
@@ -2080,7 +2207,41 @@ mod tests {
             note: Some("Grade".into()),
             billed: false,
             minutes: 90,
+            note_for_client: false,
         }
+    }
+
+    #[test]
+    fn a_note_can_be_shown_to_the_client() {
+        let info = info();
+        let done = entry(Some("2026-10-12T08:30:00.000Z"));
+        let now = crate::clock::parse_iso("2026-10-12T12:00:00.000Z").unwrap();
+        assert_eq!(
+            entry_change(&done, None, None, None, None, &info, now, Some(true)),
+            Ok(Change { patch: Some(json!({ "noteForClient": true })), file_to: None })
+        );
+        assert_eq!(entry_change(&done, None, None, None, None, &info, now, Some(false)), Err("Nothing changed."));
+    }
+
+    #[test]
+    fn a_new_project_needs_a_name_and_a_client() {
+        let mut info = info();
+        info.clients = vec![Client { id: "c1".into(), name: "Vimeo".into() }];
+        assert_eq!(
+            new_project_body(" Logo refresh ", Some("c1"), Some("ignored"), true, &info),
+            Ok(json!({ "name": "Logo refresh", "billable": true, "clientId": "c1" }))
+        );
+        assert_eq!(
+            new_project_body("Album", None, Some(" CoolerBox Records "), false, &info),
+            Ok(json!({ "name": "Album", "billable": false, "newClientName": "CoolerBox Records" }))
+        );
+        assert!(new_project_body("  ", Some("c1"), None, true, &info).is_err());
+        assert!(new_project_body("Album", None, None, true, &info).is_err());
+        assert!(new_project_body("Album", None, Some("X"), true, &info).is_err(), "too short a client name");
+        assert!(new_project_body("Album", Some("someone-elses"), None, true, &info).is_err());
+        // Clients come with the timer's read; odd ones are dropped.
+        let read = parse(r#"{"projects":[],"running":null,"clients":[{"id":"c1","name":"Vimeo"},{"id":"bad id","name":"X"},{"id":"c2","name":" "}]}"#).unwrap();
+        assert_eq!(read.clients, vec![Client { id: "c1".into(), name: "Vimeo".into() }]);
     }
 
     #[test]
@@ -2105,27 +2266,27 @@ mod tests {
         let now = STARTED + 8 * 3600;
         let done = entry(Some("2026-10-12T08:30:00.000Z"));
         assert_eq!(
-            entry_change(&done, None, Some(STARTED + 7200), Some("Grade"), Some("p1"), &info, now),
+            entry_change(&done, None, Some(STARTED + 7200), Some("Grade"), Some("p1"), &info, now, None),
             Ok(Change { patch: Some(json!({ "endedAt": "2026-10-12T09:00:00.000Z" })), file_to: None })
         );
         assert_eq!(
-            entry_change(&done, None, None, Some("  "), Some("p3"), &info, now),
+            entry_change(&done, None, None, Some("  "), Some("p3"), &info, now, None),
             Ok(Change { patch: Some(json!({ "note": null })), file_to: Some("p3".into()) })
         );
-        assert_eq!(entry_change(&done, None, None, None, Some("p3"), &info, now), Ok(Change { patch: None, file_to: Some("p3".into()) }));
-        assert_eq!(entry_change(&done, Some(STARTED), None, Some("Grade"), None, &info, now), Err("Nothing changed."));
-        assert!(entry_change(&done, Some(STARTED + 7200), None, None, None, &info, now).is_err(), "start after its end");
-        assert!(entry_change(&done, None, Some(now + 600), None, None, &info, now).is_err(), "in the future");
-        assert!(entry_change(&done, None, None, None, Some("someone-elses"), &info, now).is_err());
+        assert_eq!(entry_change(&done, None, None, None, Some("p3"), &info, now, None), Ok(Change { patch: None, file_to: Some("p3".into()) }));
+        assert_eq!(entry_change(&done, Some(STARTED), None, Some("Grade"), None, &info, now, None), Err("Nothing changed."));
+        assert!(entry_change(&done, Some(STARTED + 7200), None, None, None, &info, now, None).is_err(), "start after its end");
+        assert!(entry_change(&done, None, Some(now + 600), None, None, &info, now, None).is_err(), "in the future");
+        assert!(entry_change(&done, None, None, None, Some("someone-elses"), &info, now, None).is_err());
         let running = entry(None);
-        assert!(entry_change(&running, None, Some(STARTED + 600), None, None, &info, now).is_err());
+        assert!(entry_change(&running, None, Some(STARTED + 600), None, None, &info, now, None).is_err());
         assert_eq!(
-            entry_change(&running, Some(STARTED - 600), None, None, None, &info, now),
+            entry_change(&running, Some(STARTED - 600), None, None, None, &info, now, None),
             Ok(Change { patch: Some(json!({ "startedAt": "2026-10-12T06:50:00.000Z" })), file_to: None })
         );
         let mut billed = done;
         billed.billed = true;
-        assert!(entry_change(&billed, None, None, Some("x"), None, &info, now).is_err());
+        assert!(entry_change(&billed, None, None, Some("x"), None, &info, now, None).is_err());
     }
 
     #[test]

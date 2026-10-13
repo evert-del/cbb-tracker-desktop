@@ -60,18 +60,63 @@ const IDLE_SECS: u64 = 2 * 60;
 const SCAN_MAX_ENTRIES: usize = 5_000;
 const SCAN_MAX_DEPTH: usize = 5;
 
-/// The apps that can be picked: id, name, and how each system names it
-/// (macOS: the app's name starts with; Windows: the program file).
-pub(crate) const CATALOG: [(&str, &str, &str, &str); 8] = [
-    ("illustrator", "Illustrator", "Adobe Illustrator", "illustrator.exe"),
-    ("photoshop", "Photoshop", "Adobe Photoshop", "photoshop.exe"),
-    ("indesign", "InDesign", "Adobe InDesign", "indesign.exe"),
-    ("aftereffects", "After Effects", "Adobe After Effects", "afterfx.exe"),
-    ("premiere", "Premiere Pro", "Adobe Premiere Pro", "adobe premiere pro.exe"),
-    ("figma", "Figma", "Figma", "figma.exe"),
-    ("resolve", "DaVinci Resolve", "DaVinci Resolve", "resolve.exe"),
-    ("blender", "Blender", "Blender", "blender.exe"),
+/// The apps that can be picked: id, name, kind, and how each system names
+/// it: macOS, what the app's name starts with; Windows, what its program
+/// file starts with ("" when it isn't on that system; "a|b" for either).
+/// Anything else can be added from the apps that are open ("Add another
+/// app…", `CUSTOM`). In a browser only pages that name a project count: the
+/// rest of the web isn't asked about.
+pub(crate) const CATALOG: &[(&str, &str, &str, &str, &str)] = &[
+    ("illustrator", "Illustrator", "Design", "Adobe Illustrator", "illustrator"),
+    ("photoshop", "Photoshop", "Design", "Adobe Photoshop", "photoshop"),
+    ("indesign", "InDesign", "Design", "Adobe InDesign", "indesign"),
+    ("figma", "Figma", "Design", "Figma", "figma"),
+    ("sketch", "Sketch", "Design", "Sketch", ""),
+    ("affinity-designer", "Affinity Designer", "Design", "Affinity Designer", ""),
+    ("affinity-photo", "Affinity Photo", "Design", "Affinity Photo", ""),
+    ("affinity-publisher", "Affinity Publisher", "Design", "Affinity Publisher", ""),
+    ("canva", "Canva", "Design", "Canva", "canva"),
+    ("lightroom", "Lightroom", "Design", "Adobe Lightroom", ""),
+    ("lightroom-classic", "Lightroom Classic", "Design", "Adobe Lightroom Classic", "lightroom"),
+    ("captureone", "Capture One", "Design", "Capture One", "captureone"),
+    ("premiere", "Premiere Pro", "Video", "Adobe Premiere Pro", "adobe premiere pro"),
+    ("aftereffects", "After Effects", "Video", "Adobe After Effects", "afterfx"),
+    ("mediaencoder", "Media Encoder", "Video", "Adobe Media Encoder", "adobe media encoder"),
+    ("resolve", "DaVinci Resolve", "Video", "DaVinci Resolve", "resolve"),
+    ("finalcut", "Final Cut Pro", "Video", "Final Cut Pro", ""),
+    ("mediacomposer", "Media Composer", "Video", "Avid Media Composer", "avidmediacomposer"),
+    ("audition", "Audition", "Audio", "Adobe Audition", "adobe audition"),
+    ("protools", "Pro Tools", "Audio", "Pro Tools", "protools"),
+    ("logic", "Logic Pro", "Audio", "Logic Pro", ""),
+    ("ableton", "Ableton Live", "Audio", "Ableton Live", "ableton live"),
+    ("reaper", "Reaper", "Audio", "REAPER", "reaper"),
+    ("cubase", "Cubase", "Audio", "Cubase", "cubase"),
+    ("blender", "Blender", "3D", "Blender", "blender"),
+    ("cinema4d", "Cinema 4D", "3D", "Cinema 4D", "cinema 4d"),
+    ("maya", "Maya", "3D", "Maya", "maya"),
+    ("houdini", "Houdini", "3D", "Houdini", "houdini"),
+    ("vscode", "VS Code", "Code & AI", "Code|Visual Studio Code", "code"),
+    ("cursor", "Cursor", "Code & AI", "Cursor", "cursor"),
+    ("windsurf", "Windsurf", "Code & AI", "Windsurf", "windsurf"),
+    ("claude", "Claude", "Code & AI", "Claude", "claude"),
+    ("chatgpt", "ChatGPT", "Code & AI", "ChatGPT", "chatgpt"),
+    ("terminal", "Terminal", "Code & AI", "Terminal|iTerm2|Warp|Ghostty", "windowsterminal|warp"),
+    ("chrome", "Chrome", "Browser", "Google Chrome", "chrome"),
+    ("safari", "Safari", "Browser", "Safari", ""),
+    ("firefox", "Firefox", "Browser", "Firefox", "firefox"),
+    ("edge", "Edge", "Browser", "Microsoft Edge", "msedge"),
+    ("arc", "Arc", "Browser", "Arc", "arc"),
+    ("brave", "Brave", "Browser", "Brave Browser", "brave"),
+    ("word", "Word", "Documents", "Microsoft Word", "winword"),
+    ("excel", "Excel", "Documents", "Microsoft Excel", "excel"),
+    ("powerpoint", "PowerPoint", "Documents", "Microsoft PowerPoint", "powerpnt"),
+    ("keynote", "Keynote", "Documents", "Keynote", ""),
+    ("pages", "Pages", "Documents", "Pages", ""),
 ];
+
+/// A picked app of the person's own, by the name their system gives it
+/// ("custom:Pro Tools", "custom:studio one.exe").
+pub(crate) const CUSTOM: &str = "custom:";
 
 /// The front window: the app's name (macOS) or program file (Windows), and
 /// its title ("" when it can't be read).
@@ -81,14 +126,68 @@ pub(crate) struct Front {
     pub title: String,
 }
 
-/// Which picked app `front` is, if any.
-pub(crate) fn app_id(front: &Front, picked: &[String]) -> Option<&'static str> {
-    let app = front.app.to_lowercase();
+/// The catalogue entry an app name or program file is, if any: the longest
+/// match, so "Adobe Lightroom Classic" isn't taken for Lightroom.
+pub(crate) fn catalog_id(app: &str) -> Option<&'static str> {
+    let app = app.trim().to_lowercase();
+    if app.is_empty() {
+        return None;
+    }
     CATALOG
         .iter()
-        .filter(|(id, ..)| picked.iter().any(|p| p == id))
-        .find(|(_, _, mac, win)| app.starts_with(&mac.to_lowercase()) || app == *win)
-        .map(|(id, ..)| *id)
+        .filter_map(|(id, _, _, mac, win)| {
+            let len = [mac, win]
+                .into_iter()
+                .flat_map(|names| names.split('|'))
+                .filter(|name| !name.is_empty() && app.starts_with(&name.to_lowercase()))
+                .map(str::len)
+                .max()?;
+            Some((len, *id))
+        })
+        .max_by_key(|(len, _)| *len)
+        .map(|(_, id)| id)
+}
+
+/// Which picked app `front` is, if any.
+pub(crate) fn app_id(front: &Front, picked: &[String]) -> Option<String> {
+    let app = front.app.trim().to_lowercase();
+    if app.is_empty() {
+        return None;
+    }
+    // Their own apps, by the exact name.
+    if let Some(id) = picked.iter().find(|p| p.strip_prefix(CUSTOM).is_some_and(|name| name.to_lowercase() == app)) {
+        return Some(id.clone());
+    }
+    let id = catalog_id(&app)?;
+    picked.iter().any(|p| p == id).then(|| id.to_string())
+}
+
+/// A picked app's id is one the panel may send: from the catalogue, or
+/// their own app's name (no separators, not too long).
+pub(crate) fn valid_app_id(id: &str) -> bool {
+    match id.strip_prefix(CUSTOM) {
+        Some(name) => {
+            let name = name.trim();
+            !name.is_empty() && name.chars().count() <= 80 && !name.chars().any(|c| c.is_control() || c == '|')
+        }
+        None => CATALOG.iter().any(|(known, ..)| *known == id),
+    }
+}
+
+/// A browser: only pages that name a project count.
+pub(crate) fn is_browser(id: &str) -> bool {
+    CATALOG.iter().any(|(known, _, kind, ..)| *known == id && *kind == "Browser")
+}
+
+/// What the panel calls a picked app.
+pub(crate) fn app_label(id: &str) -> String {
+    match id.strip_prefix(CUSTOM) {
+        Some(name) => {
+            let name = name.trim();
+            name.strip_suffix(".exe").or_else(|| name.strip_suffix(".EXE")).unwrap_or(name).to_string()
+        }
+        None => CATALOG.iter().find(|(known, ..)| *known == id).map(|(_, label, ..)| label.to_string()).unwrap_or_else(|| id.to_string()),
+    }
 }
 
 /// What a moment of work points at.
@@ -96,16 +195,44 @@ pub(crate) fn app_id(front: &Front, picked: &[String]) -> Option<&'static str> {
 pub(crate) enum Hit {
     /// A project (by id); `app` when it came from a window, `None` from a
     /// folder save.
-    Project { project: String, app: Option<&'static str> },
+    Project { project: String, app: Option<String> },
     /// A picked app's "Untitled" document: goes to that app's next project.
-    Untitled(&'static str),
-    /// A picked app, but nothing to match.
-    Unknown,
+    Untitled(String),
+    /// A picked app, on something no project was recognised in: asked
+    /// about as "Worked in Photoshop … which project?".
+    Unknown(String),
 }
 
-/// Matches a window title to one of the projects: its number ("CB-0412"),
-/// its name ("Logo refresh"), or its client's name when the client has only
-/// that project. The longest match wins.
+/// Words too common in project and client names to point at one.
+const COMMON: &[&str] = &[
+    "the", "and", "for", "with", "from", "new", "old", "final", "draft", "copy", "edit", "edits", "video", "videos", "content",
+    "project", "projects", "design", "designs", "social", "socials", "media", "campaign", "event", "events", "launch", "music",
+    "cover", "album", "film", "films", "photo", "photos", "shoot", "series", "season", "episode", "promo", "brand", "branding",
+    "logo", "web", "website", "online", "print", "digital", "pty", "ltd", "inc", "studio", "studios", "group", "agency",
+    "company", "intro", "sequence", "programme", "program", "partnership", "editorial", "version", "master", "export",
+    "one", "two", "three", "view", "test", "day", "part",
+];
+
+/// The words of a name that can point at it: three letters or more, not
+/// all digits, not too common.
+fn distinctive(name: &str) -> Vec<String> {
+    let mut words: Vec<String> = fold(name)
+        .split(' ')
+        .filter(|w| w.chars().count() >= 3 && !w.chars().all(|c| c.is_ascii_digit()) && !COMMON.contains(w))
+        .map(str::to_string)
+        .collect();
+    words.sort();
+    words.dedup();
+    words
+}
+
+/// Matches a window title to one of the projects. First exactly: its number
+/// ("CB-0412"), its name ("Logo refresh"), or its client's name when the
+/// client has only that project; the longest match wins. Then loosely, by
+/// the project's and client's own words: two of them, or one long word no
+/// other project has ("klutch_promo_v3.psd" → "Motus x News24 … The Klutch
+/// Programme"). A tie is no match: the person is asked instead. It always
+/// asks before logging, so a near miss costs one tap.
 pub(crate) fn match_title(title: &str, projects: &[crate::hourly::Project]) -> Option<String> {
     let title = fold(title);
     if title.is_empty() {
@@ -127,7 +254,36 @@ pub(crate) fn match_title(title: &str, projects: &[crate::hourly::Project]) -> O
             }
         }
     }
-    best.map(|(_, id)| id.to_string())
+    if let Some((_, id)) = best {
+        return Some(id.to_string());
+    }
+    // Loosely, by words.
+    let in_title: Vec<&str> = title.split(' ').collect();
+    let words: Vec<Vec<String>> = projects
+        .iter()
+        .map(|p| {
+            let mut words = distinctive(&p.name);
+            words.extend(distinctive(p.client_name.as_deref().unwrap_or_default()));
+            words.sort();
+            words.dedup();
+            words
+        })
+        .collect();
+    let mut scores: Vec<(usize, usize)> = Vec::new();
+    for (index, own) in words.iter().enumerate() {
+        let found: Vec<&String> = own.iter().filter(|w| in_title.contains(&w.as_str())).collect();
+        let unique_long = found.iter().any(|w| {
+            w.chars().count() >= 5 && words.iter().enumerate().all(|(other, theirs)| other == index || !theirs.contains(w))
+        });
+        let score = if found.len() >= 2 { found.len() * 2 } else if unique_long { 1 } else { 0 };
+        if score > 0 {
+            scores.push((score, index));
+        }
+    }
+    let top = scores.iter().map(|(score, _)| *score).max()?;
+    let mut at_top = scores.iter().filter(|(score, _)| *score == top);
+    let (_, index) = at_top.next()?;
+    at_top.next().is_none().then(|| projects[*index].id.clone())
 }
 
 /// Lowercase, with anything that isn't a letter or digit as one space
@@ -149,22 +305,34 @@ pub(crate) fn is_untitled(title: &str) -> bool {
     title.contains("untitled") || title.contains("naamloos")
 }
 
-/// A stretch of work on one project (unix seconds).
+/// A stretch of work on one project (unix seconds). `project` is empty for
+/// work in a picked app that no project was recognised in; `app` says which
+/// (and is only set then).
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Stretch {
     pub project: String,
+    pub app: Option<String>,
     pub start: u64,
     pub end: u64,
 }
+
+/// Something else seen for this long takes over the stretch.
+pub(crate) const SWITCH_SECS: u64 = 2 * 60;
+/// Samples this close together are one unbroken look.
+const SEEN_GAP_SECS: u64 = 90;
 
 /// Turns moments of work into stretches.
 #[derive(Debug, Default)]
 pub(crate) struct Tracker {
     current: Option<Stretch>,
     /// The latest stretch of work only seen on an untitled document, by app.
-    untitled: Option<(&'static str, u64, u64)>,
+    untitled: Option<(String, u64, u64)>,
     /// The last moment `current` was seen through a folder save.
     by_save: bool,
+    /// Something else seen meanwhile, not for long enough yet to take over:
+    /// (project, app, first seen, last seen). A glance at another file
+    /// doesn't split the stretch.
+    other: Option<(String, Option<String>, u64, u64)>,
 }
 
 impl Tracker {
@@ -177,40 +345,89 @@ impl Tracker {
                 // a save) shows next.
                 let untitled_start = self
                     .untitled
-                    .take_if(|(u_app, _, last)| (app.is_none() || app == Some(*u_app)) && now.saturating_sub(*last) <= GAP_SECS)
+                    .take_if(|(u_app, _, last)| (app.is_none() || app.as_deref() == Some(u_app.as_str())) && now.saturating_sub(*last) <= GAP_SECS)
                     .map(|(_, start, _)| start);
                 let from_save = app.is_none();
-                match &mut self.current {
-                    Some(current) if current.project == project => {
-                        current.end = now;
-                        if let Some(start) = untitled_start {
-                            current.start = current.start.min(start);
-                        }
-                    }
-                    _ => {
-                        if let Some(done) = self.current.take() {
-                            ended = ended.or(Some(done));
-                        }
-                        self.current = Some(Stretch { project, start: untitled_start.unwrap_or(now).min(now), end: now });
+                // Work nothing was recognised in, and then a save in a folder
+                // linked to a project: it was that project.
+                if from_save {
+                    if let Some(current) = self.current.as_mut().filter(|c| c.project.is_empty()) {
+                        current.project = project.clone();
+                        current.app = None;
                     }
                 }
-                self.by_save = from_save;
+                if let Some(done) = self.moment(now, project, None, from_save, untitled_start) {
+                    ended = ended.or(Some(done));
+                }
+            }
+            Some(Hit::Unknown(app)) => {
+                if let Some(done) = self.moment(now, String::new(), Some(app), false, None) {
+                    ended = ended.or(Some(done));
+                }
             }
             Some(Hit::Untitled(app)) => {
-                self.untitled = match self.untitled {
+                self.untitled = match self.untitled.take() {
                     Some((u_app, start, last)) if u_app == app && now.saturating_sub(last) <= GAP_SECS => Some((app, start, now)),
                     _ => Some((app, now, now)),
                 };
             }
-            Some(Hit::Unknown) | None => {}
+            None => {}
         }
         ended.filter(|s| s.end.saturating_sub(s.start) >= MIN_SECS)
+    }
+
+    /// A moment on `project` (or, when it's empty, unrecognised work in `app`).
+    fn moment(&mut self, now: u64, project: String, app: Option<String>, from_save: bool, untitled_start: Option<u64>) -> Option<Stretch> {
+        let app = if project.is_empty() { app } else { None };
+        let Some(current) = self.current.as_mut() else {
+            self.current = Some(Stretch { project, app, start: untitled_start.unwrap_or(now).min(now), end: now });
+            self.by_save = from_save;
+            self.other = None;
+            return None;
+        };
+        if current.project == project && current.app == app {
+            current.end = now;
+            if let Some(start) = untitled_start {
+                current.start = current.start.min(start);
+            }
+            self.by_save = from_save;
+            self.other = None;
+            return None;
+        }
+        let (start, switch) = if from_save {
+            // Saves are minutes apart: one switches straight away, unless
+            // the window shows the current project right now.
+            let watching = !self.by_save && now.saturating_sub(current.end) <= SEEN_GAP_SECS;
+            if watching {
+                return None;
+            }
+            (untitled_start.unwrap_or(now).min(now), true)
+        } else {
+            let other = match self.other.take() {
+                Some((p, a, first, last)) if p == project && a == app && now.saturating_sub(last) <= SEEN_GAP_SECS => (p, a, first, now),
+                _ => (project.clone(), app.clone(), untitled_start.unwrap_or(now).min(now), now),
+            };
+            let long_enough = other.3.saturating_sub(other.2) >= SWITCH_SECS;
+            let start = other.2;
+            if !long_enough {
+                self.other = Some(other);
+            }
+            (start, long_enough)
+        };
+        if !switch {
+            return None;
+        }
+        let done = self.current.replace(Stretch { project, app, start, end: now });
+        self.by_save = from_save;
+        self.other = None;
+        done
     }
 
     /// The current stretch, ended if it's been quiet too long.
     fn expire(&mut self, now: u64) -> Option<Stretch> {
         let gap = if self.by_save { SAVE_GAP_SECS } else { GAP_SECS };
         if self.current.as_ref().is_some_and(|c| now.saturating_sub(c.end) > gap) {
+            self.other = None;
             return self.current.take();
         }
         None
@@ -219,22 +436,40 @@ impl Tracker {
     /// End the current stretch now (a wrap, the timer started, switched off).
     pub(crate) fn close(&mut self) -> Option<Stretch> {
         self.untitled = None;
+        self.other = None;
         self.current.take().filter(|s| s.end.saturating_sub(s.start) >= MIN_SECS)
+    }
+
+    /// The stretch being built, if any.
+    pub(crate) fn current(&self) -> Option<&Stretch> {
+        self.current.as_ref()
+    }
+
+    /// Take the stretch being built, however short ("Log it and start the
+    /// timer").
+    pub(crate) fn take(&mut self) -> Option<Stretch> {
+        self.untitled = None;
+        self.other = None;
+        self.current.take()
     }
 }
 
 /// A suggestion waiting for an answer, as kept in `settings.json`:
-/// "start|end|project". No names or paths.
+/// "start|end|project|app" (the app only for unrecognised work). No names
+/// of windows or files, and no paths.
 pub(crate) fn encode(s: &Stretch) -> String {
-    format!("{}|{}|{}", s.start, s.end, s.project)
+    format!("{}|{}|{}|{}", s.start, s.end, s.project, s.app.as_deref().unwrap_or_default())
 }
 
 pub(crate) fn decode(raw: &str) -> Option<Stretch> {
-    let mut parts = raw.splitn(3, '|');
+    let mut parts = raw.splitn(4, '|');
     let start = parts.next()?.parse().ok()?;
     let end = parts.next()?.parse().ok()?;
     let project = parts.next()?.to_string();
-    (end > start && crate::hourly::valid_id(&project)).then_some(Stretch { project, start, end })
+    let app = parts.next().filter(|app| !app.is_empty()).map(str::to_string);
+    let known = crate::hourly::valid_id(&project) && app.is_none();
+    let unknown = project.is_empty() && app.as_deref().is_some_and(valid_app_id);
+    (end > start && (known || unknown)).then_some(Stretch { project, app, start, end })
 }
 
 /// The pending suggestions still worth asking about at `now`.
@@ -242,7 +477,13 @@ pub(crate) fn fresh(pending: &[String], now: u64) -> Vec<Stretch> {
     pending.iter().filter_map(|raw| decode(raw)).filter(|s| now.saturating_sub(s.end) <= KEEP_SECS).collect()
 }
 
-/// A linked folder, kept as "project\tpath".
+/// A folder linked to every project: the project is worked out from the
+/// names of the folders the saved file is in ("Clients/Vimeo/Logo
+/// refresh/…"). For a drive or folder full of client or project folders.
+pub(crate) const ANY_PROJECT: &str = "*";
+
+/// A linked folder, kept as "project\tpath" (`ANY_PROJECT` for one that
+/// works the project out from its folders' names).
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Linked {
     pub project: String,
@@ -251,37 +492,59 @@ pub(crate) struct Linked {
 
 pub(crate) fn decode_linked(raw: &str) -> Option<Linked> {
     let (project, path) = raw.split_once('\t')?;
-    (crate::hourly::valid_id(project) && !path.is_empty()).then(|| Linked { project: project.into(), path: path.into() })
+    ((crate::hourly::valid_id(project) || project == ANY_PROJECT) && !path.is_empty()).then(|| Linked { project: project.into(), path: path.into() })
 }
 
-/// Files under `root` saved after `since`, looked at up to a limit (hidden
-/// folders and the usual build/cache folders skipped).
-pub(crate) fn saved_since(root: &Path, since: SystemTime) -> bool {
+/// Files under `root` saved after `since` (at most `max`), looked at up to a
+/// limit (hidden folders and the usual build/cache folders skipped).
+pub(crate) fn saved_since(root: &Path, since: SystemTime, max: usize, max_entries: usize) -> Vec<PathBuf> {
     let mut stack = vec![(root.to_path_buf(), 0usize)];
     let mut seen = 0usize;
+    let mut found = Vec::new();
     while let Some((dir, depth)) = stack.pop() {
         let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        // Folders changed most recently are looked in first, so on a big
+        // drive the limit still reaches where the work is.
+        let mut folders: Vec<(SystemTime, PathBuf)> = Vec::new();
         for entry in entries.flatten() {
             seen += 1;
-            if seen > SCAN_MAX_ENTRIES {
-                return false;
+            if seen > max_entries {
+                return found;
             }
             let name = entry.file_name();
             let name = name.to_string_lossy();
-            if name.starts_with('.') || matches!(name.as_ref(), "node_modules" | "Cache" | "cache" | "Media Cache Files" | "Adobe Premiere Pro Auto-Save") {
+            if name.starts_with('.')
+                || matches!(name.as_ref(), "node_modules" | "Cache" | "cache" | "Media Cache Files" | "Adobe Premiere Pro Auto-Save" | "$RECYCLE.BIN" | "System Volume Information")
+            {
                 continue;
             }
             let Ok(meta) = entry.metadata() else { continue };
             if meta.is_dir() {
                 if depth < SCAN_MAX_DEPTH {
-                    stack.push((entry.path(), depth + 1));
+                    folders.push((meta.modified().unwrap_or(SystemTime::UNIX_EPOCH), entry.path()));
                 }
             } else if meta.modified().is_ok_and(|at| at > since) {
-                return true;
+                found.push(entry.path());
+                if found.len() >= max {
+                    return found;
+                }
             }
         }
+        // The stack takes the newest last, so it's looked in next.
+        folders.sort_by_key(|(at, _)| *at);
+        stack.extend(folders.into_iter().map(|(_, path)| (path, depth + 1)));
     }
-    false
+    found
+}
+
+/// The project a file saved under an "any project" folder belongs to, from
+/// the names of the folders it's in and its own name.
+pub(crate) fn project_from_path(root: &Path, file: &Path, projects: &[crate::hourly::Project]) -> Option<String> {
+    let inside = file.strip_prefix(root).ok()?;
+    let parts: Vec<String> = inside.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
+    // The deepest folder that names a project wins ("Vimeo/Logo refresh"
+    // over "Vimeo"), then the file's own name.
+    (1..=parts.len()).rev().find_map(|n| match_title(&parts[..n].join(" "), projects))
 }
 
 /// The last two parts of a path, for the panel ("Vimeo/Logo refresh").
@@ -381,6 +644,45 @@ mod platform {
         })
     }
 
+    /// The names of the apps open now (ones with a Dock icon), for "Add
+    /// another app…".
+    pub(super) fn running_apps() -> Vec<String> {
+        let Some(workspace_class) = AnyClass::get(c"NSWorkspace") else { return Vec::new() };
+        objc2::rc::autoreleasepool(|_| {
+            // SAFETY: AppKit queries; every object is checked for nil, the
+            // pool releases the rest.
+            unsafe {
+                let workspace: *mut AnyObject = msg_send![workspace_class, sharedWorkspace];
+                if workspace.is_null() {
+                    return Vec::new();
+                }
+                let apps: *mut AnyObject = msg_send![workspace, runningApplications];
+                if apps.is_null() {
+                    return Vec::new();
+                }
+                let count: usize = msg_send![apps, count];
+                let mut names = Vec::new();
+                for index in 0..count {
+                    let app: *mut AnyObject = msg_send![apps, objectAtIndex: index];
+                    if app.is_null() {
+                        continue;
+                    }
+                    // NSApplicationActivationPolicyRegular: a normal app.
+                    let policy: isize = msg_send![app, activationPolicy];
+                    if policy != 0 {
+                        continue;
+                    }
+                    let name: *mut AnyObject = msg_send![app, localizedName];
+                    let name = rust_string(name);
+                    if !name.is_empty() {
+                        names.push(name);
+                    }
+                }
+                names
+            }
+        })
+    }
+
     /// Whether macOS lets the app read other apps' window titles.
     pub(super) fn titles_allowed() -> bool {
         // SAFETY: no arguments.
@@ -404,9 +706,28 @@ mod platform {
 #[cfg(windows)]
 mod platform {
     use super::Front;
-    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::core::BOOL;
+    use windows_sys::Win32::Foundation::{CloseHandle, HWND, LPARAM};
     use windows_sys::Win32::System::Threading::{OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION};
-    use windows_sys::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowTextW, GetWindowThreadProcessId};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        EnumWindows, GetForegroundWindow, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible,
+    };
+
+    /// The program file behind a window ("photoshop.exe"), lowercase.
+    unsafe fn program(window: HWND) -> String {
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(window, &mut pid);
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if process.is_null() {
+            return String::new();
+        }
+        let mut path = [0u16; 1024];
+        let mut size = path.len() as u32;
+        let ok = QueryFullProcessImageNameW(process, 0, path.as_mut_ptr(), &mut size);
+        CloseHandle(process);
+        let path = if ok != 0 { String::from_utf16_lossy(&path[..size as usize]) } else { String::new() };
+        path.rsplit(['\\', '/']).next().unwrap_or_default().to_lowercase()
+    }
 
     pub(super) fn front() -> Option<Front> {
         // SAFETY: plain Win32 queries with correctly sized buffers; the
@@ -419,20 +740,30 @@ mod platform {
             let mut text = [0u16; 512];
             let len = GetWindowTextW(window, text.as_mut_ptr(), text.len() as i32);
             let title = String::from_utf16_lossy(&text[..len.max(0) as usize]);
-            let mut pid = 0u32;
-            GetWindowThreadProcessId(window, &mut pid);
-            let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
-            if process.is_null() {
-                return Some(Front { app: String::new(), title });
-            }
-            let mut path = [0u16; 1024];
-            let mut size = path.len() as u32;
-            let ok = QueryFullProcessImageNameW(process, 0, path.as_mut_ptr(), &mut size);
-            CloseHandle(process);
-            let path = if ok != 0 { String::from_utf16_lossy(&path[..size as usize]) } else { String::new() };
-            let app = path.rsplit(['\\', '/']).next().unwrap_or_default().to_lowercase();
-            Some(Front { app, title })
+            Some(Front { app: program(window), title })
         }
+    }
+
+    /// The programs with a visible, named window now, for "Add another app…".
+    pub(super) fn running_apps() -> Vec<String> {
+        unsafe extern "system" fn each(window: HWND, list: LPARAM) -> BOOL {
+            // SAFETY: `list` is the Vec passed to EnumWindows below, alive
+            // for the whole call.
+            let list = unsafe { &mut *(list as *mut Vec<String>) };
+            if unsafe { IsWindowVisible(window) } != 0 && unsafe { GetWindowTextLengthW(window) } > 0 {
+                let name = unsafe { program(window) };
+                if !name.is_empty() && !list.contains(&name) {
+                    list.push(name);
+                }
+            }
+            1
+        }
+        let mut list: Vec<String> = Vec::new();
+        // SAFETY: the callback only touches `list`, which outlives the call.
+        unsafe {
+            EnumWindows(Some(each), &mut list as *mut Vec<String> as LPARAM);
+        }
+        list
     }
 
     pub(super) fn titles_allowed() -> bool {
@@ -450,6 +781,10 @@ mod platform {
         None
     }
 
+    pub(super) fn running_apps() -> Vec<String> {
+        Vec::new()
+    }
+
     pub(super) fn titles_allowed() -> bool {
         false
     }
@@ -459,15 +794,35 @@ mod platform {
 
 // ── state ──
 
+/// What the last look saw, for "Right now" in Settings. Kept in memory
+/// until the next look, never stored or sent.
+#[derive(Debug, Clone, PartialEq)]
+enum Seen {
+    /// The project timer is running: nothing to suggest.
+    Timer,
+    /// Away from the keyboard and mouse.
+    Away,
+    /// The window in front.
+    App { label: String, title: String, picked: bool, project: Option<String> },
+}
+
 #[derive(Default)]
 struct Inner {
     tracker: Tracker,
     /// When each linked folder was last looked at.
     scanned: Option<SystemTime>,
     last_scan: u64,
+    seen: Option<Seen>,
+    /// Looks in a row at a picked app whose window name came back empty
+    /// (macOS: the permission isn't working until the app restarts).
+    blank: u32,
 }
 
 static STATE: Mutex<Option<Inner>> = Mutex::new(None);
+
+/// The permission to read window names was asked for in this run (macOS
+/// only uses it after a restart).
+static ASKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 fn with_state<T>(run: impl FnOnce(&mut Inner) -> T) -> Option<T> {
     let mut slot = STATE.lock().ok()?;
@@ -479,7 +834,7 @@ pub(crate) fn is_on<R: Runtime>(app: &AppHandle<R>) -> bool {
 }
 
 fn picked<R: Runtime>(app: &AppHandle<R>) -> Vec<String> {
-    crate::close::strings(app, APPS)
+    crate::close::strings(app, APPS).into_iter().filter(|id| valid_app_id(id)).collect()
 }
 
 fn linked<R: Runtime>(app: &AppHandle<R>) -> Vec<Linked> {
@@ -495,6 +850,11 @@ fn set_pending<R: Runtime>(app: &AppHandle<R>, list: &[Stretch]) {
     crate::close::set_strings(app, PENDING, &raw);
 }
 
+fn ask_titles() {
+    ASKED.store(true, std::sync::atomic::Ordering::Relaxed);
+    platform::ask_titles();
+}
+
 /// What the panel shows about it.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -506,6 +866,10 @@ pub(crate) struct View {
     pub titles_allowed: bool,
     /// Window titles are read on this system at all (not Linux).
     pub titles_supported: bool,
+    /// macOS: the permission needs the app to restart before it works.
+    pub restart: bool,
+    /// "Right now": what it's seeing, and the stretch it's counting.
+    pub now: Option<NowView>,
     /// The oldest suggestion waiting for an answer, and how many more.
     pub suggestion: Option<SuggestionView>,
     pub more: usize,
@@ -513,8 +877,10 @@ pub(crate) struct View {
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub(crate) struct AppChoice {
-    pub id: &'static str,
-    pub label: &'static str,
+    pub id: String,
+    pub label: String,
+    /// "Design", "Video", "Audio", "3D", "Documents", or "Yours".
+    pub kind: &'static str,
     pub on: bool,
 }
 
@@ -528,11 +894,32 @@ pub(crate) struct FolderRow {
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct NowView {
+    /// "timer", "away" or "app".
+    pub kind: &'static str,
+    pub app: String,
+    /// The window's name, only on this computer.
+    pub title: String,
+    pub picked: bool,
+    /// The project recognised in it.
+    pub project: Option<String>,
+    /// The stretch being counted: what (a project, or "something in
+    /// Photoshop"), since when (unix ms), and whether it can be logged now.
+    pub counting: Option<String>,
+    pub since: Option<u64>,
+    pub can_log: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct SuggestionView {
     /// Its start (unix seconds): the answer names it.
     pub id: u64,
+    /// Empty for work no project was recognised in.
     pub project_id: String,
+    /// The project, or for unrecognised work the app ("Photoshop").
     pub label: String,
+    pub unrecognised: bool,
     pub billable: bool,
     /// Unix milliseconds, for the panel's own time formatting.
     pub from: u64,
@@ -549,21 +936,55 @@ pub(crate) fn view<R: Runtime>(app: &AppHandle<R>, info: &crate::hourly::Info) -
     let suggestion = waiting.first().map(|s| SuggestionView {
         id: s.start,
         project_id: s.project.clone(),
-        label: label_of(&s.project),
+        label: if s.project.is_empty() { s.app.as_deref().map(app_label).unwrap_or_default() } else { label_of(&s.project) },
+        unrecognised: s.project.is_empty(),
         billable: info.projects.iter().any(|p| p.id == s.project && p.billable),
         from: s.start * 1000,
         to: s.end * 1000,
     });
+    let mut apps: Vec<AppChoice> = CATALOG
+        .iter()
+        .map(|(id, label, kind, ..)| AppChoice { id: id.to_string(), label: label.to_string(), kind, on: picked.iter().any(|p| p == id) })
+        .collect();
+    apps.extend(picked.iter().filter(|id| id.starts_with(CUSTOM)).map(|id| AppChoice { id: id.clone(), label: app_label(id), kind: "Yours", on: true }));
+    let titles_allowed = platform::titles_allowed();
+    let (seen, building, blank) = if on {
+        with_state(|state| (state.seen.clone(), state.tracker.current().cloned(), state.blank)).unwrap_or_default()
+    } else {
+        (None, None, 0)
+    };
+    let now = seen.map(|seen| {
+        let (counting, since, can_log) = match &building {
+            Some(b) if b.project.is_empty() => {
+                (Some(format!("something in {}", b.app.as_deref().map(app_label).unwrap_or_default())), Some(b.start * 1000), false)
+            }
+            Some(b) => (Some(label_of(&b.project)), Some(b.start * 1000), crate::clock::unix_now().saturating_sub(b.start) >= 60),
+            None => (None, None, false),
+        };
+        match seen {
+            Seen::Timer => NowView { kind: "timer", app: String::new(), title: String::new(), picked: false, project: None, counting: None, since: None, can_log: false },
+            Seen::Away => NowView { kind: "away", app: String::new(), title: String::new(), picked: false, project: None, counting, since, can_log },
+            Seen::App { label, title, picked, project } => {
+                NowView { kind: "app", app: label, title, picked, project: project.as_deref().map(label_of), counting, since, can_log }
+            }
+        }
+    });
     View {
         on,
-        apps: CATALOG.iter().map(|(id, label, ..)| AppChoice { id, label, on: picked.iter().any(|p| p == id) }).collect(),
+        apps,
         folders: linked(app)
             .iter()
             .enumerate()
-            .map(|(index, l)| FolderRow { index, folder: short_path(&l.path), project: label_of(&l.project) })
+            .map(|(index, l)| FolderRow {
+                index,
+                folder: short_path(&l.path),
+                project: if l.project == ANY_PROJECT { "Any project, from its folders' names".into() } else { label_of(&l.project) },
+            })
             .collect(),
-        titles_allowed: platform::titles_allowed(),
+        titles_allowed,
         titles_supported: cfg!(any(target_os = "macos", windows)),
+        restart: cfg!(target_os = "macos") && on && ((ASKED.load(std::sync::atomic::Ordering::Relaxed) && !titles_allowed) || blank >= 4),
+        now,
         suggestion,
         more: waiting.len().saturating_sub(1),
     }
@@ -572,22 +993,24 @@ pub(crate) fn view<R: Runtime>(app: &AppHandle<R>, info: &crate::hourly::Info) -
 /// A stretch ended: keep it to ask about, and say so once.
 fn suggest<R: Runtime>(app: &AppHandle<R>, stretch: Stretch) {
     let mut list = pending(app);
-    if list.iter().any(|s| s.project == stretch.project && s.start == stretch.start) {
+    if list.iter().any(|s| s.start == stretch.start) {
         return;
     }
     list.push(stretch.clone());
     set_pending(app, &list);
     crate::mini::push(app);
     if crate::quiet::allowed(app, crate::quiet::Kind::Tracker) {
-        let label = crate::hourly::info_snapshot(app)
-            .and_then(|info| info.projects.iter().find(|p| p.id == stretch.project).map(crate::hourly::project_label))
-            .unwrap_or_default();
-        let body = format!(
-            "{label} {}–{}. Log it?",
-            crate::clock::fmt_hhmm_sast(stretch.start),
-            crate::clock::fmt_hhmm_sast(stretch.end)
-        );
-        crate::banner::show(app, "Worked on this?", &body, crate::banner::Target::Panel);
+        let times = format!("{}–{}", crate::clock::fmt_hhmm_sast(stretch.start), crate::clock::fmt_hhmm_sast(stretch.end));
+        let (title, body) = if stretch.project.is_empty() {
+            let app_name = stretch.app.as_deref().map(app_label).unwrap_or_default();
+            ("Worked on something?", format!("{app_name} {times}. Which project was it?"))
+        } else {
+            let label = crate::hourly::info_snapshot(app)
+                .and_then(|info| info.projects.iter().find(|p| p.id == stretch.project).map(crate::hourly::project_label))
+                .unwrap_or_default();
+            ("Worked on this?", format!("{label} {times}. Log it?"))
+        };
+        crate::banner::show(app, title, &body, crate::banner::Target::Panel);
     }
 }
 
@@ -596,6 +1019,24 @@ pub(crate) fn close_now<R: Runtime>(app: &AppHandle<R>) {
     if let Some(stretch) = with_state(|state| state.tracker.close()).flatten() {
         suggest(app, stretch);
     }
+}
+
+/// Note what this look saw; the panel hears of a change.
+fn set_seen<R: Runtime>(app: &AppHandle<R>, seen: Option<Seen>) {
+    let changed = with_state(|state| {
+        let before = (state.seen.clone(), state.tracker.current().map(|c| (c.project.clone(), c.app.clone(), c.start)));
+        state.seen = seen;
+        before != (state.seen.clone(), state.tracker.current().map(|c| (c.project.clone(), c.app.clone(), c.start)))
+    });
+    if changed == Some(true) {
+        crate::mini::push(app);
+    }
+}
+
+/// The name to show for an app that isn't picked ("Safari", "chrome").
+fn plain_name(app: &str) -> String {
+    let app = app.trim();
+    app.strip_suffix(".exe").unwrap_or(app).to_string()
 }
 
 /// One look: the front window and, every minute, the linked folders.
@@ -608,35 +1049,65 @@ fn tick<R: Runtime>(app: &AppHandle<R>, now: u64) {
     // Timing already: nothing to suggest; what was being built ends here.
     if info.running.is_some() {
         close_now(app);
+        set_seen(app, Some(Seen::Timer));
         return;
     }
     if crate::idle::idle_seconds().is_some_and(|idle| idle >= IDLE_SECS) {
         if let Some(stretch) = with_state(|state| state.tracker.step(now, None)).flatten() {
             suggest(app, stretch);
         }
+        set_seen(app, Some(Seen::Away));
         return;
     }
     let picked = picked(app);
     let mut hits: Vec<Hit> = Vec::new();
+    let mut seen = None;
     if let Some(front) = platform::front() {
-        if let Some(app_id) = app_id(&front, &picked) {
-            hits.push(if is_untitled(&front.title) {
-                Hit::Untitled(app_id)
+        let id = app_id(&front, &picked);
+        let mut project = None;
+        if let Some(id) = &id {
+            let blank = front.title.trim().is_empty();
+            with_state(|state| state.blank = if blank { state.blank.saturating_add(1) } else { 0 });
+            let hit = if is_untitled(&front.title) {
+                Some(Hit::Untitled(id.clone()))
             } else {
                 match match_title(&front.title, &info.projects) {
-                    Some(project) => Hit::Project { project, app: Some(app_id) },
-                    None => Hit::Unknown,
+                    Some(found) => {
+                        project = Some(found.clone());
+                        Some(Hit::Project { project: found, app: Some(id.clone()) })
+                    }
+                    // Not the rest of the web.
+                    None if is_browser(id) => None,
+                    // Work in a picked app all the same (even when its
+                    // window's name can't be read): asked about later.
+                    None => Some(Hit::Unknown(id.clone())),
                 }
-            });
+            };
+            hits.extend(hit);
         }
-        // The title is dropped here: never kept or sent.
+        // The window's name is only kept until the next look, for "Right
+        // now" on this computer: never stored or sent.
+        let mut title = front.title.trim().to_string();
+        if title.chars().count() > 120 {
+            title = title.chars().take(119).chain(['…']).collect();
+        }
+        let label = id.as_deref().map(app_label).unwrap_or_else(|| plain_name(&front.app));
+        seen = Some(Seen::App { label, title, picked: id.is_some(), project });
     }
     let scan_due = with_state(|state| now.saturating_sub(state.last_scan) >= SCAN_EVERY_SECS).unwrap_or(false);
     if scan_due {
         let since = with_state(|state| state.scanned).flatten().unwrap_or_else(SystemTime::now);
         let scanned_at = SystemTime::now();
         for folder in linked(app) {
-            if info.projects.iter().any(|p| p.id == folder.project) && saved_since(&folder.path, since) {
+            if folder.project == ANY_PROJECT {
+                for file in saved_since(&folder.path, since, 20, SCAN_MAX_ENTRIES * 4) {
+                    if let Some(project) = project_from_path(&folder.path, &file, &info.projects) {
+                        if !hits.iter().any(|h| matches!(h, Hit::Project { project: p, app: None } if *p == project)) {
+                            hits.push(Hit::Project { project, app: None });
+                        }
+                    }
+                }
+            } else if info.projects.iter().any(|p| p.id == folder.project) && !saved_since(&folder.path, since, 1, SCAN_MAX_ENTRIES).is_empty() {
                 hits.push(Hit::Project { project: folder.project.clone(), app: None });
             }
         }
@@ -646,13 +1117,16 @@ fn tick<R: Runtime>(app: &AppHandle<R>, now: u64) {
         });
     }
     if hits.is_empty() {
-        hits.push(Hit::Unknown);
+        if let Some(stretch) = with_state(|state| state.tracker.step(now, None)).flatten() {
+            suggest(app, stretch);
+        }
     }
     for hit in hits {
         if let Some(stretch) = with_state(|state| state.tracker.step(now, Some(hit))).flatten() {
             suggest(app, stretch);
         }
     }
+    set_seen(app, seen);
 }
 
 /// Start the helper's loop for the app's life (it does nothing while off).
@@ -679,11 +1153,12 @@ pub(crate) fn mini_detector_toggle<R: Runtime>(app: AppHandle<R>) -> Result<(), 
     Ok(())
 }
 
-/// Pick or unpick an app. Picking one on macOS asks for the permission to
-/// read window titles, if it isn't given yet.
+/// Pick or unpick an app: from the catalogue, or their own ("custom:…").
+/// Picking one on macOS asks for the permission to read window names, if it
+/// isn't given yet.
 #[tauri::command]
 pub(crate) fn mini_detector_app<R: Runtime>(app: AppHandle<R>, id: String) -> Result<(), String> {
-    if !CATALOG.iter().any(|(known, ..)| *known == id) {
+    if !valid_app_id(&id) {
         return Err("Unknown app.".into());
     }
     let mut list = picked(&app);
@@ -694,54 +1169,136 @@ pub(crate) fn mini_detector_app<R: Runtime>(app: AppHandle<R>, id: String) -> Re
         list.retain(|p| p != &id);
     }
     crate::close::set_strings(&app, APPS, &list);
-    if on && !platform::titles_allowed() {
-        platform::ask_titles();
+    if on && cfg!(any(target_os = "macos", windows)) && !platform::titles_allowed() {
+        ask_titles();
     }
     crate::mini::push(&app);
     Ok(())
+}
+
+/// An app that's open now, for "Add another app…".
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub(crate) struct OpenApp {
+    pub id: String,
+    pub label: String,
+}
+
+/// The apps open now that aren't picked yet: a catalogue app by its id, any
+/// other by its own name.
+pub(crate) fn open_apps(names: &[String], picked: &[String]) -> Vec<OpenApp> {
+    const SKIP: &[&str] = &["finder", "explorer.exe", "system settings", "systemsettings.exe", "applicationframehost.exe", "textinputhost.exe"];
+    let mut apps: Vec<OpenApp> = Vec::new();
+    for name in names {
+        let lower = name.trim().to_lowercase();
+        if lower.is_empty() || lower.contains("coolerbox") || lower.contains("cbb-tracker") || SKIP.contains(&lower.as_str()) {
+            continue;
+        }
+        let id = catalog_id(name).map(str::to_string).unwrap_or_else(|| format!("{CUSTOM}{}", name.trim()));
+        if !valid_app_id(&id) || picked.contains(&id) || apps.iter().any(|a| a.id == id) {
+            continue;
+        }
+        apps.push(OpenApp { label: app_label(&id), id });
+    }
+    apps.sort_by_key(|a| a.label.to_lowercase());
+    apps
+}
+
+#[tauri::command]
+pub(crate) fn mini_detector_open_apps<R: Runtime>(app: AppHandle<R>) -> Result<Vec<OpenApp>, String> {
+    Ok(open_apps(&platform::running_apps(), &picked(&app)))
 }
 
 /// Ask again for the permission to read window titles (macOS).
 #[tauri::command]
 pub(crate) fn mini_detector_permission<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
-    platform::ask_titles();
+    ask_titles();
     crate::mini::push(&app);
     Ok(())
 }
 
-/// The folder being linked, between choosing it and choosing its project.
-static LINKING: Mutex<Option<PathBuf>> = Mutex::new(None);
-
-/// "Link a folder…": choose it, then the panel asks for its project.
+/// macOS uses the permission only after the app restarts.
 #[tauri::command]
-pub(crate) async fn mini_detector_link<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
-    use tauri_plugin_dialog::DialogExt;
-    let dialog = app.dialog().file().set_title("Link a folder to a project");
-    let chosen = tauri::async_runtime::spawn_blocking(move || dialog.blocking_pick_folder())
-        .await
-        .map_err(|e| e.to_string())?;
-    let Some(chosen) = chosen else { return Ok(()) };
-    let path = chosen.into_path().map_err(|e| e.to_string())?;
-    let folder = short_path(&path);
-    if let Ok(mut slot) = LINKING.lock() {
-        *slot = Some(path);
+pub(crate) fn mini_detector_restart<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
+    app.restart();
+}
+
+/// "Log it and start the timer": the stretch being counted, up to now, then
+/// the timer on its project.
+#[tauri::command]
+pub(crate) fn mini_detector_log_now<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
+    let stretch = with_state(|state| state.tracker.current().cloned())
+        .flatten()
+        .filter(|s| !s.project.is_empty())
+        .ok_or("Nothing it recognised to log yet.")?;
+    let end = crate::clock::unix_now();
+    if end < stretch.start + 60 {
+        return Err("Give it a minute first.".into());
     }
-    crate::mini::ask_hourly(&app, "__cbbMiniDetectorLink", &serde_json::json!({ "folder": folder }));
+    crate::hourly::log_and_start(&app, &stretch.project, stretch.start, end)?;
+    with_state(|state| state.tracker.take());
+    crate::mini::push(&app);
     Ok(())
 }
 
-/// The project for the folder just chosen.
+/// The folders being linked, between choosing them and choosing their
+/// project.
+static LINKING: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+/// The folder chooser is open: the panel stays open under it (lib.rs).
+static CHOOSING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub(crate) fn choosing_folder() -> bool {
+    CHOOSING.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// "Link folders…": choose one or more (on any drive), then the panel asks
+/// for their project.
+#[tauri::command]
+pub(crate) async fn mini_detector_link<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
+    use tauri::Manager;
+    use tauri_plugin_dialog::DialogExt;
+    let mut dialog = app.dialog().file().set_title("Link folders to a project");
+    // On the panel, so it opens in front of it and the panel stays.
+    if let Some(mini) = app.get_webview_window("mini") {
+        dialog = dialog.set_parent(&mini);
+    }
+    CHOOSING.store(true, std::sync::atomic::Ordering::Relaxed);
+    let chosen = tauri::async_runtime::spawn_blocking(move || dialog.blocking_pick_folders()).await;
+    CHOOSING.store(false, std::sync::atomic::Ordering::Relaxed);
+    let Some(chosen) = chosen.map_err(|e| e.to_string())? else { return Ok(()) };
+    let paths: Vec<PathBuf> = chosen.into_iter().filter_map(|p| p.into_path().ok()).collect();
+    if paths.is_empty() {
+        return Ok(());
+    }
+    let folders = match paths.as_slice() {
+        [one] => short_path(one),
+        many => format!("{} folders: {}", many.len(), many.iter().map(|p| short_path(p)).collect::<Vec<_>>().join(", ")),
+    };
+    if let Ok(mut slot) = LINKING.lock() {
+        *slot = paths;
+    }
+    crate::mini::ask_hourly(&app, "__cbbMiniDetectorLink", &serde_json::json!({ "folder": folders }));
+    Ok(())
+}
+
+/// The project for the folders just chosen, or `ANY_PROJECT` to work it out
+/// from the names of the folders inside.
 #[tauri::command]
 pub(crate) fn mini_detector_link_project<R: Runtime>(app: AppHandle<R>, project_id: String) -> Result<(), String> {
     let info = crate::hourly::info_snapshot(&app).ok_or("The project timer isn't on for you.")?;
-    if !info.projects.iter().any(|p| p.id == project_id) {
+    if project_id != ANY_PROJECT && !info.projects.iter().any(|p| p.id == project_id) {
         return Err("That project isn't one of yours.".into());
     }
-    let path = LINKING.lock().ok().and_then(|mut slot| slot.take()).ok_or("Choose the folder again.")?;
+    let paths = LINKING.lock().ok().map(|mut slot| std::mem::take(&mut *slot)).unwrap_or_default();
+    if paths.is_empty() {
+        return Err("Choose the folders again.".into());
+    }
     let mut list = crate::close::strings(&app, FOLDERS);
-    let line = format!("{project_id}\t{}", path.display());
-    if !list.contains(&line) {
-        list.push(line);
+    for path in paths {
+        let line = format!("{project_id}\t{}", path.display());
+        if !list.contains(&line) {
+            list.push(line);
+        }
     }
     crate::close::set_strings(&app, FOLDERS, &list);
     crate::mini::push(&app);
@@ -759,8 +1316,9 @@ pub(crate) fn mini_detector_unlink<R: Runtime>(app: AppHandle<R>, index: usize) 
     Ok(())
 }
 
-/// The answer to "Worked on X 09:10–10:40, log it?": `log` (on its own
-/// project, or `project_id` when they chose another) or `skip`.
+/// The answer to "Worked on X 09:10–10:40, log it?" (or "Worked in
+/// Photoshop … which project?"): `log` (on its own project, or `project_id`
+/// when they chose one) or `skip`.
 #[tauri::command]
 pub(crate) fn mini_detector_answer<R: Runtime>(
     app: AppHandle<R>,
@@ -772,7 +1330,10 @@ pub(crate) fn mini_detector_answer<R: Runtime>(
     let stretch = list.iter().find(|s| s.start == id).cloned().ok_or("That's already been answered.")?;
     match choice.as_str() {
         "log" => {
-            let project = project_id.unwrap_or_else(|| stretch.project.clone());
+            let project = project_id.filter(|p| !p.is_empty()).unwrap_or_else(|| stretch.project.clone());
+            if project.is_empty() {
+                return Err("Pick the project it was for.".into());
+            }
             crate::hourly::log_stretch(&app, &project, stretch.start, stretch.end, id)?;
         }
         "skip" => {
@@ -839,16 +1400,83 @@ mod tests {
         let mac = Front { app: "Adobe Photoshop 2026".into(), title: String::new() };
         let win = Front { app: "photoshop.exe".into(), title: String::new() };
         let other = Front { app: "Adobe Illustrator 2026".into(), title: String::new() };
-        assert_eq!(app_id(&mac, &picked), Some("photoshop"));
-        assert_eq!(app_id(&win, &picked), Some("photoshop"));
+        assert_eq!(app_id(&mac, &picked).as_deref(), Some("photoshop"));
+        assert_eq!(app_id(&win, &picked).as_deref(), Some("photoshop"));
         assert_eq!(app_id(&other, &picked), None, "not picked");
         assert_eq!(app_id(&Front { app: "Safari".into(), title: String::new() }, &picked), None);
+        // The closest catalogue name: Lightroom Classic isn't Lightroom.
+        assert_eq!(catalog_id("Adobe Lightroom Classic"), Some("lightroom-classic"));
+        assert_eq!(catalog_id("Adobe Lightroom"), Some("lightroom"));
+        assert_eq!(catalog_id("Pro Tools"), Some("protools"));
+        assert_eq!(catalog_id("WINWORD.EXE"), Some("word"));
+        assert_eq!(catalog_id("Code"), Some("vscode"));
+        assert_eq!(catalog_id("iTerm2"), Some("terminal"));
+        assert_eq!(catalog_id("msedge.exe"), Some("edge"));
+        assert!(is_browser("chrome") && !is_browser("cursor"));
+        let lr = vec!["lightroom".to_string()];
+        assert_eq!(app_id(&Front { app: "Adobe Lightroom Classic".into(), title: String::new() }, &lr), None);
+    }
+
+    #[test]
+    fn any_app_can_be_picked_by_its_own_name() {
+        let picked = vec!["custom:Studio One".to_string(), "custom:bitwig studio.exe".to_string()];
+        assert_eq!(app_id(&Front { app: "Studio One".into(), title: String::new() }, &picked).as_deref(), Some("custom:Studio One"));
+        assert_eq!(
+            app_id(&Front { app: "bitwig studio.exe".into(), title: String::new() }, &picked).as_deref(),
+            Some("custom:bitwig studio.exe")
+        );
+        assert_eq!(app_id(&Front { app: "Studio One Pro".into(), title: String::new() }, &picked), None, "exact names only");
+        assert!(valid_app_id("custom:Studio One"));
+        assert!(valid_app_id("photoshop"));
+        assert!(!valid_app_id("custom:"));
+        assert!(!valid_app_id("custom:a|b"));
+        assert!(!valid_app_id("notepad"));
+        assert_eq!(app_label("custom:bitwig studio.exe"), "bitwig studio");
+        assert_eq!(app_label("protools"), "Pro Tools");
+        let mut ids: Vec<&str> = CATALOG.iter().map(|(id, ..)| *id).collect();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), CATALOG.len(), "no repeated ids");
+        // "Add another app…": open apps not picked yet, catalogue ones by id.
+        let open = open_apps(
+            &["Finder".into(), "Pro Tools".into(), "Studio One".into(), "Bitwig Studio".into(), "CoolerBox Tracker".into(), "Pro Tools".into()],
+            &["custom:Studio One".to_string()],
+        );
+        assert_eq!(
+            open,
+            vec![
+                OpenApp { id: "custom:Bitwig Studio".into(), label: "Bitwig Studio".into() },
+                OpenApp { id: "protools".into(), label: "Pro Tools".into() },
+            ]
+        );
+    }
+
+    #[test]
+    fn titles_match_loosely_by_the_projects_own_words() {
+        let ps = vec![
+            project("k", "CB-1", "Motus x News24 Editorial Partnership - The Klutch Programme", Some("POP24")),
+            project("se", "CB-2", "SE October Content", Some("Stiebel Eltron")),
+            project("se2", "CB-3", "SE November Content", Some("Stiebel Eltron")),
+            project("cv", "CB-4", "Cooking with a view Intro sequence", Some("One 22")),
+        ];
+        assert_eq!(match_title("klutch_promo_v3.psd @ 50% (RGB/8)", &ps).as_deref(), Some("k"));
+        assert_eq!(match_title("stiebel_eltron_october.psd", &ps).as_deref(), Some("se"));
+        assert_eq!(match_title("cooking_titles.aep", &ps).as_deref(), Some("cv"));
+        // Two projects share the client's words: a tie asks instead.
+        assert_eq!(match_title("stiebel_eltron_banner.ai", &ps), None);
+        assert_eq!(match_title("SE_Oct_banner.ai", &ps), None);
+        // Common words point at nothing.
+        assert_eq!(match_title("final content video.mp4", &ps), None);
     }
 
     const T0: u64 = 1_791_788_400;
 
     fn on(project: &str) -> Option<Hit> {
-        Some(Hit::Project { project: project.into(), app: Some("photoshop") })
+        Some(Hit::Project { project: project.into(), app: Some("photoshop".into()) })
+    }
+
+    fn known(project: &str, start: u64, end: u64) -> Stretch {
+        Stretch { project: project.into(), app: None, start, end }
     }
 
     #[test]
@@ -857,10 +1485,12 @@ mod tests {
         for minute in 0..=40 {
             assert_eq!(t.step(T0 + minute * 60, on("p1")), None);
         }
-        // Switching ends p1's 40 minutes.
-        assert_eq!(t.step(T0 + 41 * 60, on("p2")), Some(Stretch { project: "p1".into(), start: T0, end: T0 + 40 * 60 }));
+        // Two minutes on p2 ends p1's 40 minutes; p2 began when it was first seen.
+        assert_eq!(t.step(T0 + 41 * 60, on("p2")), None);
+        assert_eq!(t.step(T0 + 42 * 60, on("p2")), None);
+        assert_eq!(t.step(T0 + 43 * 60, on("p2")), Some(known("p1", T0, T0 + 40 * 60)));
         // Five minutes on p2, then a long pause: too short to ask about.
-        for minute in 42..=46 {
+        for minute in 44..=46 {
             t.step(T0 + minute * 60, on("p2"));
         }
         assert_eq!(t.step(T0 + 60 * 60, None), None);
@@ -869,25 +1499,63 @@ mod tests {
         for minute in 0..=10 {
             t.step(T0 + minute * 60, on("p1"));
         }
-        t.step(T0 + 13 * 60, Some(Hit::Unknown));
+        t.step(T0 + 13 * 60, None);
         t.step(T0 + 14 * 60, on("p1"));
-        assert_eq!(t.close(), Some(Stretch { project: "p1".into(), start: T0, end: T0 + 14 * 60 }));
+        assert_eq!(t.close(), Some(known("p1", T0, T0 + 14 * 60)));
+        // Nor does a glance at another file.
+        let mut t = Tracker::default();
+        for minute in 0..=10 {
+            t.step(T0 + minute * 60, on("p1"));
+        }
+        t.step(T0 + 11 * 60, Some(Hit::Unknown("photoshop".into())));
+        t.step(T0 + 12 * 60, on("p1"));
+        assert_eq!(t.close(), Some(known("p1", T0, T0 + 12 * 60)));
+    }
+
+    #[test]
+    fn work_nothing_was_recognised_in_is_asked_about_too() {
+        let unknown = || Some(Hit::Unknown("photoshop".into()));
+        let mut t = Tracker::default();
+        for minute in 0..=30 {
+            assert_eq!(t.step(T0 + minute * 60, unknown()), None);
+        }
+        assert_eq!(
+            t.step(T0 + 40 * 60, None),
+            Some(Stretch { project: String::new(), app: Some("photoshop".into()), start: T0, end: T0 + 30 * 60 })
+        );
+        // Then a save in a folder linked to a project: it was that project.
+        let mut t = Tracker::default();
+        for minute in 0..=15 {
+            t.step(T0 + minute * 60, unknown());
+        }
+        t.step(T0 + 16 * 60, Some(Hit::Project { project: "p4".into(), app: None }));
+        assert_eq!(t.close(), Some(known("p4", T0, T0 + 16 * 60)));
+        // Another picked app is another stretch.
+        let mut t = Tracker::default();
+        for minute in 0..=12 {
+            t.step(T0 + minute * 60, unknown());
+        }
+        let audition = || Some(Hit::Unknown("audition".into()));
+        assert_eq!(t.step(T0 + 13 * 60, audition()), None);
+        assert_eq!(t.step(T0 + 14 * 60, audition()), None);
+        let done = t.step(T0 + 15 * 60, audition()).expect("photoshop's stretch");
+        assert_eq!((done.app.as_deref(), done.end), (Some("photoshop"), T0 + 12 * 60));
     }
 
     #[test]
     fn untitled_time_goes_to_the_project_its_app_shows_next() {
         let mut t = Tracker::default();
         for minute in 0..20 {
-            t.step(T0 + minute * 60, Some(Hit::Untitled("photoshop")));
+            t.step(T0 + minute * 60, Some(Hit::Untitled("photoshop".into())));
         }
         // Saved as "Logo refresh.psd".
         for minute in 20..=30 {
             t.step(T0 + minute * 60, on("p1"));
         }
-        assert_eq!(t.close(), Some(Stretch { project: "p1".into(), start: T0, end: T0 + 30 * 60 }));
+        assert_eq!(t.close(), Some(known("p1", T0, T0 + 30 * 60)));
         // Another app's next project doesn't take it.
         let mut t = Tracker::default();
-        t.step(T0, Some(Hit::Untitled("illustrator")));
+        t.step(T0, Some(Hit::Untitled("illustrator".into())));
         for minute in 1..=12 {
             t.step(T0 + minute * 60, on("p1"));
         }
@@ -901,15 +1569,23 @@ mod tests {
         t.step(T0, save("p4"));
         assert_eq!(t.step(T0 + 15 * 60, save("p4")), None, "15 minutes between saves: one stretch");
         assert_eq!(t.step(T0 + 30 * 60, save("p4")), None);
-        assert_eq!(t.step(T0 + 60 * 60, None), Some(Stretch { project: "p4".into(), start: T0, end: T0 + 30 * 60 }));
+        assert_eq!(t.step(T0 + 60 * 60, None), Some(known("p4", T0, T0 + 30 * 60)));
     }
 
     #[test]
     fn suggestions_keep_only_the_project_and_times_for_a_week() {
-        let s = Stretch { project: "p1".into(), start: T0, end: T0 + 3600 };
+        let s = known("p1", T0, T0 + 3600);
         let raw = encode(&s);
-        assert_eq!(raw, format!("{T0}|{}|p1", T0 + 3600));
+        assert_eq!(raw, format!("{T0}|{}|p1|", T0 + 3600));
         assert_eq!(decode(&raw), Some(s.clone()));
+        // Kept by an earlier version: still read.
+        assert_eq!(decode(&format!("{T0}|{}|p1", T0 + 3600)), Some(s.clone()));
+        // Unrecognised work keeps the app, never the window's name.
+        let u = Stretch { project: String::new(), app: Some("custom:Studio One".into()), start: T0, end: T0 + 900 };
+        assert_eq!(encode(&u), format!("{T0}|{}||custom:Studio One", T0 + 900));
+        assert_eq!(decode(&encode(&u)), Some(u));
+        assert_eq!(decode(&format!("{T0}|{}||", T0 + 900)), None, "neither a project nor an app");
+        assert_eq!(decode(&format!("{T0}|{}||notepad", T0 + 900)), None);
         assert_eq!(decode("x|y|p1"), None);
         assert_eq!(decode(&format!("{T0}|{T0}|p1")), None);
         assert_eq!(decode(&format!("{T0}|{}|a b", T0 + 1)), None);
@@ -923,14 +1599,26 @@ mod tests {
     }
 
     #[test]
+    fn a_folder_of_projects_works_out_the_project_from_its_folders() {
+        let ps = projects();
+        let root = Path::new("/Volumes/Work 2/Clients");
+        assert_eq!(project_from_path(root, &root.join("Vimeo/Logo refresh/Exports/v3.psd"), &ps).as_deref(), Some("p1"));
+        assert_eq!(project_from_path(root, &root.join("First Bank/report_layout.indd"), &ps).as_deref(), Some("p4"));
+        assert_eq!(project_from_path(root, &root.join("Spirit Films/Brand film cutdowns/15s.prproj"), &ps).as_deref(), Some("p3"));
+        assert_eq!(project_from_path(root, &root.join("Misc/notes.txt"), &ps), None);
+        assert_eq!(project_from_path(root, Path::new("/elsewhere/Vimeo/x.ai"), &ps), None);
+        assert!(decode_linked("*\t/Volumes/Work 2/Clients").is_some());
+    }
+
+    #[test]
     fn a_save_in_a_linked_folder_is_noticed() {
         let dir = std::env::temp_dir().join(format!("cbb-detector-{}", std::process::id()));
         let nested = dir.join("Exports/v2");
         std::fs::create_dir_all(&nested).unwrap();
         let before = SystemTime::now() - Duration::from_secs(5);
-        assert!(!saved_since(&dir, SystemTime::now() + Duration::from_secs(60)));
+        assert!(saved_since(&dir, SystemTime::now() + Duration::from_secs(60), 1, SCAN_MAX_ENTRIES).is_empty());
         std::fs::write(nested.join("logo.ai"), b"x").unwrap();
-        assert!(saved_since(&dir, before));
+        assert_eq!(saved_since(&dir, before, 5, SCAN_MAX_ENTRIES), vec![nested.join("logo.ai")]);
         std::fs::create_dir_all(dir.join(".git")).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }

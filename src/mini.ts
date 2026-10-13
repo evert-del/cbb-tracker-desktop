@@ -66,6 +66,8 @@ type Hourly = {
   detector?: Detector;
   /** Today's entries and totals; null while the tracker doesn't have the list. */
   today?: Today | null;
+  /** The company's clients, for "New project…" (empty: they can't start projects). */
+  clients?: { id: string; name: string }[];
 };
 
 type TodayEntry = {
@@ -80,16 +82,39 @@ type TodayEntry = {
   /** On an invoice: locked. */
   billed: boolean;
   minutes: number;
+  /** The note shows on the client's Hours page and invoice. */
+  noteForClient?: boolean;
 };
 type Today = { day: string; entries: TodayEntry[]; totalMinutes: number; billableMinutes: number };
 
 type Detector = {
   on: boolean;
-  apps: { id: string; label: string; on: boolean }[];
+  apps: { id: string; label: string; kind: string; on: boolean }[];
   folders: { index: number; folder: string; project: string }[];
   titlesAllowed: boolean;
   titlesSupported: boolean;
-  suggestion: { id: number; projectId: string; label: string; billable: boolean; from: number; to: number } | null;
+  /** macOS: the permission works once the app restarts. */
+  restart?: boolean;
+  /** "Right now": what it's seeing (on this computer only). */
+  now?: {
+    kind: "timer" | "away" | "app";
+    app: string;
+    title: string;
+    picked: boolean;
+    project: string | null;
+    counting: string | null;
+    since: number | null;
+    canLog: boolean;
+  } | null;
+  suggestion: {
+    id: number;
+    projectId: string;
+    label: string;
+    unrecognised?: boolean;
+    billable: boolean;
+    from: number;
+    to: number;
+  } | null;
   more: number;
 };
 
@@ -1552,6 +1577,7 @@ function openHourlyEdit(e: TodayEntry) {
   toInput.disabled = e.endedAt === null;
   toInput.placeholder = e.endedAt === null ? "Running" : "";
   el<HTMLInputElement>("hourly-edit-note").value = e.note ?? "";
+  el<HTMLInputElement>("hourly-edit-for-client").checked = !!e.noteForClient;
   el<HTMLButtonElement>("hourly-edit-delete").hidden = e.endedAt === null;
   el("hourly-edit-error").hidden = true;
   document.querySelectorAll<HTMLButtonElement>("#hourly-edit-view .h-choices button").forEach((b) => (b.disabled = false));
@@ -1585,6 +1611,7 @@ function saveHourlyEdit() {
     endedAt: s.to ? s.to.toISOString() : null,
     note: el<HTMLInputElement>("hourly-edit-note").value,
     projectId: project || null,
+    noteForClient: el<HTMLInputElement>("hourly-edit-for-client").checked,
   }).catch((error) => editError(String(error)));
 }
 
@@ -1634,17 +1661,32 @@ function renderDetector(d: Detector | null) {
   el("detector-privacy-close").textContent = detectorPrivacy === "ask" ? "Not now" : "Close";
   const apps = el("detector-apps");
   apps.replaceChildren();
+  // By kind: Design, Video, Audio, 3D, Code & AI, Browser, Documents, Yours.
+  let kind = "";
   for (const a of d.apps) {
+    if (a.kind !== kind) {
+      kind = a.kind;
+      const head = document.createElement("div");
+      head.className = "d-kind";
+      head.style.width = "100%";
+      head.textContent = kind === "Browser" ? "Browser (only pages that name a project)" : kind;
+      apps.appendChild(head);
+    }
     const chip = document.createElement("button");
     chip.type = "button";
     chip.className = "h-chip";
     chip.textContent = a.label;
     chip.setAttribute("aria-pressed", String(a.on));
+    chip.title = a.kind === "Yours" ? "Tap to remove" : "";
     chip.addEventListener("click", () => void invoke("mini_detector_app", { id: a.id }));
     apps.appendChild(chip);
   }
   apps.hidden = !d.titlesSupported;
-  el("detector-permission").hidden = !(d.titlesSupported && !d.titlesAllowed && d.apps.some((a) => a.on));
+  el("detector-add-app").hidden = !d.titlesSupported;
+  if (!d.titlesSupported) el("detector-open").hidden = true;
+  el("detector-restart").hidden = !d.restart;
+  el("detector-permission").hidden = !!d.restart || !(d.titlesSupported && !d.titlesAllowed && d.apps.some((a) => a.on));
+  renderDetectorNow(d);
   const folders = el("detector-folders");
   folders.replaceChildren();
   for (const f of d.folders) {
@@ -1669,13 +1711,51 @@ function renderDetector(d: Detector | null) {
   if (s) {
     const from = new Date(s.from);
     const to = new Date(s.to);
-    el("hourly-suggest-text").textContent =
-      `Worked on ${s.label}, ${TRACKER_TIME.format(from)}–${TRACKER_TIME.format(to)} ` +
-      `(${fmtMinutes((s.to - s.from) / 60000)})? Log it${s.billable ? " as billable time" : ""}?`;
+    const span = `${TRACKER_TIME.format(from)}–${TRACKER_TIME.format(to)} (${fmtMinutes((s.to - s.from) / 60000)})`;
+    el("hourly-suggest-text").textContent = s.unrecognised
+      ? `Worked in ${s.label}, ${span}. Which project was it?`
+      : `Worked on ${s.label}, ${span}? Log it${s.billable ? " as billable time" : ""}?`;
+    el("hourly-suggest-log").hidden = !!s.unrecognised;
+    el("hourly-suggest-other").textContent = s.unrecognised ? "Pick the project…" : "Other…";
     el("hourly-suggest-more").textContent = d.more > 0 ? `${d.more} more to go through after this one.` : "";
     el("hourly-suggest-more").hidden = d.more === 0;
     card.querySelectorAll("button").forEach((b) => (b.disabled = false));
   }
+}
+
+/** "Right now": what it's looking at, and what it's counting. */
+function renderDetectorNow(d: Detector) {
+  const box = el("detector-now");
+  const n = d.now ?? null;
+  box.hidden = !d.on || n === null;
+  if (!n) return;
+  const what = el("detector-now-what");
+  what.replaceChildren();
+  const bold = (text: string) => {
+    const b = document.createElement("b");
+    b.textContent = text;
+    return b;
+  };
+  if (n.kind === "timer") {
+    what.textContent = "The project timer is running, so there's nothing to suggest.";
+  } else if (n.kind === "away") {
+    what.textContent = "You're away from the computer.";
+  } else if (!n.picked) {
+    what.append(bold(n.app || "This app"), " isn't one of your picked apps.");
+  } else {
+    what.append(bold(n.app), n.title ? ` · ${n.title}` : "");
+    what.append(document.createElement("br"));
+    if (n.project) what.append("→ ", bold(n.project));
+    else if (!n.title && d.titlesSupported) what.append("Can't read the window's name yet, so it'll ask which project.");
+    else what.append("→ no project recognised in this; after 10 minutes it'll ask which project.");
+  }
+  const counting = el("detector-now-counting");
+  counting.hidden = !n.counting || n.since === null;
+  if (n.counting && n.since !== null) {
+    const mins = Math.max(0, Math.round((Date.now() - n.since) / 60000));
+    counting.textContent = `Counting: ${n.counting}, since ${TRACKER_TIME.format(new Date(n.since))} (${fmtMinutes(mins)}).`;
+  }
+  el("detector-now-log").hidden = !n.canLog;
 }
 
 function answerSuggestion(choice: "log" | "skip", projectId?: string) {
@@ -1969,13 +2049,128 @@ function renderHourlyPick() {
       shown += 1;
     }
   }
-  if (shown === 0) {
+  if (hourlyPick === "link" && words.length === 0) {
+    // A folder full of client and project folders: any of them.
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "h-row h-new";
+    const t = document.createElement("span");
+    t.className = "t";
+    t.textContent = "Any project, from its folders' names";
+    const sub = document.createElement("span");
+    sub.className = "s";
+    sub.textContent = "For your Work folder or a drive: it tells the project from the client and project folders inside.";
+    row.append(t, sub);
+    row.addEventListener("click", () => {
+      invoke("mini_detector_link_project", { projectId: "*" })
+        .catch((error) => hourlyError(String(error)))
+        .finally(() => closeHourlyPick());
+    });
+    const line = document.createElement("div");
+    line.className = "h-line";
+    line.appendChild(row);
+    list.prepend(line);
+    shown += 1;
+  }
+  if ((h.clients ?? []).length > 0) {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "h-row h-new";
+    const t = document.createElement("span");
+    t.className = "t";
+    t.textContent = "+ New project…";
+    row.append(t);
+    row.addEventListener("click", () => openHourlyNew(el<HTMLInputElement>("hourly-filter").value.trim()));
+    const line = document.createElement("div");
+    line.className = "h-line";
+    line.appendChild(row);
+    list.appendChild(line);
+  } else if (shown === 0) {
     const empty = document.createElement("div");
     empty.id = "hourly-pick-empty";
     empty.textContent = words.length ? "No project matches." : "No projects to time yet.";
     list.appendChild(empty);
   }
   restHourlyButtons();
+}
+
+// ── "New project…" (POST /api/me/projects) ──
+
+let hourlyNewBillable = true;
+
+function showHourlyNew(open: boolean) {
+  el("hourly-new").hidden = !open;
+  el("hourly-filter").hidden = open;
+  el("hourly-pick-list").hidden = open;
+  if (hourlyPick === "file") el("hourly-pick-foot").hidden = open;
+}
+
+function openHourlyNew(name: string) {
+  const h = current?.hourly;
+  if (!h) return;
+  const select = el<HTMLSelectElement>("hourly-new-client");
+  select.replaceChildren(new Option("New client…", "__new"));
+  for (const c of h.clients ?? []) select.appendChild(new Option(c.name, c.id));
+  select.value = "__new";
+  refreshPicker("hourly-new-client");
+  el<HTMLInputElement>("hourly-new-name").value = name;
+  el<HTMLInputElement>("hourly-new-client-name").value = "";
+  el("hourly-new-client-name-field").hidden = false;
+  setNewBillable(true);
+  el("hourly-new-error").hidden = true;
+  el("hourly-new-save").textContent = {
+    start: "Create and start the timer",
+    file: "Create and file the time",
+    suggest: "Create and log the time",
+    link: "Create and link the folders",
+  }[hourlyPick ?? "start"];
+  showHourlyNew(true);
+  el("hourly-new-name").focus();
+}
+
+function setNewBillable(billable: boolean) {
+  hourlyNewBillable = billable;
+  document.querySelectorAll<HTMLButtonElement>("#hourly-new-billing .seg").forEach((b) => {
+    b.setAttribute("aria-checked", String((b.dataset.billable === "1") === billable));
+  });
+}
+
+function newError(text: string) {
+  el("hourly-new-error").textContent = text;
+  el("hourly-new-error").hidden = false;
+  document.querySelectorAll<HTMLButtonElement>("#hourly-new button").forEach((b) => (b.disabled = false));
+}
+
+function saveHourlyNew() {
+  const client = el<HTMLSelectElement>("hourly-new-client").value;
+  const mode = hourlyPick ?? "start";
+  document.querySelectorAll<HTMLButtonElement>("#hourly-new button").forEach((b) => (b.disabled = true));
+  el("hourly-new-error").hidden = true;
+  invoke<HourlyProject>("mini_hourly_new_project", {
+    name: el<HTMLInputElement>("hourly-new-name").value,
+    clientId: client === "__new" ? null : client,
+    newClientName: client === "__new" ? el<HTMLInputElement>("hourly-new-client-name").value : null,
+    billable: hourlyNewBillable,
+  })
+    .then((p) => {
+      document.querySelectorAll<HTMLButtonElement>("#hourly-new button").forEach((b) => (b.disabled = false));
+      showHourlyNew(false);
+      // Then what the list was open for.
+      if (mode === "file") return fileHourly("file", p.id);
+      if (mode === "suggest") {
+        answerSuggestion("log", p.id);
+        return closeHourlyPick();
+      }
+      if (mode === "link") {
+        invoke("mini_detector_link_project", { projectId: p.id })
+          .catch((error) => hourlyError(String(error)))
+          .finally(() => closeHourlyPick());
+        return;
+      }
+      hourlyTap("start", p.id);
+      closeHourlyPick();
+    })
+    .catch((error) => newError(String(error)));
 }
 
 /**
@@ -1994,7 +2189,7 @@ function openHourlyPick(mode: "start" | "file" | "suggest" | "link" = "start", h
     start: "Time a project",
     file: "Which project was it for?",
     suggest: "Which project was it?",
-    link: "Link the folder to…",
+    link: "Link to…",
   }[mode];
   el("hourly-pick-hint").textContent =
     hint ?? (filing ? "The time you just stopped isn't filed under a project yet." : mode === "link" ? linkFolder : "");
@@ -2004,6 +2199,7 @@ function openHourlyPick(mode: "start" | "file" | "suggest" | "link" = "start", h
   el("hourly-pick-error").hidden = true;
   setPickBusy(false);
   el<HTMLInputElement>("hourly-filter").value = "";
+  showHourlyNew(false);
   renderHourlyPick();
   if (current) renderMode(current);
   el("hourly-filter").focus();
@@ -2182,6 +2378,56 @@ window.addEventListener("DOMContentLoaded", () => {
   click("hourly-suggest-log", () => answerSuggestion("log"));
   click("hourly-suggest-skip", () => answerSuggestion("skip"));
   click("hourly-suggest-other", () => openHourlyPick("suggest"));
+  click("hourly-new-cancel", () => showHourlyNew(false));
+  el("hourly-new").addEventListener("submit", (e) => {
+    e.preventDefault();
+    saveHourlyNew();
+  });
+  document.querySelectorAll<HTMLButtonElement>("#hourly-new-billing .seg").forEach((b) =>
+    b.addEventListener("click", () => setNewBillable(b.dataset.billable === "1")),
+  );
+  el("hourly-new-client").addEventListener("change", () => {
+    const fresh = el<HTMLSelectElement>("hourly-new-client").value === "__new";
+    el("hourly-new-client-name-field").hidden = !fresh;
+    if (fresh) el("hourly-new-client-name").focus();
+  });
+  click("detector-add-app", () => {
+    const box = el("detector-open");
+    if (!box.hidden) {
+      box.hidden = true;
+      return;
+    }
+    invoke<{ id: string; label: string }[]>("mini_detector_open_apps")
+      .then((open) => {
+        box.replaceChildren();
+        const hint = document.createElement("p");
+        hint.className = "d-hint";
+        hint.textContent = open.length
+          ? "Apps open now. Tap one to add it. Not here? Open it, then try again."
+          : "No other apps are open. Open the one you want, then try again.";
+        box.append(hint);
+        for (const a of open) {
+          const chip = document.createElement("button");
+          chip.type = "button";
+          chip.className = "h-chip";
+          chip.textContent = `+ ${a.label}`;
+          chip.addEventListener("click", () => {
+            box.hidden = true;
+            void invoke("mini_detector_app", { id: a.id });
+          });
+          box.append(chip);
+        }
+        box.hidden = false;
+      })
+      .catch((error) => hourlyError(String(error)));
+  });
+  click("detector-restart-btn", () => void invoke("mini_detector_restart"));
+  click("detector-now-log", () => {
+    el<HTMLButtonElement>("detector-now-log").disabled = true;
+    invoke("mini_detector_log_now")
+      .catch((error) => hourlyError(String(error)))
+      .finally(() => (el<HTMLButtonElement>("detector-now-log").disabled = false));
+  });
   click("detector-row", () => {
     // On: off straight away. Off: first say what it sees and what it doesn't.
     if (current?.hourly?.detector?.on) {
@@ -2213,7 +2459,8 @@ window.addEventListener("DOMContentLoaded", () => {
   click("hourly-card", () => void invoke("mini_open", { href: "/hours" }));
   click("hourly-pick-back", closeHourlyPick);
   click("hourly-idle-resume", () => answerHourlyIdle("resume"));
-  click("hourly-file-new", () => fileHourly("new"));
+  // Made right here when they can start projects; otherwise on the website.
+  click("hourly-file-new", () => ((current?.hourly?.clients ?? []).length > 0 ? openHourlyNew("") : fileHourly("new")));
   click("hourly-file-later", () => fileHourly("later"));
   document.querySelectorAll<HTMLButtonElement>("#idle-choice .seg").forEach((seg) => {
     seg.addEventListener("click", () => menu(`idle-${seg.dataset.idle ?? "10"}`));
@@ -2340,6 +2587,7 @@ window.addEventListener("DOMContentLoaded", () => {
     if (hourlyIdle) return;
     if (hourlyAdd) { closeHourlyAdd(); return; }
     if (hourlyEdit) { closeHourlyEdit(); return; }
+    if (hourlyPick && !el("hourly-new").hidden) { showHourlyNew(false); return; }
     if (hourlyPick) {
       // "Which project was it for?" is closed by an answer, or Later.
       if (hourlyPick === "file" || el<HTMLInputElement>("hourly-filter").value !== "") return;

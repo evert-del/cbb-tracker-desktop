@@ -387,9 +387,6 @@ pub(crate) fn show_from_banner<R: Runtime>(app: &AppHandle<R>) {
     if let Ok(mut at) = OPENED_FROM_BANNER.lock() {
         *at = Some(std::time::Instant::now());
     }
-    if is_compact() {
-        set_compact(app, false);
-    }
     show(app);
     // Again once the app is forward, in case focus went elsewhere meanwhile.
     let app = app.clone();

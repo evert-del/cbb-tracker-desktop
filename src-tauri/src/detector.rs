@@ -142,13 +142,19 @@ pub(crate) fn catalog_id(app: &str) -> Option<&'static str> {
             let len = [mac, win]
                 .into_iter()
                 .flat_map(|names| names.split('|'))
-                .filter(|name| !name.is_empty() && app.starts_with(&name.to_lowercase()))
+                .filter(|name| !name.is_empty() && starts_with_name(&app, &name.to_lowercase()))
                 .map(str::len)
                 .max()?;
             Some((len, *id))
         })
         .max_by_key(|(len, _)| *len)
         .map(|(_, id)| id)
+}
+
+/// `app` is `name`, or `name` and then more that isn't a word going on
+/// ("adobe photoshop 2026", "photoshop.exe"; not "archicad" for "arc").
+fn starts_with_name(app: &str, name: &str) -> bool {
+    app.strip_prefix(name).is_some_and(|rest| !rest.starts_with(|c: char| c.is_alphanumeric()))
 }
 
 /// Which picked app `front` is, if any.
@@ -249,7 +255,17 @@ pub(crate) fn match_title(title: &str, projects: &[crate::hourly::Project]) -> O
     if title.is_empty() {
         return None;
     }
+    // A project number is the surest sign: one in the title decides.
+    let mut numbered = projects.iter().filter(|p| {
+        let number = fold(&p.project_number);
+        number.chars().count() >= 3 && contains_words(&title, &number)
+    });
+    if let (Some(only), None) = (numbered.next(), numbered.next()) {
+        return Some(only.id.clone());
+    }
     let mut best: Option<(usize, &str)> = None;
+    // Two projects matching equally well (same name for two clients): ask.
+    let mut tied = false;
     for project in projects {
         let client = project.client_name.as_deref().map(fold).unwrap_or_default();
         let only_project = !client.is_empty()
@@ -260,13 +276,21 @@ pub(crate) fn match_title(title: &str, projects: &[crate::hourly::Project]) -> O
             (if only_project { client } else { String::new() }, 3),
         ];
         for (needle, min) in candidates {
-            if needle.chars().count() >= min && contains_words(&title, &needle) && best.is_none_or(|(len, _)| needle.len() > len) {
-                best = Some((needle.len(), project.id.as_str()));
+            if needle.chars().count() < min || !contains_words(&title, &needle) {
+                continue;
+            }
+            match best {
+                Some((len, id)) if needle.len() == len && id != project.id => tied = true,
+                Some((len, _)) if needle.len() <= len => {}
+                _ => {
+                    best = Some((needle.len(), project.id.as_str()));
+                    tied = false;
+                }
             }
         }
     }
     if let Some((_, id)) = best {
-        return Some(id.to_string());
+        return (!tied).then(|| id.to_string());
     }
     // Loosely, by words.
     let in_title: Vec<&str> = title.split(' ').collect();
@@ -553,9 +577,11 @@ pub(crate) fn saved_since(root: &Path, since: SystemTime, max: usize, max_entrie
 pub(crate) fn project_from_path(root: &Path, file: &Path, projects: &[crate::hourly::Project]) -> Option<String> {
     let inside = file.strip_prefix(root).ok()?;
     let parts: Vec<String> = inside.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
-    // The deepest folder that names a project wins ("Vimeo/Logo refresh"
-    // over "Vimeo"), then the file's own name.
-    (1..=parts.len()).rev().find_map(|n| match_title(&parts[..n].join(" "), projects))
+    // The folders it's in first, the deepest naming a project winning
+    // ("Vimeo/Logo refresh" over "Vimeo"); the file's own name only when
+    // no folder names one.
+    let folders = parts.len().saturating_sub(1);
+    (1..=folders).rev().find_map(|n| match_title(&parts[..n].join(" "), projects)).or_else(|| match_title(&parts.join(" "), projects))
 }
 
 /// The last two parts of a path, for the panel ("Vimeo/Logo refresh").
@@ -863,6 +889,10 @@ struct Inner {
     /// "Not this" on what it was counting: that project (or unrecognised
     /// work in that app) isn't counted again until something else is seen.
     ignored: Option<(String, Option<String>)>,
+    /// A stretch handed to "Start timer from …", until the timer is seen
+    /// running. If it isn't within a couple of minutes (the tracker
+    /// refused, or was offline), it comes back as a suggestion: not lost.
+    held: Option<(Stretch, u64)>,
 }
 
 /// The project (or, for unrecognised work, the app) a moment points at, as
@@ -948,7 +978,9 @@ pub(crate) struct AppChoice {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct FolderRow {
-    pub index: usize,
+    /// The stored line, which unlinking names (not a position that can
+    /// shift between the panel's render and the click).
+    pub key: String,
     pub folder: String,
     pub project: String,
 }
@@ -1037,9 +1069,8 @@ pub(crate) fn view<R: Runtime>(app: &AppHandle<R>, info: &crate::hourly::Info) -
         apps,
         folders: linked(app)
             .iter()
-            .enumerate()
-            .map(|(index, l)| FolderRow {
-                index,
+            .map(|l| FolderRow {
+                key: format!("{}\t{}", l.project, l.path.display()),
                 folder: short_path(&l.path),
                 project: if l.project == ANY_PROJECT { "Any project, from its folders' names".into() } else { label_of(&l.project) },
             })
@@ -1131,6 +1162,16 @@ fn tick<R: Runtime>(app: &AppHandle<R>, now: u64) {
         return;
     }
     let Some(info) = crate::hourly::info_snapshot(app) else { return };
+    // "Start timer from …" worked (the timer runs): the held stretch is
+    // logged. It didn't: offer it again.
+    let unheld = with_state(|state| {
+        let done = info.running.is_some() || state.held.as_ref().is_some_and(|(_, at)| now.saturating_sub(*at) > 120);
+        if done { state.held.take().filter(|_| info.running.is_none()).map(|(s, _)| s) } else { None }
+    })
+    .flatten();
+    if let Some(stretch) = unheld {
+        suggest(app, stretch);
+    }
     // Timing already: nothing to suggest; what was being built ends here.
     if info.running.is_some() {
         close_now(app);
@@ -1365,7 +1406,13 @@ pub(crate) fn mini_detector_log_now<R: Runtime>(app: AppHandle<R>, project_id: O
         return Err("Give it a minute first.".into());
     }
     crate::hourly::log_and_start(&app, &project, stretch.start, end)?;
-    with_state(|state| state.tracker.take());
+    // Held until the timer is seen running (see `tick`).
+    let now = crate::clock::unix_now();
+    with_state(|state| {
+        if let Some(taken) = state.tracker.take() {
+            state.held = Some((Stretch { project: project.clone(), app: None, end, ..taken }, now));
+        }
+    });
     crate::mini::push(&app);
     Ok(())
 }
@@ -1449,11 +1496,9 @@ pub(crate) fn mini_detector_link_project<R: Runtime>(app: AppHandle<R>, project_
 }
 
 #[tauri::command]
-pub(crate) fn mini_detector_unlink<R: Runtime>(app: AppHandle<R>, index: usize) -> Result<(), String> {
+pub(crate) fn mini_detector_unlink<R: Runtime>(app: AppHandle<R>, key: String) -> Result<(), String> {
     let mut list = crate::close::strings(&app, FOLDERS);
-    if index < list.len() {
-        list.remove(index);
-    }
+    list.retain(|line| *line != key);
     crate::close::set_strings(&app, FOLDERS, &list);
     crate::mini::push(&app);
     Ok(())
@@ -1621,6 +1666,16 @@ mod tests {
         assert_eq!(match_title("SE_Oct_banner.ai", &ps), None);
         // Common words point at nothing.
         assert_eq!(match_title("final content video.mp4", &ps), None);
+        // The same name for two clients: ask rather than guess.
+        let twins = vec![project("a", "CB-7", "Logo refresh", Some("Vimeo")), project("b", "CB-8", "Logo refresh", Some("Spotify"))];
+        assert_eq!(match_title("Logo refresh v2.psd", &twins), None);
+        assert_eq!(match_title("CB-8 Logo refresh v2.psd", &twins).as_deref(), Some("b"));
+        // Short catalogue names don't claim other apps.
+        assert_eq!(catalog_id("ArchiCAD 27"), None);
+        assert_eq!(catalog_id("archicad.exe"), None);
+        assert_eq!(catalog_id("codeblocks.exe"), None);
+        assert_eq!(catalog_id("Arc"), Some("arc"));
+        assert_eq!(catalog_id("code.exe"), Some("vscode"));
         // The tester's real file.
         let pp = vec![project("pp", "CB-5", "Pieter Pruis Cover - Mooi maar gevaarlik", Some("CoolerBox Records"))];
         assert_eq!(match_title("PIETER PRUIS COVER - MOOI MAAR GEVAARLIK.psd @ 25% (RGB/8)", &pp).as_deref(), Some("pp"));
@@ -1763,6 +1818,10 @@ mod tests {
         assert_eq!(project_from_path(root, &root.join("First Bank/report_layout.indd"), &ps).as_deref(), Some("p4"));
         assert_eq!(project_from_path(root, &root.join("Spirit Films/Brand film cutdowns/15s.prproj"), &ps).as_deref(), Some("p3"));
         assert_eq!(project_from_path(root, &root.join("Misc/notes.txt"), &ps), None);
+        // The folder it's saved in beats a file named after another project.
+        assert_eq!(project_from_path(root, &root.join("Spirit Films/Brand film/Brand film cutdowns ref.mp4"), &ps).as_deref(), Some("p2"));
+        // A file's own name only when no folder names a project.
+        assert_eq!(project_from_path(root, &root.join("Inbox/CB-0412 notes.txt"), &ps).as_deref(), Some("p1"));
         assert_eq!(project_from_path(root, Path::new("/elsewhere/Vimeo/x.ai"), &ps), None);
         assert!(decode_linked("*\t/Volumes/Work 2/Clients").is_some());
     }

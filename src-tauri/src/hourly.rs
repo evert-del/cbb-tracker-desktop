@@ -1231,6 +1231,11 @@ fn running_now<R: Runtime>(app: &AppHandle<R>) -> Option<Running> {
     with(app, |inner| inner.info.as_ref().and_then(|info| info.running.clone())).flatten()
 }
 
+/// The tracker has answered whether this person bills by the hour.
+pub(crate) fn has_read<R: Runtime>(app: &AppHandle<R>) -> bool {
+    with(app, |inner| inner.read_at > 0).unwrap_or(false)
+}
+
 /// Read again soon if the last read is stale (the panel opened, or the
 /// tracker window came forward).
 pub(crate) fn refresh_if_stale<R: Runtime>(app: &AppHandle<R>) {

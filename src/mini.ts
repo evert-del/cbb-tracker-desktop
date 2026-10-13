@@ -90,7 +90,7 @@ type Today = { day: string; entries: TodayEntry[]; totalMinutes: number; billabl
 type Detector = {
   on: boolean;
   apps: { id: string; label: string; kind: string; on: boolean }[];
-  folders: { index: number; folder: string; project: string }[];
+  folders: { key: string; folder: string; project: string }[];
   titlesAllowed: boolean;
   titlesSupported: boolean;
   /** macOS: the permission works once the app restarts. */
@@ -1608,10 +1608,15 @@ function saveHourlyEdit() {
   el("hourly-edit-error").hidden = true;
   const project = el<HTMLSelectElement>("hourly-edit-project").value;
   // Saved when the tracker says so (__cbbMiniHourlyAfter closes the form).
+  // Only times that were changed (the inputs are to the minute; the entry
+  // keeps its seconds otherwise).
+  const pad = (d: Date) => `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+  const fromChanged = el<HTMLInputElement>("hourly-edit-from").value !== pad(new Date(e.startedAt));
+  const toChanged = e.endedAt !== null && el<HTMLInputElement>("hourly-edit-to").value !== pad(new Date(e.endedAt));
   invoke("mini_hourly_edit", {
     entryId: e.id,
-    startedAt: s.from.toISOString(),
-    endedAt: s.to ? s.to.toISOString() : null,
+    startedAt: fromChanged ? s.from.toISOString() : null,
+    endedAt: toChanged && s.to ? s.to.toISOString() : null,
     note: el<HTMLInputElement>("hourly-edit-note").value,
     projectId: project || null,
     noteForClient: el<HTMLInputElement>("hourly-edit-for-client").checked,
@@ -1729,7 +1734,7 @@ function renderDetector(d: Detector | null) {
     remove.textContent = "✕";
     remove.title = "Unlink";
     remove.setAttribute("aria-label", `Unlink ${f.folder}`);
-    remove.addEventListener("click", () => void invoke("mini_detector_unlink", { index: f.index }));
+    remove.addEventListener("click", () => void invoke("mini_detector_unlink", { key: f.key }));
     row.append(text, remove);
     folders.appendChild(row);
   }

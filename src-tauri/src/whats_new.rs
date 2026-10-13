@@ -189,11 +189,15 @@ pub(crate) fn maybe_show<R: Runtime>(app: &AppHandle<R>) {
         // in and the tracker is on screen (sign-in is confirmed shortly after
         // launch, and the tracker rarely reloads a whole page to try again).
         std::thread::sleep(std::time::Duration::from_secs(6));
-        for _ in 0..24 {
+        for attempt in 0..24 {
             let looking = tauri::Manager::get_webview_window(&app, "main")
                 .and_then(|main| main.is_visible().ok())
                 .unwrap_or(false);
-            if looking && crate::session::signed_in() {
+            // Which notes depends on whether they bill by the hour: wait
+            // (a little) for the tracker to have said.
+            if looking && crate::session::signed_in() && !crate::hourly::has_read(&app) && attempt < 6 {
+                crate::hourly::refresh_if_stale(&app);
+            } else if looking && crate::session::signed_in() {
                 // Marked read on "Got it" (mini_whats_new_done), so a page
                 // nobody got to read comes back on the next launch.
                 let items = notes(VERSION, std::env::consts::OS, crate::hourly::info_snapshot(&app).is_some());

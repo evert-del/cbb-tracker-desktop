@@ -393,6 +393,9 @@ pub(crate) struct PanelView {
     pub shortcut: String,
     /// The project they're booked on today (My Schedule), if they can time it.
     pub booked: Option<String>,
+    /// "Suggest time from my work" (detector.rs): its settings and the
+    /// suggestion waiting for an answer.
+    pub detector: crate::detector::View,
 }
 
 /// The project timer's project for today's booking: the booking is today
@@ -827,10 +830,12 @@ pub(crate) fn panel<R: Runtime>(app: &AppHandle<R>) -> Option<PanelView> {
     with(app, |inner| {
         let info = inner.info.as_ref()?;
         let booked = next.as_ref().and_then(|next| booked_project(info, &next.day, &next.project_number, now));
+        let detector = crate::detector::view(app, info);
         Some(PanelView {
             running: info.running.clone(),
             quick: with_booked(quick(info, &pinned), info, booked.as_deref()),
             booked,
+            detector,
             projects: info.projects.clone(),
             asking: inner.ask.is_some(),
             filing: inner.to_file.is_some(),
@@ -1038,7 +1043,8 @@ enum Then {
     },
     /// Saved without changing the running timer (filed, or time added):
     /// `filed` clears the question; `notice` is said in the panel.
-    Saved { filed: bool, notice: Option<String> },
+    /// `logged` is a helper suggestion (detector.rs) to forget once saved.
+    Saved { filed: bool, notice: Option<String>, logged: Option<u64> },
 }
 
 /// Sends `steps` through the page and hands the outcome on.
@@ -1092,9 +1098,12 @@ fn send<R: Runtime>(app: &AppHandle<R>, steps: Vec<(&'static str, Value)>, done:
                     crate::mini::ask_hourly(&app, "__cbbMiniHourlyAfter", &after);
                 }
             }
-            (Some(Outcome { ok: true, .. }), Then::Saved { filed, notice }) => {
+            (Some(Outcome { ok: true, .. }), Then::Saved { filed, notice, logged }) => {
                 if filed {
                     with(&app, |inner| inner.to_file = None);
+                }
+                if let Some(id) = logged {
+                    crate::detector::answered(&app, id);
                 }
                 crate::mini::push(&app);
                 let _ = window.eval("window.dispatchEvent(new Event('cbb:hourly-changed'))");
@@ -1232,7 +1241,7 @@ pub(crate) fn mini_hourly_file<R: Runtime>(app: AppHandle<R>, choice: String, pr
         "file" => {
             let info = current(&app)?;
             let body = file_body(&entry, project_id.as_deref().unwrap_or_default(), &info).map_err(str::to_string)?;
-            send(&app, vec![(FILE_URL, body)], "", Then::Saved { filed: true, notice: None })?;
+            send(&app, vec![(FILE_URL, body)], "", Then::Saved { filed: true, notice: None, logged: None })?;
             crate::analytics::action(&app, "hourly_file", "panel");
         }
         "new" => {
@@ -1252,9 +1261,26 @@ pub(crate) fn mini_hourly_file<R: Runtime>(app: AppHandle<R>, choice: String, pr
     Ok(())
 }
 
+/// The timer's state as last read, for the helper (detector.rs).
+pub(crate) fn info_snapshot<R: Runtime>(app: &AppHandle<R>) -> Option<Info> {
+    with(app, |inner| inner.info.clone()).flatten()
+}
+
+/// Logs a stretch the helper suggested and the person confirmed
+/// (detector.rs); `id` is the suggestion, forgotten once it's logged.
+pub(crate) fn log_stretch<R: Runtime>(app: &AppHandle<R>, project_id: &str, start: u64, end: u64, id: u64) -> Result<(), String> {
+    let info = current(app)?;
+    let body = add_body(project_id, start, end, None, &info, crate::clock::unix_now()).map_err(str::to_string)?;
+    let label = info.projects.iter().find(|project| project.id == project_id).map(project_label).unwrap_or_default();
+    let notice = format!("Logged {} on {label}.", fmt_minutes((end - start) / 60));
+    send(app, vec![(TIME_URL, body)], "", Then::Saved { filed: false, notice: Some(notice), logged: Some(id) })
+}
+
 /// Wrapped on the time sheet (clock.rs) with a project timer still running:
 /// the panel asks "Stop the timer too?". Stopping is the person's tap.
 pub(crate) fn on_wrap<R: Runtime>(app: &AppHandle<R>) {
+    // What the helper was building ends at a wrap too.
+    crate::detector::close_now(app);
     let Some(label) = with(app, |inner| {
         let info = inner.info.as_ref()?;
         info.running.as_ref().map(|running| running_label(Some(info), running))
@@ -1283,7 +1309,7 @@ pub(crate) fn mini_hourly_add<R: Runtime>(
     let body = add_body(&project_id, started, ended, note.as_deref(), &info, crate::clock::unix_now()).map_err(str::to_string)?;
     let label = info.projects.iter().find(|project| project.id == project_id).map(project_label).unwrap_or_default();
     let notice = format!("Added {} to {label}.", fmt_minutes((ended - started) / 60));
-    send(&app, vec![(TIME_URL, body)], "", Then::Saved { filed: false, notice: Some(notice) })?;
+    send(&app, vec![(TIME_URL, body)], "", Then::Saved { filed: false, notice: Some(notice), logged: None })?;
     crate::analytics::action(&app, "hourly_add_time", "panel");
     Ok(())
 }

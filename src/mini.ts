@@ -62,6 +62,18 @@ type Hourly = {
   shortcut: string;
   /** The project they're booked on today (My Schedule), first in `quick`. */
   booked?: string | null;
+  /** "Suggest time from my work" (detector.rs). */
+  detector?: Detector;
+};
+
+type Detector = {
+  on: boolean;
+  apps: { id: string; label: string; on: boolean }[];
+  folders: { index: number; folder: string; project: string }[];
+  titlesAllowed: boolean;
+  titlesSupported: boolean;
+  suggestion: { id: number; projectId: string; label: string; billable: boolean; from: number; to: number } | null;
+  more: number;
 };
 
 type ChatRow = {
@@ -1111,7 +1123,13 @@ window.__cbbMiniSearchResult = (r) => searchResult(r);
 // ── the project timer (hourly.rs) ──
 
 /** "Other…" is open: every project, billed by the hour first, then quoted. */
-let hourlyPick: "start" | "file" | null = null;
+/**
+ * "Other…" (`start`), "Which project was it for?" (`file`), another project
+ * for a suggested stretch (`suggest`), or the project for a linked folder
+ * (`link`).
+ */
+let hourlyPick: "start" | "file" | "suggest" | "link" | null = null;
+let linkFolder = "";
 /** Back from time away with the timer running: the question being asked. */
 type HourlyIdleAsk = { project: string; billable: boolean; unfiled?: boolean; from: number; to: number };
 let hourlyIdle: HourlyIdleAsk | null = null;
@@ -1223,6 +1241,72 @@ function projectTitle(p: HourlyProject): string {
 }
 
 const PLAY = "M8 5v14l11-7z";
+
+// ── "Suggest time from my work" (detector.rs) ──
+
+function renderDetector(d: Detector | null) {
+  el("detector-settings").hidden = d === null;
+  const card = el("hourly-suggest");
+  const s = d?.suggestion ?? null;
+  card.hidden = s === null;
+  if (d === null) return;
+  el("detector-row").setAttribute("aria-checked", String(d.on));
+  el("detector-body").hidden = !d.on;
+  const apps = el("detector-apps");
+  apps.replaceChildren();
+  for (const a of d.apps) {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "h-chip";
+    chip.textContent = a.label;
+    chip.setAttribute("aria-pressed", String(a.on));
+    chip.addEventListener("click", () => void invoke("mini_detector_app", { id: a.id }));
+    apps.appendChild(chip);
+  }
+  apps.hidden = !d.titlesSupported;
+  el("detector-permission").hidden = !(d.titlesSupported && !d.titlesAllowed && d.apps.some((a) => a.on));
+  const folders = el("detector-folders");
+  folders.replaceChildren();
+  for (const f of d.folders) {
+    const row = document.createElement("div");
+    row.className = "d-folder";
+    const text = document.createElement("span");
+    text.className = "f";
+    text.textContent = f.folder;
+    const project = document.createElement("span");
+    project.className = "p";
+    project.textContent = f.project;
+    text.appendChild(project);
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.textContent = "✕";
+    remove.title = "Unlink";
+    remove.setAttribute("aria-label", `Unlink ${f.folder}`);
+    remove.addEventListener("click", () => void invoke("mini_detector_unlink", { index: f.index }));
+    row.append(text, remove);
+    folders.appendChild(row);
+  }
+  if (s) {
+    const from = new Date(s.from);
+    const to = new Date(s.to);
+    el("hourly-suggest-text").textContent =
+      `Worked on ${s.label}, ${TRACKER_TIME.format(from)}–${TRACKER_TIME.format(to)} ` +
+      `(${fmtMinutes((s.to - s.from) / 60000)})? Log it${s.billable ? " as billable time" : ""}?`;
+    el("hourly-suggest-more").textContent = d.more > 0 ? `${d.more} more to go through after this one.` : "";
+    el("hourly-suggest-more").hidden = d.more === 0;
+    card.querySelectorAll("button").forEach((b) => (b.disabled = false));
+  }
+}
+
+function answerSuggestion(choice: "log" | "skip", projectId?: string) {
+  const s = current?.hourly?.detector?.suggestion;
+  if (!s) return;
+  el("hourly-suggest").querySelectorAll("button").forEach((b) => (b.disabled = true));
+  invoke("mini_detector_answer", { id: s.id, choice, projectId: projectId ?? null }).catch((error) => {
+    el("hourly-suggest").querySelectorAll("button").forEach((b) => (b.disabled = false));
+    hourlyError(String(error));
+  });
+}
 const STAR = "M12 3.5l2.6 5.3 5.8.8-4.2 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8-4.2-4.1 5.8-.8z";
 
 // ── "Add time…": a stretch logged after the fact ──
@@ -1339,6 +1423,8 @@ function hourlyInfo(text: string | null) {
 
 function renderHourly(h: Hourly | null) {
   el("hourly").hidden = h === null;
+  el("hourly-start").hidden = h === null;
+  renderDetector(h?.detector ?? null);
   el("idle-settings").hidden = h === null;
   if (h === null) {
     if (hourlyPick) closeHourlyPick();
@@ -1449,7 +1535,8 @@ function renderHourlyPick() {
       const row = document.createElement("button");
       row.type = "button";
       const filing = hourlyPick === "file";
-      const on = !filing && p.id === h.running?.projectId;
+      const choosing = hourlyPick !== "start";
+      const on = !choosing && p.id === h.running?.projectId;
       row.className = on ? "h-row on" : "h-row";
       const t = document.createElement("span");
       t.className = "t";
@@ -1464,13 +1551,24 @@ function renderHourlyPick() {
           fileHourly("file", p.id);
           return;
         }
+        if (hourlyPick === "suggest") {
+          answerSuggestion("log", p.id);
+          closeHourlyPick();
+          return;
+        }
+        if (hourlyPick === "link") {
+          invoke("mini_detector_link_project", { projectId: p.id })
+            .catch((error) => hourlyError(String(error)))
+            .finally(() => closeHourlyPick());
+          return;
+        }
         if (!on) hourlyTap("start", p.id);
         closeHourlyPick();
       });
       const line = document.createElement("div");
       line.className = "h-line";
       line.appendChild(row);
-      if (!filing) {
+      if (!choosing) {
         // Pin a favourite to the front of the one-tap starts.
         const pinned = (h.pinned ?? []).includes(p.id);
         const pin = document.createElement("button");
@@ -1500,16 +1598,23 @@ function renderHourlyPick() {
  * "Other…" (`start`), or "Which project was it for?" (`file`) right after an
  * unfiled timer ended, with what happened (`hint`).
  */
-function openHourlyPick(mode: "start" | "file" = "start", hint: string | null = null) {
-  if (mode === "file") {
+function openHourlyPick(mode: "start" | "file" | "suggest" | "link" = "start", hint: string | null = null) {
+  if (mode !== "start") {
     if (chat) closeChat();
-    showSettings(false);
+    if (mode === "file") showSettings(false);
   }
+  if (mode === "link") el("settings").hidden = true;
   hourlyPick = mode;
   const filing = mode === "file";
-  el("hourly-pick-title").textContent = filing ? "Which project was it for?" : "Time a project";
-  el("hourly-pick-hint").textContent = hint ?? (filing ? "The time you just stopped isn't filed under a project yet." : "");
-  el("hourly-pick-hint").hidden = !filing && !hint;
+  el("hourly-pick-title").textContent = {
+    start: "Time a project",
+    file: "Which project was it for?",
+    suggest: "Which project was it?",
+    link: "Link the folder to…",
+  }[mode];
+  el("hourly-pick-hint").textContent =
+    hint ?? (filing ? "The time you just stopped isn't filed under a project yet." : mode === "link" ? linkFolder : "");
+  el("hourly-pick-hint").hidden = !el("hourly-pick-hint").textContent;
   el("hourly-pick-foot").hidden = !filing;
   el("hourly-pick-back").hidden = filing;
   el("hourly-pick-error").hidden = true;
@@ -1521,8 +1626,11 @@ function openHourlyPick(mode: "start" | "file" = "start", hint: string | null = 
 }
 
 function closeHourlyPick() {
+  const was = hourlyPick;
   hourlyPick = null;
   if (current) renderMode(current);
+  // Linking a folder came from Settings: back there.
+  if (was === "link") showSettings(true);
 }
 
 function setPickBusy(busy: boolean) {
@@ -1599,6 +1707,7 @@ declare global {
     __cbbMiniHourlyAfter?: (after: { file: boolean; notice: string | null }) => void;
     __cbbMiniHourlyAdd?: () => void;
     __cbbMiniHourlyWrap?: (ask: { project: string }) => void;
+    __cbbMiniDetectorLink?: (ask: { folder: string }) => void;
   }
 }
 window.__cbbMiniHourlyError = (text) => {
@@ -1611,6 +1720,11 @@ window.__cbbMiniHourlyError = (text) => {
 window.__cbbMiniHourlyIdle = (ask) => openHourlyIdle(ask);
 // "Add time…" from the tray or Dock menu.
 window.__cbbMiniHourlyAdd = () => openHourlyAdd();
+// A folder was chosen to link: which project is it for?
+window.__cbbMiniDetectorLink = (ask) => {
+  linkFolder = ask.folder;
+  openHourlyPick("link");
+};
 // Wrapped on the time sheet with the timer running: stop it too?
 window.__cbbMiniHourlyWrap = (ask) => {
   el("hourly-wrap-text").textContent = `You've wrapped. Stop the timer on ${ask.project} too?`;
@@ -1669,6 +1783,12 @@ window.addEventListener("DOMContentLoaded", () => {
   click("auto-offline", () => menu("auto-offline"));
   click("hourly-stop", () => hourlyTap("stop"));
   click("hourly-add-open", openHourlyAdd);
+  click("hourly-suggest-log", () => answerSuggestion("log"));
+  click("hourly-suggest-skip", () => answerSuggestion("skip"));
+  click("hourly-suggest-other", () => openHourlyPick("suggest"));
+  click("detector-row", () => void invoke("mini_detector_toggle"));
+  click("detector-link", () => void invoke("mini_detector_link").catch((error) => hourlyError(String(error))));
+  click("detector-permission-btn", () => void invoke("mini_detector_permission"));
   click("hourly-wrap-stop", () => {
     el("hourly-wrap").hidden = true;
     hourlyTap("stop");

@@ -259,6 +259,26 @@
       #search-note { padding: 10px 16px 14px; color: var(--muted); font-size: 12.5px; }
       /* Project timer (hourly.rs), for people who bill by the hour. */
       #hourly { margin: 0 14px 10px; display: flex; flex-direction: column; gap: 8px; }
+      /* Nothing showing in it (no timer running, no question): no gap either. */
+      #hourly:not(:has(> :not([hidden]))) { display: none; }
+      #hourly-start { margin: 10px 14px 10px; display: flex; flex-direction: column; gap: 8px; }
+      #hourly-suggest { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border-radius: var(--r-ctl); background: var(--tile); font-size: 12.5px; border-left: 3px solid var(--pink); }
+      #hourly-suggest .h-wrap-actions button { background: var(--card); }
+      #hourly-suggest-more { font-size: 11.5px; color: var(--muted); }
+      #detector-body { padding: 0 16px 12px; display: flex; flex-direction: column; gap: 8px; border-bottom: 0.5px solid var(--rule); }
+      #detector-body .set-label { padding: 6px 0 0; }
+      #detector-apps { display: flex; flex-wrap: wrap; gap: 6px; }
+      #detector-apps .h-chip[aria-pressed="true"] { background: var(--pink); color: #fff; }
+      .d-folder { display: flex; align-items: center; gap: 8px; font-size: 12.5px; }
+      .d-folder .f { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .d-folder .p { color: var(--muted); font-size: 11.5px; display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .d-folder button { color: var(--faint); width: 24px; height: 24px; border-radius: var(--r-ctl); }
+      .d-folder button:hover { background: var(--tile); color: var(--danger-fg); }
+      #detector-link { align-self: flex-start; font-size: 12.5px; font-weight: 600; color: var(--pink-ink); }
+      #detector-link:hover { text-decoration: underline; }
+      #detector-permission { margin: 0; font-size: 12px; color: var(--tone-3-fg); background: var(--tone-3-bg); padding: 8px 10px; border-radius: var(--r-ctl); }
+      #detector-permission button { font-weight: 600; text-decoration: underline; color: inherit; }
+      .d-hint { margin: 0; font-size: 11.5px; color: var(--faint); }
       #hourly-running { display: flex; align-items: center; gap: 10px; padding: 8px 8px 8px 12px; border-radius: var(--r-ctl); background: var(--tile); border-left: 3px solid var(--pink); }
       #hourly-card { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 1px; text-align: left; }
       #hourly-card:hover #hourly-project { text-decoration: underline; }
@@ -430,6 +450,15 @@
               <button type="button" id="hourly-wrap-keep">Keep it running</button>
             </div>
           </div>
+          <div id="hourly-suggest" role="alert" hidden>
+            <span id="hourly-suggest-text"></span>
+            <div class="h-wrap-actions">
+              <button type="button" id="hourly-suggest-log">Log it</button>
+              <button type="button" id="hourly-suggest-other">Other…</button>
+              <button type="button" id="hourly-suggest-skip">Not this</button>
+            </div>
+            <span id="hourly-suggest-more" hidden></span>
+          </div>
           <div id="hourly-running" hidden>
             <button id="hourly-card" type="button" title="Open Hours in the tracker">
               <span class="h-top"><span id="hourly-project"></span></span>
@@ -439,12 +468,6 @@
             <span id="hourly-elapsed">0:00</span>
             <button id="hourly-stop" type="button">Stop</button>
           </div>
-          <div id="hourly-head">
-            <div class="h-label" id="hourly-label">Time a project</div>
-            <button type="button" id="hourly-add-open" title="Log time you didn't run the timer for">Add time…</button>
-          </div>
-          <div id="hourly-quick"></div>
-          <input id="hourly-note-input" type="text" maxlength="500" placeholder="Note for the next timer (optional)" autocomplete="off" aria-label="Note for the next timer (optional)" />
           <p class="h-error" id="hourly-error" role="alert" hidden></p>
           <p id="hourly-info" role="status" hidden></p>
         </div>
@@ -487,6 +510,17 @@
           <span id="see-all-text">See all notifications</span>
           <svg viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
         </button>
+        <!-- The timer's one-tap starts, after the notifications so they stay
+             in view; they scroll with the lists (the running timer and its
+             questions stay above). -->
+        <div id="hourly-start" hidden>
+          <div id="hourly-head">
+            <div class="h-label" id="hourly-label">Time a project</div>
+            <button type="button" id="hourly-add-open" title="Log time you didn't run the timer for">Add time…</button>
+          </div>
+          <div id="hourly-quick"></div>
+          <input id="hourly-note-input" type="text" maxlength="500" placeholder="Note for the next timer (optional)" autocomplete="off" aria-label="Note for the next timer (optional)" />
+        </div>
         </div>
 
         <div id="shortcuts">
@@ -697,6 +731,21 @@
             <button type="button" class="seg" data-idle="10" role="radio" aria-checked="true">10 min</button>
             <button type="button" class="seg" data-idle="15" role="radio" aria-checked="false">15 min</button>
             <button type="button" class="seg" data-idle="20" role="radio" aria-checked="false">20 min</button>
+          </div>
+        </div>
+        <div id="detector-settings" hidden>
+          <button class="set-row" id="detector-row" type="button" role="switch" aria-checked="false">
+            <span class="txt">Suggest time from my work<span class="hint" style="display:block">When you forgot the timer: asks "Worked on Vimeo · Logo refresh 09:10–10:40, log it?" from the apps and folders you choose.</span></span>
+            <span class="switch" aria-hidden="true"></span>
+          </button>
+          <div id="detector-body" hidden>
+            <div class="set-label">Apps to look at</div>
+            <div id="detector-apps"></div>
+            <p id="detector-permission" hidden>macOS needs the Screen Recording permission to read these apps' window names. <button type="button" id="detector-permission-btn">Allow it…</button></p>
+            <div class="set-label">Folders linked to a project</div>
+            <div id="detector-folders"></div>
+            <button type="button" id="detector-link">Link a folder…</button>
+            <p class="d-hint">Window names and file paths stay on this computer and are never sent. Only a stretch you say yes to goes to the tracker.</p>
           </div>
         </div>
         <button class="set-row" id="whats-new-row" type="button">

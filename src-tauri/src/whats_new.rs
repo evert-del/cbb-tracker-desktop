@@ -31,7 +31,51 @@ pub(crate) fn notes(version: &str, os: &str) -> Vec<Item> {
     let tray = if mac { "menu bar" } else { "system tray" };
     let dock = if mac { "Dock" } else { "taskbar" };
     let item = |title: &str, how: String| Item { title: title.into(), how };
+    let panel_key = if mac { "⌘⇧M" } else { "Ctrl+Alt+M" };
+    let timer_key = if mac { "⌘⇧Y" } else { "Ctrl+Alt+Y" };
     match version {
+        "0.2.19" => {
+            let mut items = vec![
+                item(
+                    "A project timer, if you bill by the hour",
+                    format!(
+                        "Start, switch or stop a project in one tap from the quick panel ({panel_key}), the {tray}{}, or {timer_key} from anywhere. Forgot to start it? Add time…, or Just start and pick the project when you stop. Away from the computer with it running, it asks what to do with the idle time.",
+                        if mac { " or the Dock icon's menu" } else { "" }
+                    ),
+                ),
+                item(
+                    "Suggests time you forgot to log",
+                    "Switch on Settings › Suggest time from my work, pick your apps (Illustrator, Photoshop, Figma, …) and link folders to projects. It asks \"Worked on this, log it?\" and sends nothing until you say yes. Window names and file paths stay on your computer."
+                        .into(),
+                ),
+                item(
+                    "Choose what pops up",
+                    "Settings › Notifications that pop up: tracker notifications, walkie messages and Channel 1, each on or off. Do not disturb quiets the app and the tracker website together. Call alerts still ring."
+                        .into(),
+                ),
+                item(
+                    "Click a notification to open it",
+                    format!(
+                        "A notification opens what it's about: the page, or the walkie chat.{}",
+                        if mac { " Reply to a walkie message right from the notification." } else { "" }
+                    ),
+                ),
+                item(
+                    "Search and your next call",
+                    "Start typing in the quick panel to search projects, deliverables and ideas. Your next booking shows there too, with its place and call sheet, and the next two days' call sheets are saved for offline."
+                        .into(),
+                ),
+            ];
+            if !mac && os == "windows" {
+                items.push(item(
+                    "Drop files and right-click the taskbar",
+                    "Drag files from Explorer onto the tracker's upload areas. Right-click the taskbar \
+                     icon for the quick panel, a new window and Saved for offline."
+                        .into(),
+                ));
+            }
+            items
+        }
         "0.2.18" => {
             let mut items = vec![
                 item(
@@ -167,6 +211,17 @@ mod tests {
         assert!(!win.iter().any(|i| i.how.contains("Dock") || i.how.contains("menu bar")));
         assert!(notes("0.0.1", "macos").is_empty());
         assert!(!notes(VERSION, "macos").is_empty(), "add notes for {VERSION} in whats_new.rs");
+    }
+
+    #[test]
+    fn the_timer_release_names_each_systems_keys() {
+        let mac = notes("0.2.19", "macos");
+        let win = notes("0.2.19", "windows");
+        assert!(mac.iter().any(|i| i.how.contains("⌘⇧Y") && i.how.contains("Dock")));
+        assert!(win.iter().any(|i| i.how.contains("Ctrl+Alt+Y")));
+        assert!(!win.iter().any(|i| i.how.contains("Dock") || i.how.contains("menu bar")));
+        assert!(win.iter().any(|i| i.title.contains("taskbar")));
+        assert!(!mac.iter().any(|i| i.title.contains("taskbar")));
     }
 
     #[test]

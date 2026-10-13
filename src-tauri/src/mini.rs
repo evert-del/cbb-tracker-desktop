@@ -152,6 +152,7 @@ pub(crate) fn push<R: Runtime>(app: &AppHandle<R>) {
     view.next_call = crate::schedule::next(app);
     view.auto_offline = crate::schedule::auto_save(app);
     view.hourly = crate::hourly::panel(app);
+    fit_height(app, view.hourly.is_some());
     let Ok(payload) = serde_json::to_string(&view) else { return };
     if let Some(mini) = app.get_webview_window("mini") {
         let script = format!("window.__cbbMiniShow && window.__cbbMiniShow({payload})");
@@ -178,13 +179,43 @@ fn is_compact() -> bool {
 
 /// Window sizes (logical px, including the margin the card's shadow needs).
 const FULL_SIZE: (f64, f64) = (372.0, 576.0);
+/// Taller for someone with the project timer (hourly.rs): its one-tap
+/// starts fit below the notifications without scrolling. Never taller than
+/// the screen allows.
+const FULL_HOURLY_HEIGHT: f64 = 720.0;
+
+/// The full panel's height now.
+static FULL_HEIGHT: std::sync::Mutex<f64> = std::sync::Mutex::new(FULL_SIZE.1);
+
+fn full_height() -> f64 {
+    FULL_HEIGHT.lock().map(|h| *h).unwrap_or(FULL_SIZE.1)
+}
+
+/// Grow or shrink the full panel for the timer, fitting the main screen.
+fn fit_height<R: Runtime>(app: &AppHandle<R>, hourly: bool) {
+    let Some(mini) = app.get_webview_window("mini") else { return };
+    let screen = mini
+        .primary_monitor()
+        .ok()
+        .flatten()
+        .map(|m| m.size().to_logical::<f64>(m.scale_factor()).height)
+        .unwrap_or(800.0);
+    let want = if hourly { FULL_HOURLY_HEIGHT.min(screen - 100.0).max(FULL_SIZE.1) } else { FULL_SIZE.1 };
+    let changed = FULL_HEIGHT.lock().map(|mut h| std::mem::replace(&mut *h, want) != want).unwrap_or(false);
+    if changed && !is_compact() {
+        let _ = mini.set_size(tauri::LogicalSize::new(FULL_SIZE.0, want));
+        if mini.is_visible().unwrap_or(false) && !is_pinned() {
+            place_under_tray(&mini);
+        }
+    }
+}
 /// A 300x44 row, plus the transparent room around the card for its shadow
 /// (body padding: 16px each side, 6px above, 22px below).
 const COMPACT_SIZE: (f64, f64) = (332.0, 72.0);
 
 fn set_compact<R: Runtime>(app: &AppHandle<R>, compact: bool) {
     COMPACT.store(compact, std::sync::atomic::Ordering::Relaxed);
-    let (w, h) = if compact { COMPACT_SIZE } else { FULL_SIZE };
+    let (w, h) = if compact { COMPACT_SIZE } else { (FULL_SIZE.0, full_height()) };
     if let Some(mini) = app.get_webview_window("mini") {
         let _ = mini.set_size(tauri::LogicalSize::new(w, h));
     }

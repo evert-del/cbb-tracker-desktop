@@ -27,6 +27,7 @@ mod banner;
 mod clock;
 mod close;
 mod desktop_entry;
+mod detector;
 #[cfg(target_os = "macos")]
 mod dock;
 mod diagnostics;
@@ -934,7 +935,14 @@ pub fn run() {
             hourly::mini_hourly_idle,
             hourly::mini_hourly_file,
             hourly::mini_hourly_add,
-            hourly::mini_hourly_pin
+            hourly::mini_hourly_pin,
+            detector::mini_detector_toggle,
+            detector::mini_detector_app,
+            detector::mini_detector_permission,
+            detector::mini_detector_link,
+            detector::mini_detector_link_project,
+            detector::mini_detector_unlink,
+            detector::mini_detector_answer
         ])
         .setup(|app| {
             #[cfg(target_os = "linux")]
@@ -1191,6 +1199,7 @@ pub fn run() {
             walkie::start(app.handle().clone());
             schedule::start(app.handle().clone());
             hourly::start_polling(app.handle().clone());
+            detector::start(app.handle().clone());
             #[cfg(target_os = "macos")]
             dock::install();
             #[cfg(target_os = "macos")]

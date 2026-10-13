@@ -60,6 +60,8 @@ type Hourly = {
   pinned: string[];
   /** The global start/stop shortcut ("⌘⇧Y", "Ctrl+Alt+Y"). */
   shortcut: string;
+  /** The project they're booked on today (My Schedule), first in `quick`. */
+  booked?: string | null;
 };
 
 type ChatRow = {
@@ -1345,6 +1347,8 @@ function renderHourly(h: Hourly | null) {
   });
   const running = h.running;
   el("hourly-running").hidden = running === null;
+  // Nothing left to stop: the wrap question goes.
+  if (running === null) el("hourly-wrap").hidden = true;
   if (running) {
     const unfiled = running.projectId === null;
     el("hourly-project").textContent = runningLabel(running, h.projects);
@@ -1381,6 +1385,13 @@ function renderHourly(h: Hourly | null) {
     const pinned = h.pinned.includes(p.id);
     if (pinned) chip.classList.add("pinned");
     chip.append(svg(pinned ? STAR : PLAY), name);
+    if (p.id === h.booked) {
+      const tag = document.createElement("span");
+      tag.className = "h-booked";
+      tag.textContent = "Booked today";
+      chip.appendChild(tag);
+      chip.title = `You're booked on this today (My Schedule). ${chip.title}`;
+    }
     chip.addEventListener("click", () => hourlyTap("start", p.id));
     quick.appendChild(chip);
   }
@@ -1576,6 +1587,7 @@ declare global {
     __cbbMiniHourlyIdle?: (ask: HourlyIdleAsk) => void;
     __cbbMiniHourlyAfter?: (after: { file: boolean; notice: string | null }) => void;
     __cbbMiniHourlyAdd?: () => void;
+    __cbbMiniHourlyWrap?: (ask: { project: string }) => void;
   }
 }
 window.__cbbMiniHourlyError = (text) => {
@@ -1587,6 +1599,11 @@ window.__cbbMiniHourlyError = (text) => {
 window.__cbbMiniHourlyIdle = (ask) => openHourlyIdle(ask);
 // "Add time…" from the tray or Dock menu.
 window.__cbbMiniHourlyAdd = () => openHourlyAdd();
+// Wrapped on the time sheet with the timer running: stop it too?
+window.__cbbMiniHourlyWrap = (ask) => {
+  el("hourly-wrap-text").textContent = `You've wrapped. Stop the timer on ${ask.project} too?`;
+  el("hourly-wrap").hidden = false;
+};
 // An unfiled timer ended (ask which project it was for), and/or the timer
 // stopped while they were idle (say so).
 window.__cbbMiniHourlyAfter = (after) => {
@@ -1634,6 +1651,11 @@ window.addEventListener("DOMContentLoaded", () => {
   click("auto-offline", () => menu("auto-offline"));
   click("hourly-stop", () => hourlyTap("stop"));
   click("hourly-add-open", openHourlyAdd);
+  click("hourly-wrap-stop", () => {
+    el("hourly-wrap").hidden = true;
+    hourlyTap("stop");
+  });
+  click("hourly-wrap-keep", () => (el("hourly-wrap").hidden = true));
   click("hourly-add-cancel", closeHourlyAdd);
   el("hourly-add-view").addEventListener("submit", (e) => {
     e.preventDefault();

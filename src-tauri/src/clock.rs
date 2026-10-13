@@ -229,6 +229,8 @@ fn apply<R: Runtime>(app: &AppHandle<R>, clock: Option<Clock>) {
     let wrapped = matches!(&prev, Some(p) if p.available && (p.state == "in" || p.state == "break"))
         && matches!(&clock, Some(c) if c.available && c.state == "out");
     if wrapped {
+        // A project timer still running: ask whether to stop it too.
+        crate::hourly::on_wrap(app);
         if let Some(done) = clock.as_ref() {
             let (worked, rest) = day_totals(&done.today, unix_now());
             if worked > 0 {

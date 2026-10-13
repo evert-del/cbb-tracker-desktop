@@ -34,6 +34,11 @@
 //! - "Add time…" logs a stretch after the fact (`POST /api/me/project-time`),
 //!   and favourite projects are pinned ahead of the recent ones.
 //!
+//! - Smarter than a plain timer: the project the person is booked on today
+//!   (My Schedule, schedule.rs) comes first in the one-tap starts, marked
+//!   "Booked today"; and wrapping on the time sheet with a timer running
+//!   asks "Stop the timer too?". It asks; it never decides.
+//!
 //! Everything is named "Client · Project" ("Vimeo · Logo refresh"), never
 //! by the project code.
 //!
@@ -348,6 +353,32 @@ pub(crate) struct PanelView {
     pub pinned: Vec<String>,
     /// The global shortcut, as this system writes it ("⌘⇧Y", "Ctrl+Alt+Y").
     pub shortcut: String,
+    /// The project they're booked on today (My Schedule), if they can time it.
+    pub booked: Option<String>,
+}
+
+/// The project timer's project for today's booking: the booking is today
+/// in Johannesburg, and its project number is one of theirs.
+pub(crate) fn booked_project(info: &Info, booking_day: &str, booking_number: &str, now: u64) -> Option<String> {
+    let today = &iso_utc(now + 2 * 3600)[..10];
+    if booking_day != today || booking_number.is_empty() {
+        return None;
+    }
+    info.projects.iter().find(|project| project.project_number == booking_number).map(|project| project.id.clone())
+}
+
+/// The one-tap starts with today's booked project first.
+pub(crate) fn with_booked(mut quick: Vec<Project>, info: &Info, booked: Option<&str>) -> Vec<Project> {
+    let Some(booked) = booked else { return quick };
+    if info.running.as_ref().and_then(|running| running.project_id.as_deref()) == Some(booked) {
+        return quick;
+    }
+    let Some(project) = info.projects.iter().find(|project| project.id == booked) else { return quick };
+    let len = quick.len().max(1);
+    quick.retain(|p| p.id != booked);
+    quick.insert(0, project.clone());
+    quick.truncate(len.clamp(4, PINS_MAX));
+    quick
 }
 
 /// A note as it is sent: trimmed, one line, at most 500 characters (the
@@ -750,11 +781,15 @@ pub(crate) fn set_idle_minutes<R: Runtime>(app: &AppHandle<R>, minutes: u64) -> 
 pub(crate) fn panel<R: Runtime>(app: &AppHandle<R>) -> Option<PanelView> {
     let idle_minutes = idle_minutes(app);
     let pinned = crate::close::strings(app, PINNED);
+    let next = crate::schedule::next(app);
+    let now = crate::clock::unix_now();
     with(app, |inner| {
         let info = inner.info.as_ref()?;
+        let booked = next.as_ref().and_then(|next| booked_project(info, &next.day, &next.project_number, now));
         Some(PanelView {
             running: info.running.clone(),
-            quick: quick(info, &pinned),
+            quick: with_booked(quick(info, &pinned), info, booked.as_deref()),
+            booked,
             projects: info.projects.clone(),
             asking: inner.ask.is_some(),
             filing: inner.to_file.is_some(),
@@ -1112,6 +1147,20 @@ pub(crate) fn mini_hourly_file<R: Runtime>(app: AppHandle<R>, choice: String, pr
         _ => return Err("Unknown choice.".into()),
     }
     Ok(())
+}
+
+/// Wrapped on the time sheet (clock.rs) with a project timer still running:
+/// the panel asks "Stop the timer too?". Stopping is the person's tap.
+pub(crate) fn on_wrap<R: Runtime>(app: &AppHandle<R>) {
+    let Some(label) = with(app, |inner| {
+        let info = inner.info.as_ref()?;
+        info.running.as_ref().map(|running| running_label(Some(info), running))
+    })
+    .flatten() else {
+        return;
+    };
+    crate::mini::ask_hourly(app, "__cbbMiniHourlyWrap", &json!({ "project": label }));
+    crate::analytics::action(app, "hourly_wrap_asked", "time_sheet");
 }
 
 /// "Add time…": a stretch the person confirmed, logged after the fact.
@@ -1523,6 +1572,26 @@ mod tests {
         // 2026-10-31 23:30 UTC is already November in Johannesburg.
         assert_eq!(sast_month(1_793_489_400), 202611);
         assert_eq!(sast_month(STARTED), 202610);
+    }
+
+    #[test]
+    fn todays_booking_comes_first_when_its_one_of_theirs() {
+        let mut info = info();
+        info.running = None;
+        // 2026-10-12 07:00 UTC: 09:00 in Johannesburg, the same day.
+        let now = STARTED;
+        assert_eq!(booked_project(&info, "2026-10-12", "CB-0301", now).as_deref(), Some("p4"));
+        assert_eq!(booked_project(&info, "2026-10-13", "CB-0301", now), None, "tomorrow");
+        assert_eq!(booked_project(&info, "2026-10-12", "CB-9999", now), None, "not one of theirs");
+        assert_eq!(booked_project(&info, "2026-10-12", "", now), None);
+        // 23:30 UTC is already the next day in Johannesburg.
+        assert_eq!(booked_project(&info, "2026-10-13", "CB-0301", STARTED + 16 * 3600 + 1800).as_deref(), Some("p4"));
+        let ids: Vec<String> = with_booked(quick(&info, &[]), &info, Some("p4")).into_iter().map(|p| p.id).collect();
+        assert_eq!(ids, ["p4", "p1", "p2", "p3"]);
+        // Already timing it: nothing to suggest.
+        let running = self::info();
+        let ids: Vec<String> = with_booked(quick(&running, &[]), &running, Some("p2")).into_iter().map(|p| p.id).collect();
+        assert_eq!(ids, ["p1", "p3", "p4", "p5"]);
     }
 
     #[test]

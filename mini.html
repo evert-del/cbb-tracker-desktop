@@ -302,6 +302,10 @@
       .h-chip.pinned svg { fill: var(--pink); }
       #hourly-head { display: flex; align-items: center; gap: 8px; }
       #hourly-head .h-label { flex: 1; }
+      .h-booked { flex: none; font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 99px; background: var(--tone-3-bg); color: var(--tone-3-fg); }
+      #hourly-wrap { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border-radius: var(--r-ctl); background: var(--tone-3-bg); color: var(--tone-3-fg); font-size: 12.5px; }
+      .h-wrap-actions { display: flex; gap: 8px; }
+      .h-wrap-actions button { flex: 1; min-height: 30px; border-radius: var(--r-ctl); font-weight: 600; background: var(--card); color: var(--fg); }
       #hourly-add-open { font-size: 12px; font-weight: 600; color: var(--pink-ink); }
       #hourly-add-open:hover { text-decoration: underline; }
       #hourly-add-view { display: flex; flex-direction: column; gap: 10px; flex: 1; padding: 16px; overflow-y: auto; }
@@ -419,6 +423,13 @@
         <div id="no-sheet" hidden>The time sheet isn't switched on for you.</div>
 
         <div id="hourly" hidden>
+          <div id="hourly-wrap" role="alert" hidden>
+            <span id="hourly-wrap-text"></span>
+            <div class="h-wrap-actions">
+              <button type="button" id="hourly-wrap-stop">Stop it</button>
+              <button type="button" id="hourly-wrap-keep">Keep it running</button>
+            </div>
+          </div>
           <div id="hourly-running" hidden>
             <button id="hourly-card" type="button" title="Open Hours in the tracker">
               <span class="h-top"><span id="hourly-project"></span></span>

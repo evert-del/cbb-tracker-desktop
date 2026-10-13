@@ -1207,6 +1207,176 @@ function projectLabel(p: HourlyProject): string {
   return client ? `${client} · ${name}` : name;
 }
 
+/**
+ * Turns a project `<select>` into the app's own picker: a button showing the
+ * choice (project, then client and number), and a list with search under
+ * it, inside the panel. The select stays, hidden, and keeps the value: call
+ * the returned function after filling it.
+ */
+function projectPicker(select: HTMLSelectElement): () => void {
+  const wrap = document.createElement("div");
+  wrap.className = "pp";
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "pp-btn";
+  button.setAttribute("aria-haspopup", "listbox");
+  const shown = document.createElement("span");
+  shown.className = "pp-text";
+  button.innerHTML = "";
+  button.append(shown);
+  button.insertAdjacentHTML("beforeend", '<svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>');
+  const pop = document.createElement("div");
+  pop.className = "pp-pop";
+  pop.hidden = true;
+  const find = document.createElement("input");
+  find.type = "search";
+  find.placeholder = "Find a project";
+  find.autocomplete = "off";
+  find.spellcheck = false;
+  find.setAttribute("aria-label", "Find a project");
+  const list = document.createElement("div");
+  list.className = "pp-list";
+  list.setAttribute("role", "listbox");
+  pop.append(find, list);
+  select.hidden = true;
+  select.after(wrap);
+  wrap.append(button, pop);
+  // A label's click would open the hidden select: send it to the button.
+  select.closest("label")?.addEventListener("click", (e) => {
+    if (!wrap.contains(e.target as Node)) {
+      e.preventDefault();
+      button.focus();
+    }
+  });
+
+  const texts = (value: string, fallback: string): [string, string] => {
+    const p = current?.hourly?.projects.find((x) => x.id === value);
+    if (!p) return [fallback, ""];
+    const sub = [p.clientName?.trim(), p.projectNumber, retainerText(p)].filter(Boolean).join(" · ");
+    return [p.name || p.projectNumber, sub];
+  };
+  const lines = (into: HTMLElement, value: string, fallback: string) => {
+    const [name, sub] = texts(value, fallback);
+    const a = document.createElement("span");
+    a.className = "pp-name";
+    a.textContent = name;
+    into.replaceChildren(a);
+    if (sub) {
+      const b = document.createElement("span");
+      b.className = "pp-sub";
+      b.textContent = sub;
+      into.append(b);
+    }
+  };
+  const refresh = () => {
+    const option = select.selectedOptions[0];
+    lines(shown, select.value, option?.text ?? "Choose a project");
+  };
+
+  let active = 0;
+  const rows = () => [...list.querySelectorAll<HTMLButtonElement>(".pp-row")];
+  const mark = (i: number) => {
+    const all = rows();
+    if (all.length === 0) return;
+    active = Math.max(0, Math.min(all.length - 1, i));
+    all.forEach((r, n) => r.classList.toggle("active", n === active));
+    all[active].scrollIntoView({ block: "nearest" });
+  };
+  const draw = () => {
+    const words = find.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    list.replaceChildren();
+    const add = (option: HTMLOptionElement) => {
+      const [name, sub] = texts(option.value, option.text);
+      if (!words.every((w) => `${name} ${sub}`.toLowerCase().includes(w))) return;
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = "pp-row";
+      row.setAttribute("role", "option");
+      row.setAttribute("aria-selected", String(option.value === select.value));
+      const text = document.createElement("span");
+      text.className = "pp-text";
+      lines(text, option.value, option.text);
+      row.insertAdjacentHTML("afterbegin", '<svg class="pp-check" viewBox="0 0 24 24"><path d="M5 12l5 5 9-10"/></svg>');
+      row.append(text);
+      row.addEventListener("click", () => choose(option.value));
+      list.append(row);
+    };
+    for (const child of [...select.children]) {
+      if (child instanceof HTMLOptGroupElement) {
+        const before = list.childElementCount;
+        const head = document.createElement("div");
+        head.className = "pp-section";
+        head.textContent = child.label;
+        list.append(head);
+        [...child.children].forEach((o) => add(o as HTMLOptionElement));
+        if (list.childElementCount === before + 1) head.remove();
+      } else if (child instanceof HTMLOptionElement) add(child);
+    }
+    if (rows().length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "pp-empty";
+      empty.textContent = "No project matches.";
+      list.append(empty);
+    }
+    const chosen = rows().findIndex((r) => r.getAttribute("aria-selected") === "true");
+    mark(words.length > 0 || chosen < 0 ? 0 : chosen);
+  };
+  const open = (yes: boolean) => {
+    pop.hidden = !yes;
+    wrap.classList.toggle("open", yes);
+    button.setAttribute("aria-expanded", String(yes));
+    if (!yes) return;
+    find.value = "";
+    draw();
+    find.focus();
+  };
+  const choose = (value: string) => {
+    select.value = value;
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+    refresh();
+    open(false);
+    button.focus();
+  };
+
+  button.addEventListener("click", () => open(pop.hidden !== false));
+  find.addEventListener("input", draw);
+  pop.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      mark(active + (e.key === "ArrowDown" ? 1 : -1));
+    } else if (e.key === "Enter" && !e.isComposing) {
+      e.preventDefault();
+      rows()[active]?.click();
+    } else if (e.key === "Escape") {
+      // Closes the list, not the form under it.
+      e.preventDefault();
+      e.stopPropagation();
+      open(false);
+      button.focus();
+    }
+  });
+  document.addEventListener("mousedown", (e) => {
+    if (!pop.hidden && !wrap.contains(e.target as Node)) open(false);
+  });
+  // A form that hides closes its list too.
+  new MutationObserver(() => {
+    if (!pop.hidden && wrap.offsetParent === null) open(false);
+  }).observe(document.body, { attributes: true, attributeFilter: ["hidden"], subtree: true });
+  return refresh;
+}
+
+const projectPickers = new Map<string, () => void>();
+
+/** Show a project select's (new) choice in its picker. */
+function refreshPicker(id: string) {
+  let refresh = projectPickers.get(id);
+  if (!refresh) {
+    refresh = projectPicker(el<HTMLSelectElement>(id));
+    projectPickers.set(id, refresh);
+  }
+  refresh();
+}
+
 /** "2h 30m", "1h", "45m". */
 function fmtMinutes(mins: number): string {
   const m = Math.round(Math.abs(mins));
@@ -1374,6 +1544,7 @@ function openHourlyEdit(e: TodayEntry) {
     select.appendChild(group);
   }
   select.value = e.projectId ?? "";
+  refreshPicker("hourly-edit-project");
   const pad = (d: Date) => `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
   el<HTMLInputElement>("hourly-edit-from").value = pad(new Date(e.startedAt));
   const toInput = el<HTMLInputElement>("hourly-edit-to");
@@ -1569,6 +1740,7 @@ function openHourlyAdd() {
   }
   // The last project timed, an hour ago until now.
   select.value = h.running?.projectId ?? h.projects[0]?.id ?? "";
+  refreshPicker("hourly-add-project");
   // The day is the start's: just after midnight, the hour before began
   // yesterday (and ends today, after it).
   const now = new Date();

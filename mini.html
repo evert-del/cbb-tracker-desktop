@@ -342,6 +342,28 @@
       .h-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
       .h-field select, .h-field input { height: 32px; padding: 0 10px; border-radius: var(--r-ctl); border: 0.5px solid var(--rule); background: var(--tile); font: inherit; font-size: 13px; color: var(--fg); outline: none; user-select: text; -webkit-user-select: text; }
       .h-field select:focus, .h-field input:focus { outline: 2px solid var(--pink); outline-offset: -1px; }
+      /* The project picker (mini.ts projectPicker): the app's own list, not the system's menu. */
+      .pp { position: relative; }
+      .pp-btn { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 44px; padding: 6px 10px; border-radius: var(--r-ctl); border: 0.5px solid var(--rule); background: var(--tile); text-align: left; color: var(--fg); box-sizing: border-box; }
+      .pp-btn:hover { background: var(--tile-hover); }
+      .pp-btn:focus-visible, .pp.open .pp-btn { outline: 2px solid var(--pink); outline-offset: -1px; }
+      .pp-btn .pp-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+      .pp-btn svg { width: 14px; height: 14px; flex: none; fill: none; stroke: var(--muted); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; transition: transform 0.15s; }
+      .pp.open .pp-btn svg { transform: rotate(180deg); }
+      .pp-name { font-size: 13px; font-weight: 600; color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .pp-sub { font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .pp-pop { position: absolute; left: 0; right: 0; top: calc(100% + 4px); z-index: 20; display: flex; flex-direction: column; background: var(--card); border: 0.5px solid var(--rule); border-radius: var(--r-card); box-shadow: 0 8px 24px rgba(0,0,0,0.18); overflow: hidden; }
+      .pp-pop input { margin: 8px; height: 30px; padding: 0 10px; border-radius: var(--r-ctl); border: 0.5px solid var(--rule); background: var(--tile); font: inherit; font-size: 13px; color: var(--fg); outline: none; }
+      .pp-pop input:focus { outline: 2px solid var(--pink); outline-offset: -1px; }
+      .pp-list { max-height: 240px; overflow-y: auto; padding: 0 4px 6px; }
+      .pp-section { padding: 8px 8px 4px; font-size: 10.5px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--faint); }
+      .pp-row { display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px 8px; border-radius: var(--r-ctl); text-align: left; color: var(--fg); }
+      .pp-row .pp-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+      .pp-row.active { background: var(--tile-hover); }
+      .pp-row .pp-check { width: 14px; height: 14px; flex: none; fill: none; stroke: var(--pink); stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; visibility: hidden; }
+      .pp-row[aria-selected="true"] .pp-check { visibility: visible; }
+      .pp-row[aria-selected="true"] .pp-name { color: var(--pink-ink); }
+      .pp-empty { padding: 10px 8px; font-size: 12.5px; color: var(--muted); }
       .h-times { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; }
       .h-times .h-day { grid-column: 1 / -1; }
       .h-field { min-width: 0; }

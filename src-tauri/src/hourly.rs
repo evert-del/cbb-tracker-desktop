@@ -24,6 +24,13 @@
 //!   ever ends time at that moment; it never adds time.
 //! - Called in on the time sheet with no timer for half an hour: one gentle
 //!   "Working on something?" banner that opens the panel.
+//! - A client's monthly retainer: the panel shows what's left ("Retainer ·
+//!   2h 30m left", or "Retainer used · 1h over"), and once a month per
+//!   project, when the running project's retainer drops under an hour, a
+//!   banner says so.
+//!
+//! Everything is named "Client · Project" ("Vimeo · Logo refresh"), never
+//! by the project code.
 //!
 //! The timer also starts and stops on the website (the board's ▶, the
 //! header), so it is read every 90 s, on opening the panel and when the
@@ -92,6 +99,72 @@ pub(crate) struct Project {
     /// An hourly project (billed); otherwise quoted (tracked only).
     #[serde(default)]
     pub billable: bool,
+    /// Minutes left on the client's retainer this month (negative: over),
+    /// `None` when the client has no retainer.
+    #[serde(default)]
+    pub retainer_minutes_left: Option<i64>,
+}
+
+/// "Vimeo · Logo refresh", or the project's name alone without a client.
+pub(crate) fn project_label(project: &Project) -> String {
+    let name = if project.name.is_empty() { &project.project_number } else { &project.name };
+    match project.client_name.as_deref().map(str::trim).filter(|client| !client.is_empty()) {
+        Some(client) => format!("{client} · {name}"),
+        None => name.clone(),
+    }
+}
+
+/// The running timer's label: its project's, or "Not yet filed".
+pub(crate) fn running_label(info: Option<&Info>, running: &Running) -> String {
+    let Some(project_id) = &running.project_id else { return "Not yet filed".into() };
+    info.and_then(|info| info.projects.iter().find(|project| &project.id == project_id))
+        .map(project_label)
+        .or_else(|| running.project_name.clone().filter(|name| !name.is_empty()))
+        .unwrap_or_else(|| "Not yet filed".into())
+}
+
+/// "2h 30m", "1h", "45m".
+pub(crate) fn fmt_minutes(minutes: u64) -> String {
+    match (minutes / 60, minutes % 60) {
+        (0, m) => format!("{m}m"),
+        (h, 0) => format!("{h}h"),
+        (h, m) => format!("{h}h {m}m"),
+    }
+}
+
+/// "Retainer · 2h 30m left", or "Retainer used · 1h over".
+pub(crate) fn retainer_text(minutes_left: i64) -> String {
+    if minutes_left >= 0 {
+        format!("Retainer · {} left", fmt_minutes(minutes_left.unsigned_abs()))
+    } else {
+        format!("Retainer used · {} over", fmt_minutes(minutes_left.unsigned_abs()))
+    }
+}
+
+/// The once-a-month "retainer is running out" banner for the running
+/// project: its client, project and minutes left, when under an hour.
+pub(crate) fn retainer_low(info: &Info) -> Option<(&Project, i64)> {
+    let project_id = info.running.as_ref()?.project_id.as_deref()?;
+    let project = info.projects.iter().find(|project| project.id == project_id)?;
+    let left = project.retainer_minutes_left?;
+    (left < 60).then_some((project, left))
+}
+
+pub(crate) fn retainer_banner(project: &Project, left: i64) -> String {
+    let client = project.client_name.as_deref().map(str::trim).filter(|c| !c.is_empty()).unwrap_or(&project.name);
+    if left > 0 {
+        format!("{client}'s retainer has {} left this month.", fmt_minutes(left.unsigned_abs()))
+    } else if left == 0 {
+        format!("{client}'s retainer is used up this month. More time is billed extra.")
+    } else {
+        format!("{client}'s retainer is used up this month ({} over). More time is billed extra.", fmt_minutes(left.unsigned_abs()))
+    }
+}
+
+/// The month in Johannesburg (UTC+2) as yyyymm, for "once a month".
+pub(crate) fn sast_month(now: u64) -> u64 {
+    let iso = iso_utc(now + 2 * 3600);
+    iso[0..4].parse::<u64>().unwrap_or(0) * 100 + iso[5..7].parse::<u64>().unwrap_or(0)
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -115,10 +188,6 @@ impl Running {
         self.project_id.is_none()
     }
 
-    /// The project's name, or "Not yet filed".
-    pub(crate) fn label(&self) -> &str {
-        self.project_name.as_deref().filter(|name| !name.is_empty()).unwrap_or("Not yet filed")
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -382,6 +451,8 @@ pub(crate) fn should_nudge(in_since: Option<u64>, last_timer_at: u64, nudged_for
 pub(crate) struct MenuModel {
     /// "Logo refresh · 1h 05m" while running, else "Project timer".
     pub title: String,
+    /// The running project's retainer ("Retainer · 2h 30m left").
+    pub retainer: Option<String>,
     pub running: bool,
     /// `(menu id, label)` for the recent projects: "Switch to" or "Start".
     pub projects: Vec<(String, String)>,
@@ -396,7 +467,7 @@ pub(crate) fn menu_model(info: &Info, now: u64) -> MenuModel {
     let title = match &info.running {
         Some(running) => {
             let since = crate::clock::parse_iso(&running.started_at).unwrap_or(now);
-            format!("{} · {}", running.label(), crate::clock::fmt_span(now.saturating_sub(since) / 60))
+            format!("{} · {}", running_label(Some(info), running), crate::clock::fmt_span(now.saturating_sub(since) / 60))
         }
         None => "Project timer".into(),
     };
@@ -404,12 +475,18 @@ pub(crate) fn menu_model(info: &Info, now: u64) -> MenuModel {
         .into_iter()
         .map(|project| (format!("{MENU_START}{}", project.id), menu_label(&project)))
         .collect();
-    MenuModel { title, running: info.running.is_some(), projects }
+    let retainer = info
+        .running
+        .as_ref()
+        .and_then(|running| running.project_id.as_ref())
+        .and_then(|id| info.projects.iter().find(|project| &project.id == id))
+        .and_then(|project| project.retainer_minutes_left)
+        .map(retainer_text);
+    MenuModel { title, retainer, running: info.running.is_some(), projects }
 }
 
 fn menu_label(project: &Project) -> String {
-    let name = if project.name.is_empty() { &project.project_number } else { &project.name };
-    let name: String = name.chars().take(48).collect();
+    let name: String = project_label(project).chars().take(60).collect();
     format!("{name} ({})", if project.billable { "Billable" } else { "Tracked only" })
 }
 
@@ -478,7 +555,9 @@ pub(crate) fn refresh_menus<R: Runtime>(app: &AppHandle<R>) {
         let _ = tray.sub.set_text(&model.title);
         // The items change only when the projects or the running state do,
         // not every minute with the title.
-        let items_changed = shown.as_ref().is_none_or(|old| old.running != model.running || old.projects != model.projects);
+        let items_changed = shown
+            .as_ref()
+            .is_none_or(|old| old.running != model.running || old.projects != model.projects || old.retainer != model.retainer);
         if items_changed {
             let _ = fill_submenu(app, &tray.sub, model);
         }
@@ -489,6 +568,9 @@ pub(crate) fn refresh_menus<R: Runtime>(app: &AppHandle<R>) {
 fn fill_submenu<R: Runtime>(app: &AppHandle<R>, sub: &Submenu<R>, model: &MenuModel) -> tauri::Result<()> {
     for item in sub.items()? {
         sub.remove(&item)?;
+    }
+    if let Some(retainer) = &model.retainer {
+        sub.append(&MenuItem::with_id(app, "hourly-retainer", retainer, false, None::<&str>)?)?;
     }
     if model.running {
         sub.append(&MenuItem::with_id(app, MENU_STOP, "Stop", true, None::<&str>)?)?;
@@ -617,6 +699,35 @@ fn set_info<R: Runtime>(app: &AppHandle<R>, info: Option<Info>) {
     });
     refresh_menus(app);
     crate::mini::push(app);
+    maybe_warn_retainer(app);
+}
+
+/// Once a month per project: the running project's retainer is under an
+/// hour (or used up).
+fn maybe_warn_retainer<R: Runtime>(app: &AppHandle<R>) {
+    let Some((project_id, body)) = with(app, |inner| {
+        let info = inner.info.as_ref()?;
+        let (project, left) = retainer_low(info)?;
+        Some((project.id.clone(), retainer_banner(project, left)))
+    })
+    .flatten() else {
+        return;
+    };
+    let key = format!("retainer_warned_{project_id}");
+    let month = sast_month(crate::clock::unix_now());
+    if crate::close::number(app, &key, 0) == month {
+        return;
+    }
+    crate::close::set_number(app, &key, month);
+    if crate::quiet::allowed(app, crate::quiet::Kind::Tracker) {
+        crate::banner::show(
+            app,
+            "Retainer",
+            &body,
+            crate::banner::Target::Page { path: "/hours".into(), id: None },
+        );
+        crate::analytics::action(app, "hourly_retainer_low", "banner");
+    }
 }
 
 fn set_running<R: Runtime>(app: &AppHandle<R>, running: Option<Running>) {
@@ -851,9 +962,9 @@ pub(crate) fn on_idle<R: Runtime>(app: &AppHandle<R>, now: u64, idle: Option<u64
 /// Stops `running` at `at` (when idling began) and tells the person: now if
 /// they're `back`, else when they come back (on_away).
 fn auto_stop<R: Runtime>(app: &AppHandle<R>, running: &Running, at: u64, back: bool) {
+    let label = with(app, |inner| running_label(inner.info.as_ref(), running)).unwrap_or_else(|| "Not yet filed".into());
     let notice = format!(
-        "You were away, so your timer on {} stopped at {}, when you went idle.",
-        running.label(),
+        "You were away, so your timer on {label} stopped at {}, when you went idle.",
         crate::clock::fmt_hhmm_sast(at)
     );
     let file = running.unfiled().then(|| running.id.clone());
@@ -895,8 +1006,9 @@ pub(crate) fn on_away<R: Runtime>(app: &AppHandle<R>, away: crate::idle::Away) {
         IdleCall::Ask => {
             let ask = IdleAsk { running: running.clone(), from: away.from, to: away.to };
             with(app, |inner| inner.ask = Some(ask));
+            let label = with(app, |inner| running_label(inner.info.as_ref(), &running)).unwrap_or_default();
             let question = json!({
-                "project": running.label(),
+                "project": label,
                 "billable": running.billable,
                 "unfiled": running.unfiled(),
                 "from": away.from * 1000,
@@ -1047,7 +1159,7 @@ mod tests {
         let running = parse(raw).and_then(|info| info.running).expect("an unfiled timer");
         assert!(running.unfiled());
         assert!(!running.billable);
-        assert_eq!(running.label(), "Not yet filed");
+        assert_eq!(running_label(None, &running), "Not yet filed");
         // A bad project id drops the timer rather than showing it as unfiled.
         let bad = r#"{"projects":[],"running":{"id":"t9","projectId":"a b","startedAt":"2026-10-12T07:00:00.000Z"}}"#;
         assert_eq!(parse(bad).and_then(|info| info.running), None);
@@ -1113,7 +1225,7 @@ mod tests {
         let model = menu_model(&info(), STARTED + 65 * 60);
         assert_eq!(model.title, "Brand film · 1h 05m");
         assert!(model.running);
-        assert_eq!(model.projects[0], ("hourly-start-p1".to_string(), "Con Spirito S1 (Billable)".to_string()));
+        assert_eq!(model.projects[0], ("hourly-start-p1".to_string(), "Spirit Films · Con Spirito S1 (Billable)".to_string()));
         assert_eq!(model.projects.len(), 4);
         let mut stopped = info();
         stopped.running = None;
@@ -1129,6 +1241,50 @@ mod tests {
         for id in ["hourly-start-", "hourly-start-a b", "hourly-delete", "tray-quit"] {
             assert!(!is_menu_id(id), "{id}");
         }
+    }
+
+    #[test]
+    fn everything_is_named_client_then_project() {
+        let info = info();
+        assert_eq!(project_label(&info.projects[0]), "Spirit Films · Con Spirito S1");
+        // No client: the project's name alone, never the code.
+        assert_eq!(project_label(&info.projects[1]), "Brand film");
+        let running = info.running.clone().unwrap();
+        assert_eq!(running_label(Some(&info), &running), "Brand film");
+        let mut on_p1 = running.clone();
+        on_p1.project_id = Some("p1".into());
+        assert_eq!(running_label(Some(&info), &on_p1), "Spirit Films · Con Spirito S1");
+        // A project not in the list: the name the tracker gave.
+        let mut elsewhere = running;
+        elsewhere.project_id = Some("p99".into());
+        assert_eq!(running_label(Some(&info), &elsewhere), "Brand film");
+    }
+
+    #[test]
+    fn retainers_read_as_time_left_or_over() {
+        assert_eq!(retainer_text(150), "Retainer · 2h 30m left");
+        assert_eq!(retainer_text(60), "Retainer · 1h left");
+        assert_eq!(retainer_text(0), "Retainer · 0m left");
+        assert_eq!(retainer_text(-60), "Retainer used · 1h over");
+        assert_eq!(retainer_text(-45), "Retainer used · 45m over");
+        let raw = r#"{"projects":[{"id":"p1","name":"Logo refresh","projectNumber":"CB-1","clientName":"Vimeo","billable":true,"retainerMinutesLeft":59}],
+            "running":{"id":"t1","projectId":"p1","projectName":"Logo refresh","billable":true,"startedAt":"2026-10-12T07:00:00.000Z"}}"#;
+        let info = parse(raw).unwrap();
+        let (project, left) = retainer_low(&info).expect("under an hour");
+        assert_eq!(retainer_banner(project, left), "Vimeo's retainer has 59m left this month.");
+        assert_eq!(retainer_banner(project, -90), "Vimeo's retainer is used up this month (1h 30m over). More time is billed extra.");
+        let mut plenty = info.clone();
+        plenty.projects[0].retainer_minutes_left = Some(60);
+        assert!(retainer_low(&plenty).is_none());
+        let mut none = info.clone();
+        none.projects[0].retainer_minutes_left = None;
+        assert!(retainer_low(&none).is_none());
+        let mut stopped = info;
+        stopped.running = None;
+        assert!(retainer_low(&stopped).is_none());
+        // 2026-10-31 23:30 UTC is already November in Johannesburg.
+        assert_eq!(sast_month(1_793_489_400), 202611);
+        assert_eq!(sast_month(STARTED), 202610);
     }
 
     #[test]

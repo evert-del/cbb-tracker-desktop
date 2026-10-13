@@ -25,7 +25,15 @@ type NextCall = {
 type Quiet = { tracker: boolean; walkie: boolean; channel1: boolean; dnd_until: string };
 
 /** The project timer, for people who bill by the hour (hourly.rs). */
-type HourlyProject = { id: string; name: string; projectNumber: string; clientName: string | null; billable: boolean };
+/** `retainerMinutesLeft`: the client's retainer this month (negative: over), null without one. */
+type HourlyProject = {
+  id: string;
+  name: string;
+  projectNumber: string;
+  clientName: string | null;
+  billable: boolean;
+  retainerMinutesLeft?: number | null;
+};
 /** `projectId` null: started with no project, "Not yet filed" (never billable). */
 type HourlyRunning = { id: string; projectId: string | null; projectName: string | null; billable: boolean; startedAt: string; note: string | null };
 type Hourly = {
@@ -1136,9 +1144,30 @@ function hourlyTap(action: "start" | "stop", projectId?: string) {
   });
 }
 
+/** "Vimeo · Logo refresh": client, then project, never the project code. */
+function projectLabel(p: HourlyProject): string {
+  const name = p.name || p.projectNumber;
+  const client = p.clientName?.trim();
+  return client ? `${client} · ${name}` : name;
+}
+
+/** "2h 30m", "1h", "45m". */
+function fmtMinutes(mins: number): string {
+  const m = Math.round(Math.abs(mins));
+  const h = Math.floor(m / 60);
+  const rest = m % 60;
+  return h === 0 ? `${rest}m` : rest === 0 ? `${h}h` : `${h}h ${rest}m`;
+}
+
+/** "Retainer · 2h 30m left", "Retainer used · 1h over", or null. */
+function retainerText(p: HourlyProject | undefined): string | null {
+  const left = p?.retainerMinutesLeft;
+  if (left === null || left === undefined) return null;
+  return left >= 0 ? `Retainer · ${fmtMinutes(left)} left` : `Retainer used · ${fmtMinutes(left)} over`;
+}
+
 function projectTitle(p: HourlyProject): string {
-  const head = [p.projectNumber, p.name].filter(Boolean).join(" ");
-  return [head, p.clientName, p.billable ? "Billable" : "Tracked only"].filter(Boolean).join(" · ");
+  return [projectLabel(p), p.billable ? "Billable" : "Tracked only", retainerText(p)].filter(Boolean).join(" · ");
 }
 
 const PLAY = "M8 5v14l11-7z";
@@ -1169,7 +1198,12 @@ function renderHourly(h: Hourly | null) {
   el("hourly-running").hidden = running === null;
   if (running) {
     const unfiled = running.projectId === null;
-    el("hourly-project").textContent = unfiled ? "Not yet filed" : running.projectName ?? "";
+    const project = h.projects.find((p) => p.id === running.projectId);
+    el("hourly-project").textContent = unfiled ? "Not yet filed" : project ? projectLabel(project) : running.projectName ?? "";
+    const retainer = unfiled ? null : retainerText(project);
+    el("hourly-retainer").textContent = retainer ?? "";
+    el("hourly-retainer").hidden = !retainer;
+    el("hourly-retainer").classList.toggle("over", (project?.retainerMinutesLeft ?? 0) < 0);
     el("hourly-project").classList.toggle("unfiled", unfiled);
     const kind = el("hourly-kind");
     kind.hidden = unfiled;
@@ -1177,7 +1211,9 @@ function renderHourly(h: Hourly | null) {
     kind.classList.toggle("tracked", !running.billable);
     kind.title = running.billable ? "An hourly project: this time is billed" : "A quoted project: this time is tracked, not billed";
     el("hourly-stop").title = unfiled ? "Stop, then pick the project on Hours" : "Stop the timer";
-    el("hourly-card").title = unfiled ? "Not billable until it's filed under a project. Open Hours" : "Open Hours in the tracker";
+    el("hourly-card").title = unfiled
+      ? "Not billable until it's filed under a project. Click for My Hours."
+      : `${el("hourly-project").textContent ?? ""}. Click for My Hours.`;
     el("hourly-note").textContent = running.note ?? "";
     el("hourly-note").hidden = !running.note;
   }
@@ -1194,7 +1230,7 @@ function renderHourly(h: Hourly | null) {
     chip.className = "h-chip";
     chip.title = `${running ? "Switch to" : "Start"} ${projectTitle(p)}`;
     const name = document.createElement("span");
-    name.textContent = p.name || p.projectNumber;
+    name.textContent = projectLabel(p);
     chip.append(svg(PLAY), name);
     chip.addEventListener("click", () => hourlyTap("start", p.id));
     quick.appendChild(chip);
@@ -1252,12 +1288,12 @@ function renderHourlyPick() {
       row.className = on ? "h-row on" : "h-row";
       const t = document.createElement("span");
       t.className = "t";
-      t.textContent = [p.projectNumber, p.name].filter(Boolean).join(" ");
+      t.textContent = projectLabel(p);
       const sub = document.createElement("span");
       sub.className = "s";
-      sub.textContent = p.clientName ?? "";
+      sub.textContent = retainerText(p) ?? "";
       row.append(t);
-      if (p.clientName) row.append(sub);
+      if (sub.textContent) row.append(sub);
       row.addEventListener("click", () => {
         if (filing) {
           fileHourly("file", p.id);

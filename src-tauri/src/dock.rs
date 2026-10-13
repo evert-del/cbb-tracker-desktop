@@ -23,6 +23,9 @@ thread_local! {
 fn build(model: &crate::hourly::MenuModel) -> Option<Menu> {
     let menu = Menu::new();
     menu.append(&MenuItem::with_id("hourly-title", &model.title, false, None)).ok()?;
+    if let Some(retainer) = &model.retainer {
+        menu.append(&MenuItem::with_id("hourly-retainer", retainer, false, None)).ok()?;
+    }
     if model.running {
         menu.append(&MenuItem::with_id(crate::hourly::MENU_STOP, "Stop", true, None)).ok()?;
     }

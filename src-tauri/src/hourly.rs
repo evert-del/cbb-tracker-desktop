@@ -21,7 +21,9 @@
 //!   keep it, drop the idle time and keep going, or drop it and stop. With
 //!   no answer by 30 minutes into the idle time, the timer stops at the
 //!   moment idling began, and they're told when they're back. The app only
-//!   ever ends time at that moment; it never adds time.
+//!   ever ends time at that moment; it never adds time. That stop says
+//!   `away: true`, so My Hours asks about the time cut off ("Still to
+//!   confirm"); nothing is logged unless they say so there.
 //! - Called in on the time sheet with no timer for half an hour: one gentle
 //!   "Working on something?" banner that opens the panel.
 //! - A client's monthly retainer: the panel shows what's left ("Retainer ·
@@ -110,6 +112,7 @@ const TAKE_RESULT_JS: &str =
 const TIMER_URL: &str = "/api/me/project-timer";
 const FILE_URL: &str = "/api/me/project-time/file";
 const TIME_URL: &str = "/api/me/project-time";
+const SUGGESTIONS_URL: &str = "/api/me/project-time-suggestions";
 /// In a step's URL: the id of the timer the step before started.
 const RUNNING_ID: &str = "{running}";
 
@@ -651,6 +654,14 @@ pub(crate) fn stop_body(at: Option<u64>) -> Value {
         Some(at) => json!({ "action": "stop", "at": iso_utc(at) }),
         None => json!({ "action": "stop" }),
     }
+}
+
+/// The stop when nobody answered while the person was away: at `at`, and
+/// marked so the time cut off is asked about on My Hours.
+pub(crate) fn away_stop_body(at: u64) -> Value {
+    let mut body = stop_body(Some(at));
+    body["away"] = Value::Bool(true);
+    body
 }
 
 /// The body that files `entry_id` under one of the person's projects.
@@ -1388,6 +1399,33 @@ fn send<R: Runtime>(app: &AppHandle<R>, steps: Vec<Step>, done: &str, then: Then
     Ok(())
 }
 
+/// Quietly hands the tracker the helper's suggestions (detector.rs `sync`,
+/// or a "Not this"), through the page like everything else, and returns the
+/// keys the tracker says are answered already. Nothing is shown: a failure
+/// is simply tried again on the next poll. Blocking.
+pub(crate) fn sync_suggestions<R: Runtime>(app: &AppHandle<R>, body: Value) -> Vec<String> {
+    let Some(window) = crate::walkie::tracker_window(app) else { return Vec::new() };
+    let script = post_script(&[post(SUGGESTIONS_URL, body)], "");
+    let _one = SENDING.lock();
+    if window.eval(&script).is_err() {
+        return Vec::new();
+    }
+    crate::walkie::collect(&window, TAKE_RESULT_JS, 40)
+        .and_then(|raw| serde_json::from_str::<Outcome>(&raw).ok())
+        .filter(|outcome| outcome.ok)
+        .and_then(|outcome| outcome.body)
+        .map(|body| answered_keys(&body))
+        .unwrap_or_default()
+}
+
+/// The keys in the tracker's `{answered: [...]}`, only ones the helper makes.
+pub(crate) fn answered_keys(body: &Value) -> Vec<String> {
+    body.get("answered")
+        .and_then(Value::as_array)
+        .map(|keys| keys.iter().filter_map(Value::as_str).filter(|key| crate::detector::id_of(key).is_some()).map(str::to_string).collect())
+        .unwrap_or_default()
+}
+
 /// A refusal: in the panel when it's showing, else as a notification (the
 /// shortcut, the menus).
 fn panel_error<R: Runtime>(app: &AppHandle<R>, error: &str) {
@@ -1541,7 +1579,9 @@ pub(crate) fn info_snapshot<R: Runtime>(app: &AppHandle<R>) -> Option<Info> {
 /// (detector.rs); `id` is the suggestion, forgotten once it's logged.
 pub(crate) fn log_stretch<R: Runtime>(app: &AppHandle<R>, project_id: &str, start: u64, end: u64, id: u64) -> Result<(), String> {
     let info = current(app)?;
-    let body = add_body(project_id, start, end, None, &info, crate::clock::unix_now()).map_err(str::to_string)?;
+    let mut body = add_body(project_id, start, end, None, &info, crate::clock::unix_now()).map_err(str::to_string)?;
+    // So My Hours stops asking about it too.
+    body["suggestionKey"] = Value::String(crate::detector::key_of(id));
     let label = info.projects.iter().find(|project| project.id == project_id).map(project_label).unwrap_or_default();
     let notice = format!("Logged {} on {label}.", fmt_minutes((end - start) / 60));
     send(app, vec![post(TIME_URL, body)], "", Then::Saved { filed: false, notice: Some(notice), logged: Some(id) })
@@ -1829,7 +1869,7 @@ fn auto_stop<R: Runtime>(app: &AppHandle<R>, running: &Running, at: u64, back: b
             say: false,
             auto: Some(AutoStop { timer: running.id.clone(), later: !back }),
         };
-        if send(&app, vec![post(TIMER_URL, stop_body(Some(at)))], "", then).is_err() {
+        if send(&app, vec![post(TIMER_URL, away_stop_body(at))], "", then).is_err() {
             with(&app, |inner| inner.auto_stopped = None);
         }
         crate::analytics::action(&app, "hourly_idle_auto_stop", "idle");
@@ -1921,6 +1961,9 @@ pub(crate) fn start_polling<R: Runtime>(app: AppHandle<R>) {
                 // read() checks the retainer too (set_info).
                 read(&app);
                 maybe_nudge(&app);
+                if with(&app, |inner| inner.info.is_some()).unwrap_or(false) {
+                    crate::detector::sync(&app);
+                }
             } else if with(&app, |inner| inner.info.is_some()).unwrap_or(false) {
                 // Signed out: nothing of the timer stays, and the shortcut
                 // is given back to other apps.
@@ -2069,6 +2112,15 @@ mod tests {
         // The timer started after idling began (from a phone, say).
         assert_eq!(idle_call(running, STARTED - 600, STARTED + 3600, ten), IdleCall::Nothing);
         assert_eq!(idle_call(None, since, since + 7200, ten), IdleCall::Nothing);
+    }
+
+    #[test]
+    fn a_stop_while_away_is_marked_and_answers_read_only_the_helpers_keys() {
+        assert_eq!(away_stop_body(1_760_000_000), json!({ "action": "stop", "at": "2025-10-09T08:53:20.000Z", "away": true }));
+        assert!(stop_body(Some(1_760_000_000)).get("away").is_none());
+        let body = json!({ "answered": ["desktop:1760000000", "booking:x", 7, "desktop:nope"] });
+        assert_eq!(answered_keys(&body), vec!["desktop:1760000000".to_string()]);
+        assert!(answered_keys(&json!({})).is_empty());
     }
 
     #[test]

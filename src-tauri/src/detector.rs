@@ -13,8 +13,12 @@
 //! From that it builds stretches ("Vimeo · Logo refresh 09:10–10:40") and,
 //! when one ends (a switch, a pause, a wrap, starting the timer), asks in
 //! the quick panel: "Worked on Vimeo · Logo refresh 09:10–10:40, log it?"
-//! Only a stretch the person confirms is sent, and only its project, start
-//! and end (`POST /api/me/project-time`, through hourly.rs).
+//! Only a stretch the person confirms is logged (`POST /api/me/project-time`,
+//! through hourly.rs). A stretch still waiting for an answer is also handed
+//! to the tracker (`POST /api/me/project-time-suggestions`), with only its
+//! project (none when no project was recognised, never the app) and its
+//! times, so it can be answered on My Hours too ("Still to confirm"); one
+//! answered there, or on another computer, is forgotten here (`sync`).
 //!
 //! Window names and file paths never leave the computer and are never
 //! stored: they're matched as they're seen and dropped. What's kept until
@@ -35,6 +39,7 @@ use std::{
 };
 
 use serde::Serialize;
+use serde_json::{json, Value};
 use tauri::{AppHandle, Runtime};
 
 const ON: &str = "detector_on";
@@ -507,6 +512,32 @@ pub(crate) fn decode(raw: &str) -> Option<Stretch> {
     let known = crate::hourly::valid_id(&project) && app.is_none();
     let unknown = project.is_empty() && app.as_deref().is_some_and(valid_app_id);
     (end > start && (known || unknown)).then_some(Stretch { project, app, start, end })
+}
+
+/// A suggestion's key on the tracker: "desktop:<start>".
+pub(crate) fn key_of(id: u64) -> String {
+    format!("desktop:{id}")
+}
+
+pub(crate) fn id_of(key: &str) -> Option<u64> {
+    key.strip_prefix("desktop:")?.parse().ok()
+}
+
+/// The most suggestions handed to the tracker at once (as it takes).
+const SYNC_MAX: usize = 50;
+
+/// What the tracker keeps of a suggestion still waiting for an answer: its
+/// key, its project when one was recognised, and its times. Never the app.
+pub(crate) fn suggestion_body(s: &Stretch) -> Value {
+    let mut body = json!({
+        "key": key_of(s.start),
+        "startedAt": crate::hourly::iso_utc(s.start),
+        "endedAt": crate::hourly::iso_utc(s.end),
+    });
+    if !s.project.is_empty() && crate::hourly::valid_id(&s.project) {
+        body["projectId"] = Value::String(s.project.clone());
+    }
+    body
 }
 
 /// The pending suggestions still worth asking about at `now`.
@@ -1117,6 +1148,8 @@ fn suggest<R: Runtime>(app: &AppHandle<R>, stretch: Stretch) {
     list.push(stretch.clone());
     set_pending(app, &list);
     crate::mini::push(app);
+    let handle = app.clone();
+    std::thread::spawn(move || sync(&handle));
     if crate::quiet::allowed(app, crate::quiet::Kind::Tracker) {
         let times = format!("{}–{}", crate::clock::fmt_hhmm_sast(stretch.start), crate::clock::fmt_hhmm_sast(stretch.end));
         let (title, body) = if stretch.project.is_empty() {
@@ -1528,10 +1561,37 @@ pub(crate) fn mini_detector_answer<R: Runtime>(
         }
         "skip" => {
             answered(&app, id);
+            // "Not this" on My Hours too.
+            let handle = app.clone();
+            std::thread::spawn(move || {
+                crate::hourly::sync_suggestions(&handle, json!({ "skip": [key_of(id)] }));
+            });
         }
         _ => return Err("Unknown answer.".into()),
     }
     Ok(())
+}
+
+/// Hands the tracker the suggestions still waiting here, so they can be
+/// answered on My Hours too, and forgets any already answered there (or on
+/// another computer). Each poll (hourly.rs) and once one is kept; blocking,
+/// so off the main thread. Sending the same ones again changes nothing.
+pub(crate) fn sync<R: Runtime>(app: &AppHandle<R>) {
+    if !is_on(app) {
+        return;
+    }
+    let list = pending(app);
+    if list.is_empty() {
+        return;
+    }
+    let body = json!({ "suggestions": list.iter().take(SYNC_MAX).map(suggestion_body).collect::<Vec<_>>() });
+    let done: Vec<u64> = crate::hourly::sync_suggestions(app, body).iter().filter_map(|key| id_of(key)).collect();
+    if done.is_empty() {
+        return;
+    }
+    let keep: Vec<Stretch> = pending(app).into_iter().filter(|s| !done.contains(&s.start)).collect();
+    set_pending(app, &keep);
+    crate::mini::push(app);
 }
 
 /// A suggestion is done with (logged, or skipped): forget it.
@@ -1792,6 +1852,24 @@ mod tests {
         assert_eq!(t.step(T0 + 15 * 60, save("p4")), None, "15 minutes between saves: one stretch");
         assert_eq!(t.step(T0 + 30 * 60, save("p4")), None);
         assert_eq!(t.step(T0 + 60 * 60, None), Some(known("p4", T0, T0 + 30 * 60)));
+    }
+
+    #[test]
+    fn the_tracker_gets_only_a_suggestions_key_project_and_times() {
+        let known = Stretch { project: "p1".into(), app: None, start: 1_760_000_000, end: 1_760_005_400 };
+        let body = suggestion_body(&known);
+        assert_eq!(body, json!({
+            "key": "desktop:1760000000", "projectId": "p1",
+            "startedAt": "2025-10-09T08:53:20.000Z", "endedAt": "2025-10-09T10:23:20.000Z",
+        }));
+        // Work no project was recognised in: no project, and never the app.
+        let unknown = Stretch { project: String::new(), app: Some("photoshop".into()), start: 1_760_000_000, end: 1_760_005_400 };
+        let body = suggestion_body(&unknown);
+        assert!(body.get("projectId").is_none());
+        assert!(!body.to_string().to_lowercase().contains("photoshop"));
+        assert_eq!(id_of(&key_of(42)), Some(42));
+        assert_eq!(id_of("work:42"), None);
+        assert_eq!(id_of("desktop:x"), None);
     }
 
     #[test]

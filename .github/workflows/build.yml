@@ -11,6 +11,11 @@
 #   Builds all three platforms and keeps the installers as run artifacts
 #   (no release is created).
 #
+# Release without pushing a tag (from a phone, or a session that can't push
+#   tags): Run workflow on main with "release_tag" set to desktop-v<version>
+#   (the version in tauri.conf.json). The same DRAFT release is made from
+#   main; GitHub creates the tag on main when the draft is published.
+#
 # Auto-update: every build also produces signed update bundles (*.sig) and,
 # on tag pushes, a latest.json manifest on the release. Installed apps read
 # latest.json from OUR website (endpoint in src-tauri/tauri.conf.json), so
@@ -24,6 +29,11 @@ on:
     tags:
       - "desktop-v*"
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Make a draft release with this tag (desktop-vX.Y.Z, matching tauri.conf.json); empty for a test build"
+        required: false
+        default: ""
 
 permissions:
   contents: write # create/update the draft release
@@ -121,6 +131,20 @@ jobs:
           security find-identity -v -p codesigning "$KEYCHAIN"
           echo "APPLE_SIGNING_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
 
+      # A release from Run workflow: only from main, and only for the version
+      # being built, so a draft can never carry the wrong tag.
+      - name: Check the release tag
+        if: ${{ inputs.release_tag != '' && inputs.release_tag != null }}
+        shell: bash
+        run: |
+          version="$(node -p "require('./src-tauri/tauri.conf.json').version")"
+          if [ "${{ github.ref }}" != "refs/heads/main" ]; then
+            echo "Release only from main (this run is on ${{ github.ref }})."; exit 1
+          fi
+          if [ "${{ inputs.release_tag }}" != "desktop-v$version" ]; then
+            echo "release_tag must be desktop-v$version, the version in tauri.conf.json."; exit 1
+          fi
+
       - name: Build with Tauri Action
         uses: tauri-apps/tauri-action@v0
         env:
@@ -129,9 +153,11 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          # Tag pushes publish to a draft release; manual runs only build.
-          tagName: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
-          releaseName: ${{ startsWith(github.ref, 'refs/tags/') && format('CoolerBox Tracker {0}', github.ref_name) || '' }}
+          # Tag pushes (or Run workflow with release_tag) publish to a draft
+          # release; other manual runs only build.
+          tagName: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.release_tag || '' }}
+          releaseName: ${{ startsWith(github.ref, 'refs/tags/') && format('CoolerBox Tracker {0}', github.ref_name) || (inputs.release_tag && format('CoolerBox Tracker {0}', inputs.release_tag)) || '' }}
+          releaseCommitish: ${{ github.sha }}
           releaseBody: "Download the installer for your computer below. First launch shows an unsigned-app warning: Mac — right-click the app → Open; Windows — More info → Run anyway."
           releaseDraft: true
           prerelease: false
@@ -147,7 +173,7 @@ jobs:
       # Manual (non-tag) runs: keep the installers so they can be downloaded
       # from the run page for testing.
       - name: Upload installers (manual runs)
-        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        if: ${{ !startsWith(github.ref, 'refs/tags/') && !inputs.release_tag }}
         uses: actions/upload-artifact@v4
         with:
           name: installers-${{ matrix.platform }}

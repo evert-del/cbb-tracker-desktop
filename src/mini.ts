@@ -73,6 +73,8 @@ type Hourly = {
   clients?: { id: string; name: string }[];
   /** "Still to confirm" (to_confirm.rs); null with nothing waiting. */
   toConfirm?: ToConfirm | null;
+  /** "Not logged today": the blanks in the working day (day_gaps.rs). */
+  dayGaps?: { gaps: { from: number; to: number; minutes: number }[]; minutes: number; from: string } | null;
 };
 
 type ToConfirm = {
@@ -1705,6 +1707,44 @@ function entryLabel(e: TodayEntry): string {
   return client ? `${client} · ${name}` : name;
 }
 
+function renderDayGaps(d: Hourly["dayGaps"] | null) {
+  el("day-gaps").hidden = !d || d.gaps.length === 0;
+  if (!d) return;
+  el("day-gaps-total").textContent = fmtMinutes(d.minutes);
+  el("day-gaps-hint").textContent = d.from === "time sheet"
+    ? "Times on your time sheet today with nothing on the timer."
+    : "Times you were at this computer today with nothing on the timer.";
+  const list = el("day-gaps-list");
+  list.replaceChildren();
+  for (const g of d.gaps) {
+    const row = document.createElement("div");
+    row.className = "c-row";
+    const label = document.createElement("span");
+    label.className = "l";
+    label.textContent = `${TRACKER_TIME.format(new Date(g.from))}–${TRACKER_TIME.format(new Date(g.to))}`;
+    const when = document.createElement("span");
+    when.className = "w";
+    when.textContent = `${fmtMinutes(g.minutes)} with nothing logged`;
+    const acts = document.createElement("div");
+    acts.className = "c-acts";
+    const log = document.createElement("button");
+    log.type = "button";
+    log.className = "primary";
+    log.textContent = "Log it…";
+    log.addEventListener("click", () => openHourlyAdd({ from: g.from, to: g.to }));
+    const skip = document.createElement("button");
+    skip.type = "button";
+    skip.textContent = "Not work";
+    skip.addEventListener("click", () => {
+      skip.disabled = true;
+      invoke("mini_day_gap_dismiss", { from: g.from, to: g.to }).catch((error) => hourlyError(String(error)));
+    });
+    acts.append(log, skip);
+    row.append(label, when, acts);
+    list.appendChild(row);
+  }
+}
+
 // The rows being answered: their buttons wait until the tracker says.
 const confirming = new Set<string>();
 
@@ -2187,7 +2227,8 @@ function renderAddLength() {
   el("hourly-add-length").textContent = s ? `${fmtMinutes((s.to.getTime() - s.from.getTime()) / 60000)}` : "";
 }
 
-function openHourlyAdd() {
+/** Add time; `span` (milliseconds) fills in a blank's times. */
+function openHourlyAdd(span?: { from: number; to: number }) {
   const h = current?.hourly;
   if (!h) return;
   if (chat) closeChat();
@@ -2209,11 +2250,13 @@ function openHourlyAdd() {
   refreshPicker("hourly-add-project");
   // The day is the start's: just after midnight, the hour before began
   // yesterday (and ends today, after it).
-  const now = new Date();
-  const hourAgo = new Date(now.getTime() - 3600_000);
+  const now = span ? new Date(span.to) : new Date();
+  const hourAgo = span ? new Date(span.from) : new Date(now.getTime() - 3600_000);
   el<HTMLInputElement>("hourly-add-day").value = localDay(hourAgo);
-  el<HTMLInputElement>("hourly-add-from").value = localTime(hourAgo);
-  el<HTMLInputElement>("hourly-add-to").value = localTime(now);
+  // A blank's own times to the minute; otherwise rounded to five.
+  const time = (d: Date) => (span ? `${pad2(d.getHours())}:${pad2(d.getMinutes())}` : localTime(d));
+  el<HTMLInputElement>("hourly-add-from").value = time(hourAgo);
+  el<HTMLInputElement>("hourly-add-to").value = time(now);
   el<HTMLInputElement>("hourly-add-note").value = "";
   el("hourly-add-error").hidden = true;
   el<HTMLButtonElement>("hourly-add-save").disabled = false;
@@ -2290,6 +2333,7 @@ function renderHourly(h: Hourly | null) {
   renderDetector(h?.detector ?? null);
   renderToday(h?.today ?? null);
   renderToConfirm(h?.toConfirm ?? null);
+  renderDayGaps(h?.dayGaps ?? null);
   // Edited away meanwhile (deleted, on the website): nothing to edit.
   if (hourlyEdit && !h?.today?.entries.some((e) => e.id === hourlyEdit?.id)) closeHourlyEdit();
   el("idle-settings").hidden = h === null;
@@ -2808,7 +2852,7 @@ window.addEventListener("DOMContentLoaded", () => {
   click("on-top", () => menu("on-top"));
   click("minimise-to-timer", () => menu("minimise-to-timer"));
   click("hourly-stop", () => hourlyTap("stop"));
-  click("hourly-add-open", openHourlyAdd);
+  click("hourly-add-open", () => openHourlyAdd());
   click("hourly-edit-cancel", closeHourlyEdit);
   click("hourly-edit-delete", deleteHourlyEdit);
   el("hourly-edit-view").addEventListener("submit", (e) => {

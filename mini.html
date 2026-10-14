@@ -473,6 +473,9 @@
       .t-go:hover { background: var(--tile-hover); }
       .t-go svg { width: 11px; height: 11px; fill: var(--pink); stroke: none; }
       .t-tag { font-size: 10.5px; font-weight: 600; color: var(--faint); }
+      #day-gaps-total { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+      #day-gaps-hint { margin: 2px 0 4px; font-size: 11.5px; color: var(--muted); }
+      #day-gaps-list { display: flex; flex-direction: column; }
       #to-confirm-all { font-size: 12px; color: var(--muted); }
       #to-confirm-all:hover { color: var(--fg); text-decoration: underline; }
       #to-confirm-list { display: flex; flex-direction: column; }
@@ -658,6 +661,12 @@
           </div>
           <div id="hourly-quick"></div>
           <input id="hourly-note-input" type="text" maxlength="500" placeholder="Note for the next timer (optional)" autocomplete="off" aria-label="Note for the next timer (optional)" />
+          <!-- The blanks in today's working day (day_gaps.rs). -->
+          <div id="day-gaps" hidden>
+            <div class="h-today-head"><span class="h-label">Not logged today</span><span id="day-gaps-total"></span></div>
+            <p id="day-gaps-hint"></p>
+            <div id="day-gaps-list"></div>
+          </div>
           <!-- Time they seem to have worked but didn't log (to_confirm.rs). -->
           <div id="to-confirm" hidden>
             <div class="h-today-head"><span class="h-label">Still to confirm</span><button type="button" id="to-confirm-all">See all on My Hours</button></div>

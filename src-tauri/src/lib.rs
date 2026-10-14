@@ -25,6 +25,7 @@ use tauri_plugin_deep_link::DeepLinkExt;
 mod analytics;
 mod banner;
 mod clock;
+mod day_gaps;
 mod close;
 mod desktop_entry;
 mod detector;
@@ -937,6 +938,7 @@ pub fn run() {
             mini::mini_hourly_setup,
             mini::mini_hourly_setup_done,
             to_confirm::mini_to_confirm,
+            day_gaps::mini_day_gap_dismiss,
             walkie::mini_walkie_open,
             walkie::mini_walkie_send,
             hourly::mini_hourly,

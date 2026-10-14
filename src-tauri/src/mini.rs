@@ -295,7 +295,32 @@ fn set_compact<R: Runtime>(app: &AppHandle<R>, compact: bool) {
     let (w, h) = if compact { COMPACT_SIZE } else { (FULL_SIZE.0, full_height()) };
     if let Some(mini) = app.get_webview_window("mini") {
         let _ = mini.set_size(tauri::LogicalSize::new(w, h));
+        keep_on_screen(&mini, (w, h));
     }
+}
+
+/// Growing from the mini timer keeps the top-left corner, so a timer at the
+/// right or bottom edge grew off the screen (found on a Mac: the full panel
+/// 30px past the right edge). Nudge it back inside the screen it's on.
+fn keep_on_screen<R: Runtime>(mini: &tauri::WebviewWindow<R>, size: (f64, f64)) {
+    let (Ok(Some(screen)), Ok(pos)) = (mini.current_monitor(), mini.outer_position()) else { return };
+    let scale = screen.scale_factor();
+    let origin = screen.position().to_logical::<f64>(scale);
+    let area = screen.size().to_logical::<f64>(scale);
+    let pos = pos.to_logical::<f64>(mini.scale_factor().unwrap_or(scale));
+    let (x, y) = fit_inside((pos.x, pos.y), size, (origin.x, origin.y, area.width, area.height));
+    if (x, y) != (pos.x, pos.y) {
+        let _ = mini.set_position(tauri::LogicalPosition::new(x, y));
+    }
+}
+
+/// Where a window of `size` at `pos` should go to sit inside `screen`
+/// (x, y, width, height), all in points.
+pub(crate) fn fit_inside(pos: (f64, f64), size: (f64, f64), screen: (f64, f64, f64, f64)) -> (f64, f64) {
+    let (sx, sy, sw, sh) = screen;
+    let x = pos.0.min(sx + sw - size.0).max(sx);
+    let y = pos.1.min(sy + sh - size.1).max(sy);
+    (x, y)
 }
 
 /// When the panel last hid itself. Clicking the tray icon while the panel
@@ -409,6 +434,23 @@ pub(crate) fn minimised_to_panel<R: Runtime>(app: &AppHandle<R>, label: &str) {
     if newly_pinned {
         crate::analytics::panel_mode(app, true, true);
     }
+    // Never leave nothing on screen: once (found on a Mac, right after
+    // launch) the tracker went away but the timer never showed. Check, show
+    // it again, and failing that bring the tracker back.
+    let app = app.clone();
+    std::thread::spawn(move || {
+        for attempt in 0..2 {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            let Some(mini) = app.get_webview_window("mini") else { break };
+            if mini.is_visible().unwrap_or(false) {
+                return;
+            }
+            if attempt == 0 {
+                let _ = mini.show();
+            }
+        }
+        crate::show_main(&app);
+    });
 }
 
 /// Drop the panel down by the tray: the top-right of the main screen on
@@ -1313,6 +1355,18 @@ mod tests {
         for action in ["", "admin", "in;rm", "../escape"] {
             assert!(!is_allowed(action), "{action}");
         }
+    }
+
+    #[test]
+    fn a_growing_panel_stays_on_its_screen() {
+        let screen = (0.0, 0.0, 1728.0, 1117.0);
+        // The mini timer at the right edge grows to the full panel.
+        assert_eq!(fit_inside((1388.0, 33.0), (372.0, 720.0), screen), (1356.0, 33.0));
+        assert_eq!(fit_inside((100.0, 900.0), (372.0, 720.0), screen), (100.0, 397.0));
+        assert_eq!(fit_inside((-50.0, -10.0), (372.0, 720.0), screen), (0.0, 0.0));
+        assert_eq!(fit_inside((500.0, 200.0), (372.0, 720.0), screen), (500.0, 200.0));
+        // A screen above the main one (negative y).
+        assert_eq!(fit_inside((1700.0, -100.0), (332.0, 72.0), (-78.0, -1080.0, 1920.0, 1080.0)), (1510.0, -100.0));
     }
 
     #[test]

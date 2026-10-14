@@ -42,8 +42,6 @@ pub(crate) struct View {
     pub hourly: Option<crate::hourly::PanelView>,
     pub version: String,
     pub autostart: bool,
-    /// macOS: tracker pages flipped dark (theme.rs). Off keeps photo colours true.
-    pub tracker_dark: bool,
     /// Closing the main window quits the app (close.rs) instead of hiding it.
     pub close_quits: bool,
     pub pinned: bool,
@@ -128,7 +126,6 @@ pub(crate) fn plan(
         hourly: None,
         version: env!("CARGO_PKG_VERSION").into(),
         autostart: false,
-        tracker_dark: false,
         close_quits: false,
         pinned: false,
         on_top: true,
@@ -156,7 +153,6 @@ pub(crate) fn push<R: Runtime>(app: &AppHandle<R>) {
         .unwrap_or((0, Vec::new(), Vec::new()));
     let mut view = plan(clock.as_ref(), unread, needs, crate::clock::unix_now());
     view.autostart = crate::autostart_enabled(app);
-    view.tracker_dark = crate::close::flag(app, crate::theme::TRACKER_DARK);
     view.close_quits = crate::close::quits(app);
     view.pinned = is_pinned();
     view.compact = is_compact();
@@ -1043,7 +1039,7 @@ fn is_menu_item(item: &str) -> bool {
         || item == "auto-offline"
         || item == "on-top"
         || item == "minimise-to-timer"
-        || item == "tracker-dark"
+
         || idle_minutes_item(item).is_some()
 }
 
@@ -1135,14 +1131,6 @@ pub(crate) fn mini_menu<R: Runtime>(app: AppHandle<R>, item: String) -> Result<(
             if let Some(minutes) = idle_minutes_item(item) {
                 crate::hourly::set_idle_minutes(&app, minutes);
             }
-        }
-        "tracker-dark" => {
-            let on = !crate::close::flag(&app, crate::theme::TRACKER_DARK);
-            crate::close::set_flag(&app, crate::theme::TRACKER_DARK, on);
-            #[cfg(target_os = "macos")]
-            crate::theme::apply_tracker_dark(&app);
-            push(&app);
-            crate::analytics::setting_changed(&app, "tracker_dark", on);
         }
         "on-top" => {
             let on = !on_top(&app);
@@ -1374,7 +1362,7 @@ mod tests {
         for item in [
             "offline", "new-window", "update", "diagnostics", "autostart", "close-keep", "close-quit", "quit",
             "banners-tracker", "banners-walkie", "banners-channel1", "auto-offline", "idle-5", "idle-20",
-            "on-top", "minimise-to-timer", "tracker-dark",
+            "on-top", "minimise-to-timer",
         ] {
             assert!(is_menu_item(item), "{item}");
         }

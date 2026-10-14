@@ -76,7 +76,7 @@ pub(crate) fn notes(version: &str, os: &str, hourly: bool) -> Vec<Item> {
                 ));
                 items.push(item(
                     "Suggests time you forgot to log",
-                    "Switch on Settings › Suggest time from my work, pick your apps (design, video, audio, 3D, code and AI, browsers, or add any app that's open) and link folders, or your whole Work folder or drive as \"Any project\". It asks \"Worked on this, log it?\" and never logs time by itself. Right now in Settings shows what it's seeing. It never records your screen or reads your files, and nobody at CoolerBox or your company can see what you work on: only time you say yes to reaches the tracker, as a project and two times."
+                    "Switch on Settings › Suggest time from my work, pick your apps (design, video, audio, 3D, code and AI, browsers, or add any app that's open) and link folders, or your whole Work folder or drive as \"Any project\". It asks \"Worked on this, log it?\" and never logs time by itself. Right now in Settings shows what it's seeing. It never records your screen or reads your files, and nobody at CoolerBox or your company can see what you work on: the tracker only ever gets a project and two times, and logs only what you say yes to."
                         .into(),
                 ));
             }

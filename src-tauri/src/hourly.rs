@@ -1109,6 +1109,10 @@ fn set_info<R: Runtime>(app: &AppHandle<R>, info: Option<Info>) {
     maybe_warn_retainer(app);
     let on = with(app, |inner| inner.info.is_some()).unwrap_or(false);
     sync_shortcut(app, on);
+    // Newly billing by the hour here: walk them through it (setup.rs).
+    if on {
+        crate::setup::maybe_offer(app);
+    }
 }
 
 /// Cmd+Shift+Y on macOS, Ctrl+Alt+Y elsewhere (the app's other shortcuts'

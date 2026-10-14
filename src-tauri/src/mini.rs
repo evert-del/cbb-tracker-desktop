@@ -901,6 +901,55 @@ pub(crate) fn show_whats_new<R: Runtime>(app: &AppHandle<R>, version: &str, item
     }
 }
 
+/// Open the panel (full size) on the project timer's set-up guide
+/// (setup.rs), held open like What's new until it's done or skipped.
+pub(crate) fn show_setup<R: Runtime>(app: &AppHandle<R>) {
+    if !crate::session::signed_in() {
+        return;
+    }
+    HOLD_OPEN.store(true, std::sync::atomic::Ordering::Relaxed);
+    if is_compact() {
+        WHATS_NEW_SHRINK_AFTER.store(true, std::sync::atomic::Ordering::Relaxed);
+        set_compact(app, false);
+    }
+    if let Some(mini) = app.get_webview_window("mini") {
+        if !mini.is_visible().unwrap_or(false) {
+            if !is_pinned() {
+                place_under_tray(&mini);
+            }
+            let _ = mini.show();
+        }
+        push(app);
+        let _ = mini.eval("window.__cbbMiniSetup && window.__cbbMiniSetup()");
+        let _ = mini.set_focus();
+    }
+}
+
+/// Settings ▸ Project timer ▸ Set-up guide.
+#[tauri::command]
+pub(crate) fn mini_hourly_setup<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
+    if crate::hourly::info_snapshot(&app).is_none() {
+        return Err("The project timer isn't on for you.".into());
+    }
+    show_setup(&app);
+    Ok(())
+}
+
+/// The guide is put away: `done` ("Done" or "Skip set-up") means it isn't
+/// offered again; otherwise (time away came first) it is, on a later launch.
+#[tauri::command]
+pub(crate) fn mini_hourly_setup_done<R: Runtime>(app: AppHandle<R>, done: bool) -> Result<(), String> {
+    HOLD_OPEN.store(false, std::sync::atomic::Ordering::Relaxed);
+    if done {
+        crate::setup::mark_done(&app);
+    }
+    if WHATS_NEW_SHRINK_AFTER.swap(false, std::sync::atomic::Ordering::Relaxed) {
+        set_compact(&app, true);
+        push(&app);
+    }
+    Ok(())
+}
+
 /// Settings ▸ What's new.
 #[tauri::command]
 pub(crate) fn mini_whats_new<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {

@@ -45,6 +45,7 @@ mod quiet;
 mod schedule;
 mod search;
 mod session;
+mod setup;
 mod system_open;
 mod tabs;
 mod title_buttons;
@@ -931,6 +932,8 @@ pub fn run() {
             mini::mini_open_map,
             mini::mini_whats_new,
             mini::mini_whats_new_done,
+            mini::mini_hourly_setup,
+            mini::mini_hourly_setup_done,
             walkie::mini_walkie_open,
             walkie::mini_walkie_send,
             hourly::mini_hourly,

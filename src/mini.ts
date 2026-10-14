@@ -380,12 +380,14 @@ function renderMode(view: View) {
     el("hourly-edit-view").hidden = true;
     return;
   }
+  // The question about time away comes first; the guide is offered again later.
+  if (hourlyIdle && setup !== null) leaveSetup();
   el("hourly-idle-view").hidden = !hourlyIdle;
   el("hourly-pick").hidden = !hourlyPick || !!hourlyIdle;
   el("hourly-add-view").hidden = !hourlyAdd || !!hourlyIdle || !!hourlyPick;
   el("hourly-edit-view").hidden = !hourlyEdit || !!hourlyIdle || !!hourlyPick || hourlyAdd;
   if (hourlyPick || hourlyIdle || hourlyAdd || hourlyEdit) el("main-view").hidden = true;
-  else if (el("settings").hidden && !mood && !chat && !whatsNew) {
+  else if (el("settings").hidden && !mood && !chat && !whatsNew && setup === null) {
     el("main-view").hidden = false;
   }
 }
@@ -430,6 +432,7 @@ window.__cbbMiniShow = (view) => {
   renderCompactAction(view);
   restClockButtons();
   renderMode(view);
+  renderSetup();
   tick();
 };
 
@@ -644,7 +647,7 @@ function greet(text: string) {
 // What's new after an update (whats_new.rs): its own page, until "Got it".
 let whatsNew = false;
 function openWhatsNew(page: { version: string; items: { title: string; how: string }[] }) {
-  if (mood || chat) return;
+  if (mood || chat || setup !== null) return;
   whatsNew = true;
   el("whats-new-title").textContent = `New in ${page.version}`;
   el("whats-new-items").replaceChildren(...page.items.map((item) => {
@@ -672,6 +675,199 @@ function closeWhatsNew() {
   el("whats-new-view").hidden = true;
   el("main-view").hidden = false;
   void invoke("mini_whats_new_done");
+}
+
+// The project timer's set-up guide (setup.rs): a step at a time, each one
+// using the panel's own settings, so nothing changes that they didn't tap.
+let setup: number | null = null;
+const SETUP_STEPS = 5;
+const SETUP_PINS = 6;
+
+function openSetup() {
+  if (mood || chat || whatsNew || hourlyIdle || !current?.hourly) return;
+  if (hourlyAdd) closeHourlyAdd();
+  if (hourlyEdit) closeHourlyEdit();
+  if (hourlyPick) closeHourlyPick();
+  setup = 0;
+  el("main-view").hidden = true;
+  el("settings").hidden = true;
+  el("compact-view").hidden = true;
+  el("setup-view").hidden = false;
+  renderSetup();
+  el<HTMLButtonElement>("setup-next").focus({ preventScroll: true });
+}
+
+/** Done, or skipped: not offered again. `then` opens Settings on a step's setting. */
+function closeSetup(then?: () => void) {
+  if (setup === null) return;
+  setup = null;
+  el("setup-view").hidden = true;
+  el("main-view").hidden = false;
+  void invoke("mini_hourly_setup_done", { done: true });
+  then?.();
+}
+
+/** Put away unfinished (time away came first, or the timer went): offered again on a later launch. */
+function leaveSetup() {
+  if (setup === null) return;
+  setup = null;
+  el("setup-view").hidden = true;
+  void invoke("mini_hourly_setup_done", { done: false });
+}
+
+function setupStep(to: number) {
+  setup = Math.max(0, Math.min(SETUP_STEPS - 1, to));
+  el("setup-error").hidden = true;
+  renderSetup();
+  el("setup-view").scrollTop = 0;
+}
+
+function setupError(error: unknown) {
+  el("setup-error").textContent = String(error);
+  el("setup-error").hidden = false;
+}
+
+function renderSetup() {
+  if (setup === null) return;
+  const view = current;
+  const h = view?.hourly;
+  // No longer billing by the hour: nothing to set up (and not marked done).
+  if (!view || !h) {
+    leaveSetup();
+    el("main-view").hidden = false;
+    return;
+  }
+  const mac = view.platform === "macos";
+  const tray = mac ? "menu bar" : "system tray";
+  const node = (tag: string, text = "", className = "") => {
+    const n = document.createElement(tag);
+    if (text) n.textContent = text;
+    if (className) n.className = className;
+    return n;
+  };
+  const list = (items: string[]) => {
+    const ul = node("ul");
+    ul.append(...items.map((item) => node("li", item)));
+    return ul;
+  };
+  const parts: Node[] = [];
+  let title = "";
+  if (setup === 0) {
+    title = "You bill by the hour now";
+    parts.push(
+      node("p", "Your company has set you up to bill by the hour, so this app now has a project timer: your own stopwatch for the projects you work on."),
+      list([
+        "Only you start, stop and change your hours. Nobody else logs them for you.",
+        "The project decides the billing: hours on a project billed by the hour can go on the client's invoice; hours on a quoted project are only tracked, to see how long the work took.",
+        "Your hours are on My Hours in the tracker too, from any browser.",
+      ]),
+      node("p", "This takes about a minute. Skip any step, and find this guide again in Settings › Project timer.", "note"),
+    );
+  } else if (setup === 1) {
+    title = "Start, switch and stop";
+    const keys = node("p");
+    keys.append(node("kbd", h.shortcut), document.createTextNode(" starts your last project, or stops the timer, from any app."));
+    parts.push(
+      node("p", `Tap a project in this panel to start timing it. Tap another to switch, and Stop when you're done. The ${tray}${mac ? " and the Dock icon's menu" : ""} have it too.`),
+      keys,
+      node("p", "Forgot to start it? Use Add time…, or Just start and choose the project when you stop.", "note"),
+    );
+    if (h.projects.length === 0) {
+      parts.push(node("p", "You're not on a project you can time yet. Once a producer adds you to one it shows up here, or start a job on My Hours.", "note"));
+    } else {
+      const pinned = h.pinned ?? [];
+      parts.push(node("p", `Pin the projects you work on most (up to ${SETUP_PINS}), so they're always one tap away:`));
+      const box = node("div", "", "setup-pins");
+      for (const project of h.projects) {
+        const on = pinned.includes(project.id);
+        const row = document.createElement("button");
+        row.type = "button";
+        row.setAttribute("aria-pressed", String(on));
+        row.disabled = !on && pinned.length >= SETUP_PINS;
+        const what = node("span", "", "what");
+        what.append(node("span", project.name), node("span", [project.clientName, project.billable ? "Billable" : "Tracked only"].filter(Boolean).join(" · ")));
+        row.append(node("span", on ? "✓" : "", "tick"), what);
+        row.addEventListener("click", () => {
+          invoke("mini_hourly_pin", { projectId: project.id, pinned: !on }).catch(setupError);
+        });
+        box.append(row);
+      }
+      parts.push(box);
+    }
+  } else if (setup === 2) {
+    title = "When you step away";
+    parts.push(node("p", "With the timer running and no keyboard or mouse for a while, the app asks what to do when you're back: keep the time, drop it and keep going, or drop it and stop."));
+    parts.push(node("p", "Ask me after:"));
+    const choice = node("div", "", "setup-choice");
+    choice.setAttribute("role", "radiogroup");
+    choice.setAttribute("aria-label", "Ask about idle time after");
+    for (const minutes of [5, 10, 15, 20]) {
+      const seg = document.createElement("button");
+      seg.type = "button";
+      seg.className = "seg";
+      seg.setAttribute("role", "radio");
+      seg.setAttribute("aria-checked", String(h.idleMinutes === minutes));
+      seg.textContent = `${minutes} min`;
+      seg.addEventListener("click", () => menu(`idle-${minutes}`));
+      choice.append(seg);
+    }
+    parts.push(choice);
+    parts.push(node("p", "Not there to answer? After 30 minutes the timer stops at the moment you went idle, and My Hours asks you about that time later. It never adds time by itself.", "note"));
+  } else if (setup === 3) {
+    title = "Always there";
+    parts.push(node("p", "The timer and its reminders only work while this app is running."));
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "setup-toggle";
+    row.setAttribute("role", "switch");
+    row.setAttribute("aria-checked", String(view.autostart));
+    const sw = node("span", "", "switch");
+    sw.setAttribute("aria-hidden", "true");
+    sw.setAttribute("aria-checked", String(view.autostart));
+    row.append(node("span", "Open the app when I log in to this computer"), sw);
+    row.addEventListener("click", () => menu("autostart"));
+    parts.push(row);
+    parts.push(node("p", view.close_quits
+      ? "Closing the window quits the app, which stops the timer's reminders. You can change that in Settings › When you close the window."
+      : `Closing the window keeps it running in the ${tray}.`, "note"));
+  } else {
+    title = "Never forget to log";
+    parts.push(
+      node("p", "Forgot the timer altogether? Two things catch it:"),
+      list([
+        "Suggest time from my work: from the apps you pick and the folders you link, the app asks \"Worked on Vimeo · Logo refresh 09:10–10:40, log it?\" It's off until you switch it on, and it never logs anything by itself.",
+        "Still to confirm, on My Hours in the tracker: time you seem to have worked but didn't log (your bookings, task work, and what this app noticed), waiting for your yes.",
+      ]),
+      node("p", "Private: it never records your screen or reads your files. The tracker only gets a project and two times.", "note"),
+    );
+    if (h.detector?.on) {
+      parts.push(node("p", "✓ Suggest time from my work is on."));
+    } else if (h.detector) {
+      const on = document.createElement("button");
+      on.type = "button";
+      on.className = "setup-toggle";
+      on.textContent = "Set up Suggest time from my work…";
+      // Its own privacy page in Settings, read before it can be switched on.
+      on.addEventListener("click", () => closeSetup(() => {
+        showSettings(true);
+        showDetectorPrivacy("ask");
+        el("detector-settings").scrollIntoView({ block: "start" });
+      }));
+      parts.push(on);
+    }
+    const hours = document.createElement("button");
+    hours.type = "button";
+    hours.className = "setup-toggle";
+    hours.textContent = "Open My Hours in the tracker";
+    hours.addEventListener("click", () => void invoke("mini_open", { href: "/hours" }));
+    parts.push(hours);
+  }
+  el("setup-step").textContent = `Step ${setup + 1} of ${SETUP_STEPS}`;
+  el("setup-title").textContent = title;
+  el("setup-body").replaceChildren(...parts);
+  el("setup-back").hidden = setup === 0;
+  el("setup-next").textContent = setup === SETUP_STEPS - 1 ? "Done" : "Next";
+  el("setup-skip").hidden = setup === SETUP_STEPS - 1;
 }
 
 function openMood(moment: "IN" | "WRAP", greeting?: string | null) {
@@ -729,12 +925,14 @@ declare global {
     __cbbMiniMood?: (ask: { moment: "IN" | "WRAP"; greeting?: string | null }) => void;
     __cbbMiniGreet?: (text: string) => void;
     __cbbMiniWhatsNew?: (page: { version: string; items: { title: string; how: string }[] }) => void;
+    __cbbMiniSetup?: () => void;
     __cbbMiniMoodResult?: (r: { ok: boolean; offerTalk?: boolean; told?: string[]; error?: string }) => void;
   }
 }
 window.__cbbMiniMood = (ask) => openMood(ask.moment, ask.greeting);
 window.__cbbMiniGreet = (text) => greet(text);
 window.__cbbMiniWhatsNew = (page) => openWhatsNew(page);
+window.__cbbMiniSetup = () => openSetup();
 window.__cbbMiniMoodResult = (r) => moodResult(r);
 
 // ── Walkie quick chat (walkie.rs). What people say is only drawn here: never
@@ -2107,7 +2305,7 @@ function renderHourly(h: Hourly | null) {
   // Filed meanwhile (on the website, say), or put off: nothing to ask.
   if (hourlyPick === "file" && !h.filing) closeHourlyPick();
   // Still waiting for its project (the view was left): ask again.
-  if (h.filing && hourlyPick === null && !hourlyIdle && !hourlyAdd && !mood && !whatsNew && !h.asking) openHourlyPick("file");
+  if (h.filing && hourlyPick === null && !hourlyIdle && !hourlyAdd && !mood && !whatsNew && setup === null && !h.asking) openHourlyPick("file");
   if (hourlyPick) renderHourlyPick();
   // A question whose timer stopped meanwhile (on the website, say) is moot.
   if (hourlyIdle && !h.asking) closeHourlyIdle();
@@ -2477,7 +2675,7 @@ window.__cbbMiniHourlyAfter = (after) => {
 };
 
 function showSettings(open: boolean) {
-  if (!el("compact-view").hidden || mood || chat || whatsNew || hourlyIdle) return;
+  if (!el("compact-view").hidden || mood || chat || whatsNew || hourlyIdle || setup !== null) return;
   // Opening Settings leaves the timer's views; closing it (as on blur)
   // keeps a filing question or a half-typed Add time.
   if (open && hourlyAdd) closeHourlyAdd();
@@ -2506,6 +2704,10 @@ window.addEventListener("DOMContentLoaded", () => {
   click("update", () => menu("update"));
   click("whats-new-row", () => { showSettings(false); void invoke("mini_whats_new"); });
   click("whats-new-done", closeWhatsNew);
+  click("setup-row", () => { showSettings(false); invoke("mini_hourly_setup").catch((error) => hourlyError(String(error))); });
+  click("setup-skip", () => closeSetup());
+  click("setup-back", () => setupStep((setup ?? 0) - 1));
+  click("setup-next", () => (setup === SETUP_STEPS - 1 ? closeSetup() : setupStep((setup ?? 0) + 1)));
   click("update-row", () => menu("update"));
   click("diagnostics-row", () => menu("diagnostics"));
   click("autostart-row", () => menu("autostart"));
@@ -2779,6 +2981,7 @@ window.addEventListener("DOMContentLoaded", () => {
   window.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;
     if (whatsNew) { closeWhatsNew(); return; }
+    if (setup !== null) { closeSetup(); return; }
     // The question about time away is only closed by an answer.
     if (hourlyIdle) return;
     if (hourlyAdd) { closeHourlyAdd(); return; }

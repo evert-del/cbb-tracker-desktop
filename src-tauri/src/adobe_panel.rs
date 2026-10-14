@@ -66,12 +66,14 @@ pub(crate) fn parse_manifest(raw: &str) -> Option<PanelManifest> {
         return None;
     }
     for (package, file) in &manifest.files {
-        let known = matches!(package.as_str(), "premierepro" | "photoshop" | "indesign" | "cep");
+        // A package for another app (DaVinci Resolve's zip, and any added later) is
+        // left to the person (installs_with_adobe); only its name must still be plain.
+        let known = package.len() <= 40 && package.chars().all(|c| c.is_ascii_lowercase());
         let plain = !file.name.is_empty()
             && file.name.len() <= 160
             && file.name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
             && !file.name.starts_with('.')
-            && (file.name.ends_with(".ccx") || file.name.ends_with(".zxp"));
+            && (file.name.ends_with(".ccx") || file.name.ends_with(".zxp") || file.name.ends_with(".zip"));
         let sha = file.sha256.len() == 64 && file.sha256.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase());
         if !known || !plain || !sha || file.size == 0 || file.size > MAX_PACKAGE_BYTES {
             return None;
@@ -84,6 +86,15 @@ fn parse_version(v: &str) -> Option<(u32, u32, u32)> {
     let mut parts = v.split('.').map(|p| p.parse::<u32>().ok());
     let version = (parts.next()??, parts.next()??, parts.next()??);
     parts.next().is_none().then_some(version)
+}
+
+/// The packages Adobe's installer takes: a .ccx (Premiere Pro, Photoshop,
+/// InDesign) or a .zxp (Illustrator, After Effects). DaVinci Resolve's zip is
+/// copied into Resolve's plugins folder by hand (the tracker's /download page
+/// says where), so this app skips it.
+pub(crate) fn installs_with_adobe(package: &str, file: &PanelFile) -> bool {
+    matches!(package, "premierepro" | "photoshop" | "indesign" | "cep")
+        && (file.name.ends_with(".ccx") || file.name.ends_with(".zxp"))
 }
 
 /// True when `published` is newer than what is installed (or nothing is).
@@ -177,7 +188,7 @@ async fn install_all<R: Runtime>(app: &AppHandle<R>, manifest: &PanelManifest) -
     let client = reqwest::Client::new();
     let mut installed = 0;
     let mut failed = Vec::new();
-    for (package, file) in &manifest.files {
+    for (package, file) in manifest.files.iter().filter(|(p, f)| installs_with_adobe(p, f)) {
         let url = format!("{}/download/adobe-panel/{}", crate::APP_ORIGIN, slug(package));
         let bytes = match client.get(url).send().await {
             Ok(r) if r.status().is_success() => r.bytes().await.map_err(|_| ()),
@@ -347,6 +358,18 @@ mod tests {
         let args = install_args(Path::new("/tmp/review.ccx"));
         assert_eq!(args[1], "/tmp/review.ccx");
         assert_eq!(args[0], if cfg!(target_os = "windows") { "/install" } else { "--install" });
+    }
+
+    #[test]
+    fn leaves_resolve_and_anything_new_to_the_person() {
+        let sha = sha256_hex(b"abc");
+        let raw = format!(
+            r#"{{"version":"0.2.0","minimum":"0.1.0","files":{{"cep":{{"name":"review-cep-0.2.0.zxp","size":3,"sha256":"{sha}"}},"resolve":{{"name":"review-resolve-0.2.0.zip","size":3,"sha256":"{sha}"}}}}}}"#
+        );
+        let manifest = parse_manifest(&raw).expect("a manifest with Resolve's zip is still a manifest");
+        let adobe: Vec<_> = manifest.files.iter().filter(|(p, f)| installs_with_adobe(p, f)).map(|(p, _)| p.as_str()).collect();
+        assert_eq!(adobe, vec!["cep"]);
+        assert!(parse_manifest(&raw.replace("\"resolve\"", "\"Evil Name\"")).is_none());
     }
 
     #[test]

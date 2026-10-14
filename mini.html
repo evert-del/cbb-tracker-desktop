@@ -170,7 +170,7 @@
       .set-row { display: flex; align-items: center; gap: 10px; padding: 12px 16px; text-align: left; border-bottom: 0.5px solid var(--rule); width: 100%; box-sizing: border-box; }
       .set-row:hover { background: var(--tile); }
       .set-row .txt { flex: 1; }
-      .set-row .hint { font-size: 11.5px; color: var(--faint); }
+      .set-row .hint { font-size: 11.5px; color: var(--muted); }
       .switch { width: 34px; height: 20px; border-radius: 99px; background: var(--tile-hover); position: relative; flex: none; transition: background 0.15s; }
       .switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,0.25); transition: transform 0.15s; }
       .switch[aria-checked="true"] { background: var(--pink); }
@@ -185,7 +185,9 @@
       .seg[aria-checked="true"] { background: var(--card); color: var(--fg); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12); }
       #close-choice + .set-row, #dnd-choice + .set-row { border-top: 0.5px solid var(--rule); }
       /* Notifications (quiet.rs): which pop up, and do-not-disturb. */
-      .set-label { padding: 14px 16px 4px; font-size: 11px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--faint); }
+      .set-label { padding: 14px 16px 4px; font-size: 11px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); }
+      /* Each group of settings starts with its own heading. */
+      .set-section { padding-top: 20px; }
       #dnd-row { border-bottom: 0; padding-bottom: 6px; cursor: default; }
       #dnd-row:hover { background: none; }
       #dnd-choice { display: grid; grid-template-columns: repeat(5, 1fr); gap: 2px; margin: 0 16px 12px; padding: 2px; border-radius: var(--r-ctl); background: var(--tile); }
@@ -275,7 +277,8 @@
       #detector-body { padding: 0 16px 12px; display: flex; flex-direction: column; gap: 8px; border-bottom: 0.5px solid var(--rule); }
       #detector-body .set-label { padding: 6px 0 0; }
       #detector-apps { display: flex; flex-wrap: wrap; gap: 6px; }
-      #detector-apps .h-chip[aria-pressed="true"] { background: var(--pink); color: #fff; }
+      /* The chosen apps: quiet tinted chips (the list rarely changes). */
+      #detector-apps .h-chip[aria-pressed="true"] { background: var(--tone-0-bg); color: var(--tone-0-fg); }
       .d-kind { margin: 4px 0 2px; font-size: 11px; color: var(--muted); }
       #detector-add-app, #detector-link { align-self: flex-start; font-size: 12.5px; font-weight: 600; color: var(--pink-ink); }
       #detector-add-app:hover, #detector-link:hover { text-decoration: underline; }
@@ -285,7 +288,10 @@
       #detector-permission p { margin: 0; }
       .d-perm-acts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
       #detector-permission .d-perm-acts button { text-decoration: none !important; padding: 5px 10px; border-radius: var(--r-ctl); background: var(--card); color: var(--fg) !important; font-weight: 600; font-size: 12px; }
-      #detector-permission .d-perm-acts button:first-child:not([hidden]) { background: var(--pink); color: #fff !important; }
+      #detector-permission .d-perm-acts button.d-perm-main { background: var(--pink); color: #fff !important; }
+      #detector-permission .d-perm-acts button.d-perm-more-btn { background: none; padding: 5px 4px; text-decoration: underline !important; }
+      #detector-perm-more { margin-top: 8px; }
+      #detector-private { display: flex; flex-direction: column; gap: 4px; }
       #detector-perm-ok { margin: 0; font-size: 12px; color: var(--tone-2-fg); background: var(--tone-2-bg); padding: 6px 10px; border-radius: var(--r-ctl); }
       .d-app-acts { display: flex; flex-wrap: wrap; gap: 4px 16px; }
       #detector-change-apps { align-self: flex-start; font-size: 12.5px; font-weight: 600; color: var(--pink-ink); }
@@ -878,14 +884,24 @@
             </div>
           </div>
           <div id="detector-body" hidden>
+            <div id="detector-private">
+              <p class="d-hint">Private: nothing about your screen, apps or files leaves this computer. Only time you say yes to goes to the tracker.</p>
+              <button type="button" id="detector-privacy-open">What it sees, and what it doesn't</button>
+            </div>
             <p id="detector-perm-ok" hidden>✓ Window names: macOS lets the app read them.</p>
             <div id="detector-permission" role="status" hidden>
               <p id="detector-permission-text"></p>
               <div class="d-perm-acts">
-                <button type="button" id="detector-permission-btn">Allow it…</button>
-                <button type="button" id="detector-open-settings">Open System Settings</button>
-                <button type="button" id="detector-reset-btn">Ask macOS again</button>
-                <button type="button" id="detector-restart-btn">Restart now</button>
+                <button type="button" class="d-perm-main" id="detector-permission-btn">Allow it…</button>
+                <button type="button" class="d-perm-main" id="detector-restart-btn">Restart now</button>
+                <button type="button" class="d-perm-more-btn" id="detector-perm-more-btn" aria-expanded="false" aria-controls="detector-perm-more">Still not working?</button>
+              </div>
+              <div id="detector-perm-more" hidden>
+                <p id="detector-perm-steps"></p>
+                <div class="d-perm-acts">
+                  <button type="button" id="detector-reset-btn">Ask macOS again</button>
+                  <button type="button" id="detector-open-settings">Open System Settings</button>
+                </div>
               </div>
             </div>
             <div class="set-label">Apps to look at</div>
@@ -899,8 +915,6 @@
             <p class="d-hint">Link as many as you like, on any drive. Link your Work folder (or a whole drive) as "Any project" and it tells the project from the client and project folders inside.</p>
             <div id="detector-folders"></div>
             <button type="button" id="detector-link">Link folders…</button>
-            <p class="d-hint">Nothing about your screen, apps or files leaves this computer. Only time you say yes to goes to the tracker: the project and the times.</p>
-            <button type="button" id="detector-privacy-open">What it sees, and what it doesn't</button>
           </div>
         </div>
         <div id="idle-settings" hidden>
@@ -915,22 +929,7 @@
           </div>
         </div>
         </div>
-        <button class="set-row" id="tracker-dark-row" type="button" role="switch" aria-checked="false" hidden>
-          <span class="txt">Dark tracker pages<span class="hint" style="display:block">Turns the tracker dark when your Mac is. Photo and video colours are only approximate, so leave it off for reviewing design work.</span></span>
-          <span class="switch" id="tracker-dark-switch" aria-checked="false"></span>
-        </button>
-        <button class="set-row" id="autostart-row" type="button" role="switch" aria-checked="false">
-          <span class="txt">Launch at login<span class="hint" style="display:block">Start CoolerBox Tracker when you sign in to this computer.</span></span>
-          <span class="switch" id="autostart-switch" aria-checked="false"></span>
-        </button>
-        <div class="set-row" id="close-row">
-          <span class="txt">When you close the window<span class="hint" id="close-hint" style="display:block">Keep running keeps your timer, reminders and notifications going.</span></span>
-        </div>
-        <div id="close-choice" role="radiogroup" aria-labelledby="close-row">
-          <button type="button" class="seg" id="close-keep" role="radio" aria-checked="true">Keep running</button>
-          <button type="button" class="seg" id="close-quit" role="radio" aria-checked="false">Quit the app</button>
-        </div>
-        <div class="set-label" id="notif-label">Notifications that pop up</div>
+        <div class="set-label set-section" id="notif-label">Notifications</div>
         <button class="set-row" id="banners-tracker" type="button" role="switch" aria-checked="true">
           <span class="txt">Tracker notifications<span class="hint" style="display:block">Approvals, phases and other updates.</span></span>
           <span class="switch" aria-hidden="true"></span>
@@ -943,18 +942,6 @@
           <span class="txt">Channel 1<span class="hint" style="display:block">Messages to everyone in the company.</span></span>
           <span class="switch" aria-hidden="true"></span>
         </button>
-        <button class="set-row" id="on-top" type="button" role="switch" aria-checked="true">
-          <span class="txt">Keep this panel on top<span class="hint" style="display:block">Off, other windows can cover it and the mini timer.</span></span>
-          <span class="switch" aria-hidden="true"></span>
-        </button>
-        <button class="set-row" id="minimise-to-timer" type="button" role="switch" aria-checked="true">
-          <span class="txt">Minimising shows the small panel<span class="hint" style="display:block" id="minimise-hint">Off, minimising the tracker is a normal minimise.</span></span>
-          <span class="switch" aria-hidden="true"></span>
-        </button>
-        <button class="set-row" id="auto-offline" type="button" role="switch" aria-checked="true">
-          <span class="txt">Save my call sheets for offline<span class="hint" style="display:block">The next two days' call sheets, ready without signal in Saved offline.</span></span>
-          <span class="switch" aria-hidden="true"></span>
-        </button>
         <div class="set-row" id="dnd-row">
           <span class="txt">Do not disturb<span class="hint" id="dnd-hint" style="display:block">Also quiets the tracker website. Call alerts still ring.</span></span>
         </div>
@@ -965,6 +952,36 @@
           <button type="button" class="seg" data-dnd="4h" role="radio" aria-checked="false">4h</button>
           <button type="button" class="seg" data-dnd="morning" role="radio" aria-checked="false" title="Until 08:00 tomorrow">Morning</button>
         </div>
+        <div class="set-label set-section" id="window-label">Window and panel</div>
+        <button class="set-row" id="on-top" type="button" role="switch" aria-checked="true">
+          <span class="txt">Keep the panel on top<span class="hint" style="display:block">Floats above your other windows, and so does the mini timer.</span></span>
+          <span class="switch" aria-hidden="true"></span>
+        </button>
+        <button class="set-row" id="minimise-to-timer" type="button" role="switch" aria-checked="true">
+          <span class="txt">Minimise to the mini timer<span class="hint" style="display:block" id="minimise-hint">Minimising the tracker shows the small floating timer instead.</span></span>
+          <span class="switch" aria-hidden="true"></span>
+        </button>
+        <div class="set-row" id="close-row">
+          <span class="txt">When you close the window<span class="hint" id="close-hint" style="display:block">Keep running keeps your timer, reminders and notifications going.</span></span>
+        </div>
+        <div id="close-choice" role="radiogroup" aria-labelledby="close-row">
+          <button type="button" class="seg" id="close-keep" role="radio" aria-checked="true">Keep running</button>
+          <button type="button" class="seg" id="close-quit" role="radio" aria-checked="false">Quit the app</button>
+        </div>
+        <button class="set-row" id="tracker-dark-row" type="button" role="switch" aria-checked="false" hidden>
+          <span class="txt">Dark tracker pages<span class="hint" style="display:block">Tracker pages go dark with your Mac. Photo and video colours are then only approximate, so leave it off for reviewing design work.</span></span>
+          <span class="switch" id="tracker-dark-switch" aria-checked="false"></span>
+        </button>
+        <div class="set-label set-section" id="general-label">General</div>
+        <button class="set-row" id="autostart-row" type="button" role="switch" aria-checked="false">
+          <span class="txt">Launch at login<span class="hint" style="display:block">Start CoolerBox Tracker when you sign in to this computer.</span></span>
+          <span class="switch" id="autostart-switch" aria-checked="false"></span>
+        </button>
+        <button class="set-row" id="auto-offline" type="button" role="switch" aria-checked="true">
+          <span class="txt">Save call sheets for offline<span class="hint" style="display:block">The next two days' call sheets, ready without signal in Saved offline.</span></span>
+          <span class="switch" aria-hidden="true"></span>
+        </button>
+        <div class="set-label set-section" id="about-label">About</div>
         <button class="set-row" id="whats-new-row" type="button">
           <span class="txt">What's new<span class="hint" style="display:block">What changed in this version, and how to use it.</span></span>
         </button>

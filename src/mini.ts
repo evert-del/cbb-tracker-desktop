@@ -1788,18 +1788,18 @@ function renderPermission(state: "ask" | "restart" | "stuck" | null, ok = false)
   el("detector-permission").hidden = state === null;
   el("detector-perm-ok").hidden = state !== null || !ok;
   if (state === null) return;
+  // One main step; everything else waits behind "Still not working?".
   el("detector-permission-text").textContent = {
-    ask:
-      `To read window names, macOS needs the permission it calls "Screen Recording". The app never records or captures your screen. ` +
-      `Already switched on there, and still seeing this? Tap Ask macOS again, allow it, then restart.`,
-    restart:
-      `Once Screen Recording is switched on for CoolerBox Tracker in System Settings, restart the app to finish. ` +
-      `If it was on already, tap Ask macOS again, allow it, then restart.`,
-    stuck:
-      "macOS is still hiding window names from CoolerBox Tracker, even though Screen Recording looks switched on. " +
-      `Tap Ask macOS again, allow it, then restart. If that doesn't do it: ${SETTINGS_STEPS} Linked folders keep working meanwhile.`,
+    ask: `To read window names, macOS needs the permission it calls "Screen Recording". The app never records your screen.`,
+    restart: "Screen Recording is switched on? Restart the app to finish.",
+    stuck: "macOS is still hiding window names, though Screen Recording looks switched on. Linked folders keep working meanwhile.",
   }[state];
+  el("detector-perm-steps").textContent =
+    state === "stuck"
+      ? `Tap Ask macOS again, allow it, then restart. If that doesn't do it: ${SETTINGS_STEPS}`
+      : "Already switched on in System Settings? Tap Ask macOS again, allow it, then restart.";
   el("detector-permission-btn").hidden = state !== "ask";
+  el("detector-restart-btn").hidden = state === "ask";
   el("detector-reset-btn").hidden = false;
 }
 
@@ -2590,6 +2590,11 @@ window.addEventListener("DOMContentLoaded", () => {
     renderDetector(current?.hourly?.detector ?? null);
   });
   click("detector-open-settings", () => void invoke("mini_detector_open_settings"));
+  click("detector-perm-more-btn", () => {
+    const more = el("detector-perm-more");
+    more.hidden = !more.hidden;
+    el("detector-perm-more-btn").setAttribute("aria-expanded", String(!more.hidden));
+  });
   click("detector-reset-btn", () => {
     invoke("mini_detector_reset_permission").catch((error) => {
       el("detector-permission-text").textContent = String(error);

@@ -1548,6 +1548,7 @@ pub(crate) fn mini_detector_answer<R: Runtime>(
     id: u64,
     choice: String,
     project_id: Option<String>,
+    deliverable_id: Option<String>,
 ) -> Result<(), String> {
     let list = pending(&app);
     let stretch = list.iter().find(|s| s.start == id).cloned().ok_or("That's already been answered.")?;
@@ -1557,7 +1558,7 @@ pub(crate) fn mini_detector_answer<R: Runtime>(
             if project.is_empty() {
                 return Err("Pick the project it was for.".into());
             }
-            crate::hourly::log_stretch(&app, &project, stretch.start, stretch.end, id)?;
+            crate::hourly::log_stretch(&app, &project, stretch.start, stretch.end, id, deliverable_id.as_deref())?;
         }
         "skip" => {
             answered(&app, id);
@@ -1623,6 +1624,7 @@ mod tests {
             client_name: client.map(str::to_string),
             billable: true,
             retainer_minutes_left: None,
+            deliverables: Vec::new(),
         }
     }
 

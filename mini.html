@@ -226,6 +226,10 @@
       #whats-new-items li { padding-left: 12px; border-left: 2px solid var(--pink); }
       #whats-new-items .t { display: block; font-weight: 600; font-size: 13px; }
       #whats-new-items .h { display: block; margin-top: 2px; font-size: 12px; color: var(--muted); line-height: 1.4; }
+      #item-view { display: flex; flex-direction: column; gap: 10px; flex: 1; padding: 16px; overflow-y: auto; }
+      #item-view h2 { margin: 0; font-size: 16px; font-weight: 600; }
+      #item-view .hint { margin: -4px 0 0; color: var(--muted); font-size: 12px; }
+      #item-view .setup-pins { max-height: none; }
       /* The project timer's set-up guide (setup.rs). */
       #setup-view { display: flex; flex-direction: column; gap: 10px; flex: 1; padding: 16px; overflow-y: auto; }
       #setup-step { margin: 0; color: var(--muted); font-size: 11.5px; font-weight: 600; letter-spacing: 0.02em; }
@@ -765,6 +769,17 @@
         </div>
       </div>
 
+      <!-- On a mixed project: which deliverable the time was for (optional). -->
+      <div id="item-view" hidden>
+        <h2>Which deliverable?</h2>
+        <p class="hint" id="item-project"></p>
+        <div id="item-list" class="setup-pins"></div>
+        <div class="h-choices">
+          <button type="button" id="item-none">None of these</button>
+          <button type="button" id="item-cancel">Cancel</button>
+        </div>
+      </div>
+
       <div id="setup-view" hidden>
         <p id="setup-step"></p>
         <h2 id="setup-title"></h2>
@@ -858,6 +873,7 @@
         <label class="h-field">Project<select id="hourly-add-project" required></select></label>
         <div class="h-times">
           <label class="h-field h-day">Day it started<input id="hourly-add-day" type="date" required /></label>
+          <label class="h-field h-day" id="hourly-add-item-field" hidden>Deliverable (optional)<select id="hourly-add-item"></select></label>
           <label class="h-field">From<input id="hourly-add-from" type="text" inputmode="numeric" maxlength="5" placeholder="hh:mm" autocomplete="off" required /></label>
           <label class="h-field">To<input id="hourly-add-to" type="text" inputmode="numeric" maxlength="5" placeholder="hh:mm" autocomplete="off" required /></label>
         </div>

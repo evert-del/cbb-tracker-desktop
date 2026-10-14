@@ -389,7 +389,7 @@ pub(crate) fn build_tracker_window<R: Runtime>(
     let handed_off = std::sync::Mutex::new(false);
     // macOS: the tracker dark when the Mac is (theme.rs, dark.js).
     #[cfg(target_os = "macos")]
-    let dark_script = theme::init_script();
+    let dark_script = theme::init_script(app);
     #[cfg(not(target_os = "macos"))]
     let dark_script = String::new();
     let builder = WebviewWindowBuilder::new(app, label, WebviewUrl::External(start))

@@ -6,8 +6,12 @@
 //!   app's run, so a change of Windows theme while it is open asks for a
 //!   restart (`theme_changed`).
 //! - macOS: WebKit has no such mode, so dark.js flips the page's colours
-//!   (media and the header flipped back). It follows the Mac live: `start`
-//!   watches the setting and tells every tracker window.
+//!   (media and the header flipped back). The flip back can't undo the flip
+//!   exactly (saturated colours clip, and CSS hue-rotate isn't reversible):
+//!   photos and video come out visibly off, which matters when reviewing
+//!   design work. So on a Mac it's a choice, off unless switched on in the
+//!   panel's Settings ("Dark tracker pages", `TRACKER_DARK`). When on, it
+//!   follows the Mac live: `start` watches and tells every tracker window.
 //!
 //! The app's own pages (the quick panel, Saved for offline) have their own
 //! light and dark designs and are left to them.
@@ -148,10 +152,32 @@ pub(crate) fn set_dark_js(dark: bool) -> String {
     format!("window.__cbbSetDark&&window.__cbbSetDark({dark})")
 }
 
-/// dark.js for a new tracker window, starting as the Mac is now.
+/// Settings key: the Mac's flipped dark tracker. Off (the default), tracker
+/// pages show as designed and photos keep their true colours.
+pub(crate) const TRACKER_DARK: &str = "tracker_dark";
+
+/// Whether tracker pages should be dark now: switched on, and the Mac dark.
 #[cfg(target_os = "macos")]
-pub(crate) fn init_script() -> String {
-    format!("window.__cbbDarkAtLaunch={};\n{}", macos_prefers_dark(), include_str!("dark.js"))
+pub(crate) fn tracker_dark_now<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> bool {
+    crate::close::flag(app, TRACKER_DARK) && macos_prefers_dark()
+}
+
+/// dark.js for a new tracker window, starting as it should be now.
+#[cfg(target_os = "macos")]
+pub(crate) fn init_script<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> String {
+    format!("window.__cbbDarkAtLaunch={};\n{}", tracker_dark_now(app), include_str!("dark.js"))
+}
+
+/// Tell every tracker window whether to be dark (the switch, or the Mac).
+#[cfg(target_os = "macos")]
+pub(crate) fn apply_tracker_dark<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    use tauri::Manager;
+    let dark = tracker_dark_now(app);
+    for (label, window) in app.webview_windows() {
+        if label == "main" || crate::is_extra_tracker_window(&label) {
+            let _ = window.eval(set_dark_js(dark));
+        }
+    }
 }
 
 /// macOS: follow the Mac's appearance live in every tracker window.
@@ -159,10 +185,10 @@ pub(crate) fn init_script() -> String {
 pub(crate) fn start<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
     use tauri::Manager;
     std::thread::spawn(move || {
-        let mut last = macos_prefers_dark();
+        let mut last = tracker_dark_now(&app);
         loop {
             std::thread::sleep(std::time::Duration::from_secs(3));
-            let dark = macos_prefers_dark();
+            let dark = tracker_dark_now(&app);
             if dark == last {
                 continue;
             }

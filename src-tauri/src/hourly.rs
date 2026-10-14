@@ -133,6 +133,31 @@ pub(crate) struct Project {
     /// `None` when the client has no retainer.
     #[serde(default)]
     pub retainer_minutes_left: Option<i64>,
+    /// On a project billed partly by the hour (mixed): its deliverables, so
+    /// the person can say which one their time was for. Empty elsewhere.
+    #[serde(default)]
+    pub deliverables: Vec<Deliverable>,
+}
+
+/// One of a mixed project's deliverables.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub(crate) struct Deliverable {
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+}
+
+/// Puts the deliverable the person picked on a request's body, when it is
+/// one of that project's (the tracker checks again). `None`: none picked.
+/// They pick the deliverable only; what is billable is never theirs.
+pub(crate) fn with_deliverable(body: &mut Value, info: &Info, project_id: &str, deliverable: Option<&str>) -> Result<(), &'static str> {
+    let Some(deliverable) = deliverable.filter(|id| !id.is_empty()) else { return Ok(()) };
+    let ok = info.projects.iter().any(|project| project.id == project_id && project.deliverables.iter().any(|d| d.id == deliverable));
+    if !ok {
+        return Err("Choose one of this project's deliverables.");
+    }
+    body["deliverableId"] = Value::String(deliverable.to_string());
+    Ok(())
 }
 
 /// "Vimeo · Logo refresh", or the project's name alone without a client.
@@ -288,6 +313,9 @@ pub(crate) fn parse(raw: &str) -> Option<Info> {
     value.get("projects")?.as_array()?;
     let mut info: Info = serde_json::from_value(value).ok()?;
     info.projects.retain(|project| valid_id(&project.id));
+    for project in &mut info.projects {
+        project.deliverables.retain(|d| valid_id(&d.id) && !d.name.trim().is_empty());
+    }
     info.clients.retain(|client| valid_id(&client.id) && !client.name.trim().is_empty());
     info.running = info.running.filter(valid_running).map(unfiled_not_billable);
     Some(info)
@@ -1322,17 +1350,17 @@ fn keep_offline<R: Runtime>(app: &AppHandle<R>, sent: &[Step]) -> Result<(), Str
         let info = inner.info.as_ref()?;
         let server_running = info.running.as_ref().is_some_and(|running| running.id != OFFLINE_ID);
         // The project and note going on after "Drop the idle time and keep going".
-        let current = inner.offline.running().map(|open| (Some(open.project.clone()), open.note.clone()))
-            .or_else(|| info.running.as_ref().map(|running| (running.project_id.clone(), running.note.clone())));
+        let current = inner.offline.running().map(|open| (Some(open.project.clone()), open.note.clone(), open.deliverable.clone()))
+            .or_else(|| info.running.as_ref().map(|running| (running.project_id.clone(), running.note.clone(), None)));
         let queue = &mut inner.offline;
         match tap {
-            Tap::Start { project: Some(project), note } => queue.start(server_running, &project, note, now),
+            Tap::Start { project: Some(project), note, deliverable } => queue.start(server_running, &project, note, deliverable, now),
             Tap::Start { project: None, .. } => return Some(Err(())),
             Tap::Stop { at } => queue.stop(server_running, at.unwrap_or(now).min(now)),
             Tap::Restart { at } => match current {
-                Some((Some(project), note)) => {
+                Some((Some(project), note, deliverable)) => {
                     queue.stop(server_running, at.min(now));
-                    queue.start(false, &project, note, now);
+                    queue.start(false, &project, note, deliverable, now);
                 }
                 _ => return Some(Err(())),
             },
@@ -1598,7 +1626,7 @@ fn ends_unfiled(info: &Info) -> Option<String> {
 
 /// Start (or switch to) a project, or an unfiled timer with `None`.
 fn start<R: Runtime>(app: &AppHandle<R>, project_id: Option<&str>, note: Option<&str>, from: &'static str, tell: bool) -> Result<(), String> {
-    start_with(app, project_id, note, false, from, tell)
+    start_with(app, project_id, note, false, None, from, tell)
 }
 
 /// `start`, also showing the client the note (the tracker's start takes no
@@ -1608,11 +1636,15 @@ fn start_with<R: Runtime>(
     project_id: Option<&str>,
     note: Option<&str>,
     for_client: bool,
+    deliverable: Option<&str>,
     from: &'static str,
     tell: bool,
 ) -> Result<(), String> {
     let info = current(app)?;
-    let steps = start_steps(project_id, note, for_client, &info).map_err(str::to_string)?;
+    let mut steps = start_steps(project_id, note, for_client, &info).map_err(str::to_string)?;
+    if let (Some(project_id), Some(first)) = (project_id, steps.first_mut()) {
+        with_deliverable(&mut first.2, &info, project_id, deliverable).map_err(str::to_string)?;
+    }
     let done = if steps.len() > 1 { "Started, but the note isn't shown to the client:" } else { "" };
     send(app, steps, done, Then::Timer { file: ends_unfiled(&info), notice: None, say: tell, auto: None, replay: false })?;
     let what = match (info.running.is_some(), project_id.is_some()) {
@@ -1641,9 +1673,10 @@ pub(crate) fn mini_hourly<R: Runtime>(
     action: String,
     project_id: Option<String>,
     note: Option<String>,
+    deliverable_id: Option<String>,
 ) -> Result<(), String> {
     match action.as_str() {
-        "start" => start(&app, project_id.as_deref(), note.as_deref(), "panel", false),
+        "start" => start_with(&app, project_id.as_deref(), note.as_deref(), false, deliverable_id.as_deref(), "panel", false),
         "stop" => stop(&app, "panel", false),
         _ => Err("Unknown action.".into()),
     }
@@ -1726,9 +1759,10 @@ pub(crate) fn info_snapshot<R: Runtime>(app: &AppHandle<R>) -> Option<Info> {
 
 /// Logs a stretch the helper suggested and the person confirmed
 /// (detector.rs); `id` is the suggestion, forgotten once it's logged.
-pub(crate) fn log_stretch<R: Runtime>(app: &AppHandle<R>, project_id: &str, start: u64, end: u64, id: u64) -> Result<(), String> {
+pub(crate) fn log_stretch<R: Runtime>(app: &AppHandle<R>, project_id: &str, start: u64, end: u64, id: u64, deliverable: Option<&str>) -> Result<(), String> {
     let info = current(app)?;
     let mut body = add_body(project_id, start, end, None, &info, crate::clock::unix_now()).map_err(str::to_string)?;
+    with_deliverable(&mut body, &info, project_id, deliverable).map_err(str::to_string)?;
     // So My Hours stops asking about it too.
     body["suggestionKey"] = Value::String(crate::detector::key_of(id));
     let label = info.projects.iter().find(|project| project.id == project_id).map(project_label).unwrap_or_default();
@@ -1903,12 +1937,14 @@ pub(crate) fn mini_hourly_add<R: Runtime>(
     started_at: String,
     ended_at: String,
     note: Option<String>,
+    deliverable_id: Option<String>,
 ) -> Result<(), String> {
     let info = current(&app)?;
     let (Some(started), Some(ended)) = (crate::clock::parse_iso(&started_at), crate::clock::parse_iso(&ended_at)) else {
         return Err("Those times don't read right.".into());
     };
-    let body = add_body(&project_id, started, ended, note.as_deref(), &info, crate::clock::unix_now()).map_err(str::to_string)?;
+    let mut body = add_body(&project_id, started, ended, note.as_deref(), &info, crate::clock::unix_now()).map_err(str::to_string)?;
+    with_deliverable(&mut body, &info, &project_id, deliverable_id.as_deref()).map_err(str::to_string)?;
     let label = info.projects.iter().find(|project| project.id == project_id).map(project_label).unwrap_or_default();
     let notice = format!("Added {} to {label}.", fmt_minutes((ended - started) / 60));
     send(&app, vec![post(TIME_URL, body)], "", Then::Saved { filed: false, notice: Some(notice), logged: None })?;
@@ -1935,7 +1971,7 @@ pub(crate) fn mini_hourly_continue<R: Runtime>(app: AppHandle<R>, entry_id: Stri
             return Err("You can't time that project any more.".into());
         }
     }
-    start_with(&app, project, entry.note.as_deref(), entry.note_for_client, "panel", false)?;
+    start_with(&app, project, entry.note.as_deref(), entry.note_for_client, None, "panel", false)?;
     crate::analytics::action(&app, "hourly_continue", "panel");
     Ok(())
 }
@@ -2321,6 +2357,24 @@ mod tests {
         let body = json!({ "answered": ["desktop:1760000000", "booking:x", 7, "desktop:nope"] });
         assert_eq!(answered_keys(&body), vec!["desktop:1760000000".to_string()]);
         assert!(answered_keys(&json!({})).is_empty());
+    }
+
+    #[test]
+    fn a_deliverable_is_sent_only_when_it_is_one_of_that_projects() {
+        let raw = r#"{"projects":[{"id":"p1","name":"Mixed job","billable":true,"deliverables":[{"id":"d1","name":"The edit"},{"id":"bad id'","name":"x"},{"id":"d2","name":""}]},
+            {"id":"p2","name":"Quoted","billable":false}]}"#;
+        let info = parse(raw).unwrap();
+        assert_eq!(info.projects[0].deliverables, vec![Deliverable { id: "d1".into(), name: "The edit".into() }]);
+        assert!(info.projects[1].deliverables.is_empty());
+        let mut body = json!({ "action": "start", "projectId": "p1" });
+        with_deliverable(&mut body, &info, "p1", Some("d1")).unwrap();
+        assert_eq!(body["deliverableId"], json!("d1"));
+        let mut body = json!({});
+        with_deliverable(&mut body, &info, "p1", None).unwrap();
+        with_deliverable(&mut body, &info, "p1", Some("")).unwrap();
+        assert!(body.get("deliverableId").is_none());
+        assert!(with_deliverable(&mut body, &info, "p2", Some("d1")).is_err());
+        assert!(with_deliverable(&mut body, &info, "p1", Some("d9")).is_err());
     }
 
     #[test]

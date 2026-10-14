@@ -175,6 +175,7 @@ pub(crate) struct RowView {
     pub why: String,
     pub day: String,
     pub project: Option<String>,
+    pub project_id: Option<String>,
     pub billable: bool,
     /// Milliseconds, for the panel's clock.
     pub from: Option<u64>,
@@ -221,6 +222,7 @@ pub(crate) fn view<R: Runtime>(app: &AppHandle<R>) -> Option<View> {
                 why: item.why.clone(),
                 day: item.day.clone(),
                 project: item.project_label.clone(),
+                project_id: item.project_id.clone(),
                 billable: item.billable,
                 from: item.span.map(|(from, _)| from * 1000),
                 to: item.span.map(|(_, to)| to * 1000),
@@ -288,7 +290,7 @@ fn maybe_remind<R: Runtime>(app: &AppHandle<R>) {
 
 /// "Log it" (as it stands) or "Not this" on a row in the panel.
 #[tauri::command]
-pub(crate) fn mini_to_confirm<R: Runtime>(app: AppHandle<R>, key: String, choice: String) -> Result<(), String> {
+pub(crate) fn mini_to_confirm<R: Runtime>(app: AppHandle<R>, key: String, choice: String, deliverable_id: Option<String>) -> Result<(), String> {
     let item = STATE
         .lock()
         .ok()
@@ -299,12 +301,17 @@ pub(crate) fn mini_to_confirm<R: Runtime>(app: AppHandle<R>, key: String, choice
             let (Some(project_id), Some((from, to))) = (item.project_id.as_deref(), item.span) else {
                 return Err("Fill this one in on My Hours.".into());
             };
-            json!({ "confirm": {
+            let mut confirm = json!({
                 "key": item.key,
                 "projectId": project_id,
                 "startedAt": crate::hourly::iso_utc(from),
                 "endedAt": crate::hourly::iso_utc(to),
-            } })
+            });
+            // On a mixed project, the deliverable they picked (checked against it).
+            if let Some(info) = crate::hourly::info_snapshot(&app) {
+                crate::hourly::with_deliverable(&mut confirm, &info, project_id, deliverable_id.as_deref()).map_err(str::to_string)?;
+            }
+            json!({ "confirm": confirm })
         }
         "skip" => json!({ "skip": [item.key] }),
         _ => return Err("Unknown answer.".into()),

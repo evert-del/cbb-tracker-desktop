@@ -33,6 +33,8 @@ type HourlyProject = {
   clientName: string | null;
   billable: boolean;
   retainerMinutesLeft?: number | null;
+  /** On a project billed partly by the hour: its deliverables, to say which one. */
+  deliverables?: { id: string; name: string }[];
 };
 /** `projectId` null: started with no project, "Not yet filed" (never billable). */
 type HourlyRunning = {
@@ -86,6 +88,7 @@ type ToConfirm = {
     billable: boolean;
     from: number | null;
     to: number | null;
+    projectId: string | null;
     /** "Log it" works as it stands. */
     ready: boolean;
   }[];
@@ -410,7 +413,7 @@ function renderMode(view: View) {
   el("hourly-add-view").hidden = !hourlyAdd || !!hourlyIdle || !!hourlyPick;
   el("hourly-edit-view").hidden = !hourlyEdit || !!hourlyIdle || !!hourlyPick || hourlyAdd;
   if (hourlyPick || hourlyIdle || hourlyAdd || hourlyEdit) el("main-view").hidden = true;
-  else if (el("settings").hidden && !mood && !chat && !whatsNew && setup === null) {
+  else if (el("settings").hidden && !mood && !chat && !whatsNew && setup === null && !itemAsk) {
     el("main-view").hidden = false;
   }
 }
@@ -1441,8 +1444,10 @@ function hourlyError(text: string | null) {
   if (text) hourlyErrorTimer = window.setTimeout(() => hourlyError(null), 8000);
 }
 
-function hourlyTap(action: "start" | "stop", projectId?: string) {
+async function hourlyTap(action: "start" | "stop", projectId?: string) {
   if (hourlyResting()) return;
+  const deliverableId = action === "start" ? await askDeliverable(projectId) : null;
+  if (deliverableId === undefined) return;
   hourlyTapped = { running: current?.hourly?.running?.id ?? "", until: Date.now() + 5000 };
   restHourlyButtons();
   window.setTimeout(restHourlyButtons, 5050);
@@ -1450,7 +1455,7 @@ function hourlyTap(action: "start" | "stop", projectId?: string) {
   const noteInput = el<HTMLInputElement>("hourly-note-input");
   const note = action === "start" ? noteInput.value.trim() : "";
   if (action === "start") noteInput.value = "";
-  invoke("mini_hourly", { action, projectId: projectId ?? null, note: note || null }).catch((error) => {
+  invoke("mini_hourly", { action, projectId: projectId ?? null, note: note || null, deliverableId }).catch((error) => {
     hourlyTapped = null;
     restHourlyButtons();
     hourlyError(String(error));
@@ -1707,6 +1712,41 @@ function entryLabel(e: TodayEntry): string {
   return client ? `${client} · ${name}` : name;
 }
 
+// "Which deliverable?" on a project billed partly by the hour: optional, and
+// only the deliverable is ever sent (what is billable is never the person's).
+let itemAsk: ((choice: string | null | undefined) => void) | null = null;
+
+/** The deliverable picked: an id, null for none, undefined when cancelled. */
+function askDeliverable(projectId: string | null | undefined): Promise<string | null | undefined> {
+  const project = current?.hourly?.projects.find((p) => p.id === projectId);
+  const items = project?.deliverables ?? [];
+  if (!project || items.length === 0 || mood || chat || whatsNew || setup !== null) return Promise.resolve(null);
+  closeItemAsk(undefined);
+  el("item-project").textContent = `${projectLabel(project)}: optional. It helps billing see what the time was for.`;
+  el("item-list").replaceChildren(...items.map((item) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = item.name;
+    b.addEventListener("click", () => closeItemAsk(item.id));
+    return b;
+  }));
+  el("main-view").hidden = true;
+  el("settings").hidden = true;
+  el("item-view").hidden = false;
+  return new Promise((resolve) => {
+    itemAsk = resolve;
+  });
+}
+
+function closeItemAsk(choice: string | null | undefined) {
+  const ask = itemAsk;
+  if (!ask) return;
+  itemAsk = null;
+  el("item-view").hidden = true;
+  if (!hourlyAdd) el("main-view").hidden = false;
+  ask(choice);
+}
+
 function renderDayGaps(d: Hourly["dayGaps"] | null) {
   el("day-gaps").hidden = !d || d.gaps.length === 0;
   if (!d) return;
@@ -1779,19 +1819,21 @@ function renderToConfirm(c: ToConfirm | null) {
       b.addEventListener("click", run);
       acts.appendChild(b);
     };
-    const answer = (choice: "log" | "skip") => {
+    const answer = async (choice: "log" | "skip") => {
+      const deliverableId = choice === "log" ? await askDeliverable(r.projectId) : null;
+      if (deliverableId === undefined) return;
       confirming.add(r.key);
       renderToConfirm(c);
-      invoke("mini_to_confirm", { key: r.key, choice })
+      invoke("mini_to_confirm", { key: r.key, choice, deliverableId })
         .catch((error) => hourlyError(String(error)))
         .finally(() => window.setTimeout(() => confirming.delete(r.key), 4000));
     };
-    if (r.ready) button("Log it", () => answer("log"), true);
+    if (r.ready) button("Log it", () => void answer("log"), true);
     // Anything to change (or fill in) is done on My Hours.
     button(r.ready ? "Change…" : "Fill in…", () => void invoke("mini_open", {
       href: `/hours?suggestion=${encodeURIComponent(r.key)}&panel=confirm`,
     }), !r.ready);
-    button("Not this", () => answer("skip"));
+    button("Not this", () => void answer("skip"));
     row.append(label, when, acts);
     list.appendChild(row);
   }
@@ -2163,11 +2205,13 @@ function renderAutoCard() {
   el<HTMLButtonElement>("hourly-auto-pick").hidden = !unknown;
 }
 
-function answerSuggestion(choice: "log" | "skip", projectId?: string) {
+async function answerSuggestion(choice: "log" | "skip", projectId?: string) {
   const s = current?.hourly?.detector?.suggestion;
   if (!s) return;
+  const deliverableId = choice === "log" ? await askDeliverable(projectId ?? s.projectId) : null;
+  if (deliverableId === undefined) return;
   el("hourly-suggest").querySelectorAll("button").forEach((b) => (b.disabled = true));
-  invoke("mini_detector_answer", { id: s.id, choice, projectId: projectId ?? null }).catch((error) => {
+  invoke("mini_detector_answer", { id: s.id, choice, projectId: projectId ?? null, deliverableId }).catch((error) => {
     el("hourly-suggest").querySelectorAll("button").forEach((b) => (b.disabled = false));
     hourlyError(String(error));
   });
@@ -2248,6 +2292,7 @@ function openHourlyAdd(span?: { from: number; to: number }) {
   // The last project timed, an hour ago until now.
   select.value = h.running?.projectId ?? h.projects[0]?.id ?? "";
   refreshPicker("hourly-add-project");
+  renderAddItems();
   // The day is the start's: just after midnight, the hour before began
   // yesterday (and ends today, after it).
   const now = span ? new Date(span.to) : new Date();
@@ -2288,7 +2333,17 @@ function saveHourlyAdd() {
     startedAt: s.from.toISOString(),
     endedAt: s.to.toISOString(),
     note: note || null,
+    deliverableId: el("hourly-add-item-field").hidden ? null : el<HTMLSelectElement>("hourly-add-item").value || null,
   }).catch((error) => addError(String(error)));
+}
+
+/** Add time's deliverable list: the chosen project's, when it's billed partly by the hour. */
+function renderAddItems() {
+  const projectId = el<HTMLSelectElement>("hourly-add-project").value;
+  const items = current?.hourly?.projects.find((p) => p.id === projectId)?.deliverables ?? [];
+  const select = el<HTMLSelectElement>("hourly-add-item");
+  select.replaceChildren(new Option("None of these", ""), ...items.map((item) => new Option(item.name, item.id)));
+  el("hourly-add-item-field").hidden = items.length === 0;
 }
 
 /** The running card's retainer line, live: called each push and each second. */
@@ -2832,6 +2887,9 @@ window.addEventListener("DOMContentLoaded", () => {
   click("update", () => menu("update"));
   click("whats-new-row", () => { showSettings(false); void invoke("mini_whats_new"); });
   click("whats-new-done", closeWhatsNew);
+  click("item-none", () => closeItemAsk(null));
+  el("hourly-add-project").addEventListener("change", renderAddItems);
+  click("item-cancel", () => closeItemAsk(undefined));
   click("setup-row", () => { showSettings(false); invoke("mini_hourly_setup").catch((error) => hourlyError(String(error))); });
   click("setup-skip", () => closeSetup());
   click("setup-back", () => setupStep((setup ?? 0) - 1));
@@ -3110,6 +3168,7 @@ window.addEventListener("DOMContentLoaded", () => {
   window.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;
     if (whatsNew) { closeWhatsNew(); return; }
+    if (itemAsk) { closeItemAsk(undefined); return; }
     if (setup !== null) { closeSetup(); return; }
     // The question about time away is only closed by an answer.
     if (hourlyIdle) return;
@@ -3136,6 +3195,7 @@ window.addEventListener("DOMContentLoaded", () => {
     // an unsent reply is kept for when the conversation is opened again.
     if (chat && !current?.pinned) closeChat();
     if (hourlyPick === "start" && !current?.pinned) closeHourlyPick();
+    if (itemAsk && !current?.pinned) closeItemAsk(undefined);
     // The folder chooser takes focus; Settings is where it comes back to.
     if (!choosingFolder) showSettings(false);
   });

@@ -96,6 +96,19 @@ wherever the AppImage now is, and makes it the `tracker://` handler
 left alone. Keep the AppImage somewhere the user can write (e.g.
 `~/Applications`), not `/opt`, or it cannot update itself.
 
+Adobe review panel (`src-tauri/src/adobe_panel.rs`, unit-tested; Mac and
+Windows only): the tray's **Install the Adobe panel** (or
+`tracker://adobe-panel`, which the panel sends when a newer one is out) asks
+first, then fetches the tracker's `/download/adobe-panel/current.json`,
+downloads each package (`.ccx` for Premiere Pro, Photoshop and InDesign;
+`.zxp` for Illustrator and After Effects) into app-data, checks its size and
+SHA-256 against the manifest, and hands it to Adobe's own Unified Plugin
+Installer Agent (`--install` / `/install`), which Creative Cloud Desktop
+installs. Once installed this way, a newer panel is installed by itself
+(60 s after launch, then every 6 h) with a notification. The panel signs in
+by code; `tracker://link-device` opens that page in this app, which is
+already signed in. Nothing about the person or their work is read or sent.
+
 ## Release (free signing)
 
 - Tag `desktop-vX.Y.Z` → GitHub matrix builds macOS (universal, ad-hoc-signed

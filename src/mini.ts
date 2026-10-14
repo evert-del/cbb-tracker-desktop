@@ -149,7 +149,6 @@ type View = {
   hourly: Hourly | null;
   version: string;
   autostart: boolean;
-  tracker_dark: boolean;
   close_quits: boolean;
   pinned: boolean;
   compact: boolean;
@@ -410,10 +409,6 @@ window.__cbbMiniShow = (view) => {
   const on = String(view.autostart);
   el("autostart-row").setAttribute("aria-checked", on);
   el("autostart-switch").setAttribute("aria-checked", on);
-  // macOS only: the Mac's flipped dark tracker (Windows uses its own).
-  el("tracker-dark-row").hidden = view.platform !== "macos";
-  el("tracker-dark-row").setAttribute("aria-checked", String(view.tracker_dark));
-  el("tracker-dark-switch").setAttribute("aria-checked", String(view.tracker_dark));
   el("close-keep").setAttribute("aria-checked", String(!view.close_quits));
   el("close-quit").setAttribute("aria-checked", String(view.close_quits));
   el("close-quit").textContent = `${quit} the app`;
@@ -2514,7 +2509,6 @@ window.addEventListener("DOMContentLoaded", () => {
   click("update-row", () => menu("update"));
   click("diagnostics-row", () => menu("diagnostics"));
   click("autostart-row", () => menu("autostart"));
-  click("tracker-dark-row", () => menu("tracker-dark"));
   click("close-keep", () => menu("close-keep"));
   click("close-quit", () => menu("close-quit"));
   click("quit", () => menu("quit"));

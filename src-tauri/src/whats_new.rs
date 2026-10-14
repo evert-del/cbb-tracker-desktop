@@ -37,7 +37,7 @@ pub(crate) fn notes(version: &str, os: &str, hourly: bool) -> Vec<Item> {
     let timer_key = if mac { "⌘⇧Y" } else { "Ctrl+Alt+Y" };
     match version {
         "0.2.20" => {
-            let mut items = vec![
+            let items = vec![
                 item(
                     "A tidier quick panel",
                     "The project you're timing sits in the pink header, with its time and Stop. Under the search, projects show the job first and the client underneath. When nothing needs you, notifications are one line at the bottom, and the footer is one slim row: Open tracker, then New window, Saved offline, updates, Settings and Quit."
@@ -56,14 +56,12 @@ pub(crate) fn notes(version: &str, os: &str, hourly: bool) -> Vec<Item> {
                     "Straight to your work",
                     "Signed in, the app opens straight on the tracker: no sign-in page flashing up first.".into(),
                 ),
-            ];
-            if mac {
-                items.push(item(
-                    "True colours for design work",
-                    "Tracker pages now show in their real colours, so photos and design files look as they should. Prefer the tracker dark? Switch on Settings › Window and panel › Dark tracker pages (photo colours are then only approximate)."
+                item(
+                    "A real dark mode, true colours",
+                    "The tracker has its own dark design now: when your computer is in dark mode, its pages go dark, and photos, videos and design files keep their true colours for review."
                         .into(),
-                ));
-            }
+                ),
+            ];
             items
         }
         "0.2.19" => {
@@ -279,9 +277,10 @@ mod tests {
     fn the_panel_release_speaks_each_systems_words() {
         let mac = notes("0.2.20", "macos", false);
         let win = notes("0.2.20", "windows", false);
-        assert!(mac.len() >= 5 && win.len() >= 4);
-        assert!(mac.iter().any(|i| i.how.contains("Finder") || i.how.contains("Dark tracker pages")));
-        assert!(!win.iter().any(|i| i.how.contains("Finder") || i.how.contains("Dark tracker pages")));
+        assert!(mac.len() >= 5 && win.len() >= 5);
+        assert!(mac.iter().any(|i| i.how.contains("Finder")));
+        assert!(!win.iter().any(|i| i.how.contains("Finder")));
+        assert!(mac.iter().chain(&win).any(|i| i.how.contains("true colours")));
     }
 
     #[test]

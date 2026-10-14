@@ -43,6 +43,9 @@ type HourlyRunning = {
   billable: boolean;
   /** Finished entries only: the running time is taken off here (liveRetainer). */
   retainerMinutesLeft?: number | null;
+  /** The project's estimate and the whole project's finished minutes against it (hours only). */
+  estimateMinutes?: number | null;
+  estimateUsedMinutes?: number | null;
   startedAt: string;
   note: string | null;
 };
@@ -2252,6 +2255,16 @@ function renderRunningRetainer(r: HourlyRunning) {
   el("hourly-retainer").textContent = text ?? "";
   el("hourly-retainer").hidden = !text;
   el("hourly-retainer").classList.toggle("over", (left ?? 0) < 0);
+  // The project's estimate, counting this timer as it runs.
+  const est = r.estimateMinutes ?? null;
+  const estLeft = est === null || r.estimateUsedMinutes === null || r.estimateUsedMinutes === undefined
+    ? null
+    : est - r.estimateUsedMinutes - elapsedMinutes(r);
+  el("hourly-estimate").textContent = estLeft === null
+    ? ""
+    : estLeft > 0 ? `Estimate · ${fmtMinutes(estLeft)} left` : `Estimate used · ${fmtMinutes(-estLeft)} over`;
+  el("hourly-estimate").hidden = estLeft === null;
+  el("hourly-estimate").classList.toggle("over", (estLeft ?? 1) <= 0);
 }
 
 let hourlyInfoTimer = 0;

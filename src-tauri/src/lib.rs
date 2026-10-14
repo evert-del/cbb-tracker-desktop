@@ -41,6 +41,7 @@ mod location;
 mod mini;
 mod notify;
 mod offline;
+mod offline_timer;
 mod quiet;
 mod schedule;
 mod search;

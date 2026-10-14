@@ -68,6 +68,24 @@ type Hourly = {
   today?: Today | null;
   /** The company's clients, for "New project…" (empty: they can't start projects). */
   clients?: { id: string; name: string }[];
+  /** "Still to confirm" (to_confirm.rs); null with nothing waiting. */
+  toConfirm?: ToConfirm | null;
+};
+
+type ToConfirm = {
+  rows: {
+    key: string;
+    why: string;
+    day: string;
+    project: string | null;
+    billable: boolean;
+    from: number | null;
+    to: number | null;
+    /** "Log it" works as it stands. */
+    ready: boolean;
+  }[];
+  total: number;
+  today: string;
 };
 
 type TodayEntry = {
@@ -1684,6 +1702,58 @@ function entryLabel(e: TodayEntry): string {
   return client ? `${client} · ${name}` : name;
 }
 
+// The rows being answered: their buttons wait until the tracker says.
+const confirming = new Set<string>();
+
+function renderToConfirm(c: ToConfirm | null) {
+  el("to-confirm").hidden = c === null || c.rows.length === 0;
+  if (!c) return;
+  el("to-confirm-all").textContent = c.total > c.rows.length ? `All ${c.total} on My Hours` : "See all on My Hours";
+  const list = el("to-confirm-list");
+  list.replaceChildren();
+  for (const r of c.rows) {
+    const row = document.createElement("div");
+    row.className = "c-row";
+    const label = document.createElement("span");
+    label.className = "l";
+    label.textContent = r.project ?? "Which project?";
+    const when = document.createElement("span");
+    when.className = "w";
+    const day = r.day === c.today ? "Today" : nextDayLabel(r.day);
+    const times = r.from !== null && r.to !== null
+      ? `${TRACKER_TIME.format(new Date(r.from))}–${TRACKER_TIME.format(new Date(r.to))} · ${fmtMinutes(Math.round((r.to - r.from) / 60000))}`
+      : "times not known";
+    when.textContent = [day, times, r.why].filter(Boolean).join(" · ");
+    const acts = document.createElement("div");
+    acts.className = "c-acts";
+    const busy = confirming.has(r.key);
+    const button = (text: string, run: () => void, primary = false) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.textContent = text;
+      if (primary) b.className = "primary";
+      b.disabled = busy;
+      b.addEventListener("click", run);
+      acts.appendChild(b);
+    };
+    const answer = (choice: "log" | "skip") => {
+      confirming.add(r.key);
+      renderToConfirm(c);
+      invoke("mini_to_confirm", { key: r.key, choice })
+        .catch((error) => hourlyError(String(error)))
+        .finally(() => window.setTimeout(() => confirming.delete(r.key), 4000));
+    };
+    if (r.ready) button("Log it", () => answer("log"), true);
+    // Anything to change (or fill in) is done on My Hours.
+    button(r.ready ? "Change…" : "Fill in…", () => void invoke("mini_open", {
+      href: `/hours?suggestion=${encodeURIComponent(r.key)}&panel=confirm`,
+    }), !r.ready);
+    button("Not this", () => answer("skip"));
+    row.append(label, when, acts);
+    list.appendChild(row);
+  }
+}
+
 function renderToday(t: Today | null) {
   el("hourly-today").hidden = t === null || t.entries.length === 0;
   if (!t) return;
@@ -2206,6 +2276,7 @@ function renderHourly(h: Hourly | null) {
   el("hourly-start").hidden = h === null;
   renderDetector(h?.detector ?? null);
   renderToday(h?.today ?? null);
+  renderToConfirm(h?.toConfirm ?? null);
   // Edited away meanwhile (deleted, on the website): nothing to edit.
   if (hourlyEdit && !h?.today?.entries.some((e) => e.id === hourlyEdit?.id)) closeHourlyEdit();
   el("idle-settings").hidden = h === null;
@@ -2853,6 +2924,7 @@ window.addEventListener("DOMContentLoaded", () => {
     });
   }
   click("hourly-card", () => void invoke("mini_open", { href: "/hours" }));
+  click("to-confirm-all", () => void invoke("mini_open", { href: "/hours#hours-to-confirm" }));
   click("hourly-pick-back", closeHourlyPick);
   click("hourly-idle-resume", () => answerHourlyIdle("resume"));
   // Made right here when they can start projects; otherwise on the website.

@@ -473,6 +473,17 @@
       .t-go:hover { background: var(--tile-hover); }
       .t-go svg { width: 11px; height: 11px; fill: var(--pink); stroke: none; }
       .t-tag { font-size: 10.5px; font-weight: 600; color: var(--faint); }
+      #to-confirm-all { font-size: 12px; color: var(--muted); }
+      #to-confirm-all:hover { color: var(--fg); text-decoration: underline; }
+      #to-confirm-list { display: flex; flex-direction: column; }
+      .c-row { display: flex; flex-direction: column; gap: 5px; padding: 7px 0; border-top: 0.5px solid var(--rule); }
+      .c-row .l { font-weight: 600; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .c-row .w { font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+      .c-acts { display: flex; gap: 6px; }
+      .c-acts button { padding: 4px 10px; border-radius: var(--r-ctl); background: var(--tile); font-size: 12px; font-weight: 600; }
+      .c-acts button:hover { background: var(--tile-hover); }
+      .c-acts button.primary { background: var(--pink); color: #fff; }
+      .c-acts button:disabled { opacity: 0.55; cursor: default; }
       #hourly-edit-view { display: flex; flex-direction: column; gap: 10px; flex: 1; padding: 16px; overflow-y: auto; overflow-x: hidden; margin: 0; }
       #hourly-edit-view h2 { margin: 0; font-size: 16px; font-weight: 600; }
       #hourly-edit-length { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
@@ -646,6 +657,11 @@
           </div>
           <div id="hourly-quick"></div>
           <input id="hourly-note-input" type="text" maxlength="500" placeholder="Note for the next timer (optional)" autocomplete="off" aria-label="Note for the next timer (optional)" />
+          <!-- Time they seem to have worked but didn't log (to_confirm.rs). -->
+          <div id="to-confirm" hidden>
+            <div class="h-today-head"><span class="h-label">Still to confirm</span><button type="button" id="to-confirm-all">See all on My Hours</button></div>
+            <div id="to-confirm-list"></div>
+          </div>
           <div id="hourly-today" hidden>
             <div class="h-today-head"><span class="h-label">Today</span><span id="hourly-today-total"></span></div>
             <div id="hourly-today-list"></div>

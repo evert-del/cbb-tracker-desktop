@@ -1594,6 +1594,15 @@ pub(crate) fn sync<R: Runtime>(app: &AppHandle<R>) {
     crate::mini::push(app);
 }
 
+/// The suggestions this computer is still asking about (their ids), so the
+/// panel's "Still to confirm" doesn't list them twice.
+pub(crate) fn pending_ids<R: Runtime>(app: &AppHandle<R>) -> Vec<u64> {
+    if !is_on(app) {
+        return Vec::new();
+    }
+    pending(app).iter().map(|s| s.start).collect()
+}
+
 /// A suggestion is done with (logged, or skipped): forget it.
 pub(crate) fn answered<R: Runtime>(app: &AppHandle<R>, id: u64) {
     let list: Vec<Stretch> = pending(app).into_iter().filter(|s| s.start != id).collect();

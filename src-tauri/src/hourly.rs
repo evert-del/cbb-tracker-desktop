@@ -580,6 +580,8 @@ pub(crate) struct PanelView {
     /// The company's clients, for "New project…" (empty: they can't start
     /// projects).
     pub clients: Vec<Client>,
+    /// "Still to confirm" (to_confirm.rs), or `None` with nothing waiting.
+    pub to_confirm: Option<crate::to_confirm::View>,
 }
 
 /// The project timer's project for today's booking: the booking is today
@@ -1061,6 +1063,7 @@ pub(crate) fn panel<R: Runtime>(app: &AppHandle<R>) -> Option<PanelView> {
         let info = inner.info.as_ref()?;
         let booked = next.as_ref().and_then(|next| booked_project(info, &next.day, &next.project_number, now));
         let detector = crate::detector::view(app, info);
+        let to_confirm = crate::to_confirm::view(app);
         Some(PanelView {
             running: info.running.clone(),
             quick: with_booked(quick(info, &pinned), info, booked.as_deref()),
@@ -1069,6 +1072,7 @@ pub(crate) fn panel<R: Runtime>(app: &AppHandle<R>) -> Option<PanelView> {
             today: inner.today.clone(),
             projects: info.projects.clone(),
             clients: info.clients.clone(),
+            to_confirm,
             asking: inner.ask.is_some(),
             filing: inner.to_file.is_some(),
             idle_minutes,
@@ -1100,6 +1104,7 @@ fn set_info<R: Runtime>(app: &AppHandle<R>, info: Option<Info>) {
         }
         if info.is_none() {
             inner.to_file = None;
+            crate::to_confirm::clear();
         }
         inner.info = info;
         inner.read_at = now;
@@ -1408,18 +1413,24 @@ fn send<R: Runtime>(app: &AppHandle<R>, steps: Vec<Step>, done: &str, then: Then
 /// keys the tracker says are answered already. Nothing is shown: a failure
 /// is simply tried again on the next poll. Blocking.
 pub(crate) fn sync_suggestions<R: Runtime>(app: &AppHandle<R>, body: Value) -> Vec<String> {
-    let Some(window) = crate::walkie::tracker_window(app) else { return Vec::new() };
+    post_suggestions(app, body).map(|body| answered_keys(&body)).unwrap_or_default()
+}
+
+/// One POST to `/api/me/project-time-suggestions` through the page, and its
+/// answer's body, or the tracker's refusal. Blocking.
+pub(crate) fn post_suggestions<R: Runtime>(app: &AppHandle<R>, body: Value) -> Result<Value, String> {
+    let window = crate::walkie::tracker_window(app).ok_or("Open the tracker first.")?;
     let script = post_script(&[post(SUGGESTIONS_URL, body)], "");
     let _one = SENDING.lock();
-    if window.eval(&script).is_err() {
-        return Vec::new();
-    }
-    crate::walkie::collect(&window, TAKE_RESULT_JS, 40)
+    window.eval(&script).map_err(|_| "The tracker could not be reached.".to_string())?;
+    let outcome = crate::walkie::collect(&window, TAKE_RESULT_JS, 40)
         .and_then(|raw| serde_json::from_str::<Outcome>(&raw).ok())
-        .filter(|outcome| outcome.ok)
-        .and_then(|outcome| outcome.body)
-        .map(|body| answered_keys(&body))
-        .unwrap_or_default()
+        .ok_or("The tracker could not be reached.")?;
+    if outcome.ok {
+        Ok(outcome.body.unwrap_or(Value::Null))
+    } else {
+        Err(outcome.error.unwrap_or_else(|| "That didn't save. Try again.".into()))
+    }
 }
 
 /// The keys in the tracker's `{answered: [...]}`, only ones the helper makes.
@@ -1428,6 +1439,11 @@ pub(crate) fn answered_keys(body: &Value) -> Vec<String> {
         .and_then(Value::as_array)
         .map(|keys| keys.iter().filter_map(Value::as_str).filter(|key| crate::detector::id_of(key).is_some()).map(str::to_string).collect())
         .unwrap_or_default()
+}
+
+/// A refusal from elsewhere in the panel (to_confirm.rs), said the same way.
+pub(crate) fn show_error<R: Runtime>(app: &AppHandle<R>, error: &str) {
+    panel_error(app, error);
 }
 
 /// A refusal: in the panel when it's showing, else as a notification (the
@@ -1967,11 +1983,13 @@ pub(crate) fn start_polling<R: Runtime>(app: AppHandle<R>) {
                 maybe_nudge(&app);
                 if with(&app, |inner| inner.info.is_some()).unwrap_or(false) {
                     crate::detector::sync(&app);
+                    crate::to_confirm::poll(&app);
                 }
             } else if with(&app, |inner| inner.info.is_some()).unwrap_or(false) {
                 // Signed out: nothing of the timer stays, and the shortcut
                 // is given back to other apps.
                 with(&app, |inner| *inner = Inner::default());
+                crate::to_confirm::clear();
                 sync_shortcut(&app, false);
                 refresh_menus(&app);
                 crate::mini::push(&app);

@@ -240,6 +240,12 @@ pub(crate) struct Running {
     /// running time isn't in it: see `live_retainer`).
     #[serde(default)]
     pub retainer_minutes_left: Option<i64>,
+    /// The project's estimate, and the whole project's finished minutes
+    /// against it (hours only), when it has one.
+    #[serde(default)]
+    pub estimate_minutes: Option<i64>,
+    #[serde(default)]
+    pub estimate_used_minutes: Option<i64>,
     pub started_at: String,
     #[serde(default)]
     pub note: Option<String>,
@@ -298,6 +304,8 @@ fn unfiled_not_billable(mut running: Running) -> Running {
         running.project_name = None;
         running.client_name = None;
         running.retainer_minutes_left = None;
+        running.estimate_minutes = None;
+        running.estimate_used_minutes = None;
     }
     running
 }
@@ -1023,6 +1031,8 @@ struct Inner {
     nudged_for: u64,
     /// Today's entries (`GET /api/me/project-time`).
     today: Option<Today>,
+    /// Taps made while offline, waiting to be sent (offline_timer.rs).
+    offline: crate::offline_timer::Queue,
 }
 
 #[derive(Default)]
@@ -1242,11 +1252,103 @@ fn read<R: Runtime>(app: &AppHandle<R>) {
     let Some(raw) = crate::walkie::collect(&window, TAKE_JS, 30) else { return };
     match read_answer(&raw) {
         Read::Hourly(info) => {
-            set_info(app, Some(*info));
-            read_entries(app);
+            let queue = with(app, |inner| inner.offline.clone()).unwrap_or_default();
+            if queue.is_empty() {
+                set_info(app, Some(*info));
+                read_entries(app);
+            } else {
+                send_offline(app, *info, &queue);
+            }
         }
         Read::Off => set_info(app, None),
         Read::Keep => {}
+    }
+}
+
+/// Online again with taps kept offline: send them in order (offline_timer.rs),
+/// showing the offline timer meanwhile rather than the tracker's old one.
+fn send_offline<R: Runtime>(app: &AppHandle<R>, mut info: Info, queue: &crate::offline_timer::Queue) {
+    let server_started = info.running.as_ref().and_then(|running| crate::clock::parse_iso(&running.started_at));
+    let steps = queue.steps(server_started, crate::clock::unix_now());
+    info.running = offline_running(&info, queue);
+    set_info(app, Some(info));
+    if steps.is_empty() {
+        with(app, |inner| inner.offline = crate::offline_timer::Queue::default());
+        read(app);
+        return;
+    }
+    let then = Then::Timer {
+        file: None,
+        notice: Some("Back online: the time you tracked offline is in the tracker.".into()),
+        say: false,
+        auto: None,
+        replay: true,
+    };
+    if send(app, steps, "", then).is_err() {
+        // No tracker window: tried on the next read.
+    }
+}
+
+/// The offline timer as the panel and menus show it.
+fn offline_running(info: &Info, queue: &crate::offline_timer::Queue) -> Option<Running> {
+    let open = queue.running()?;
+    let project = info.projects.iter().find(|project| project.id == open.project);
+    Some(Running {
+        id: crate::offline_timer::OFFLINE_ID.into(),
+        project_id: Some(open.project.clone()),
+        project_name: project.map(|project| project.name.clone()),
+        client_name: project.and_then(|project| project.client_name.clone()),
+        billable: project.is_some_and(|project| project.billable),
+        retainer_minutes_left: None,
+        estimate_minutes: None,
+        estimate_used_minutes: None,
+        started_at: iso_utc(open.start),
+        note: Some("Offline: not sent yet".into()),
+    })
+}
+
+/// A timer tap that couldn't reach the tracker: kept to send later, and the
+/// panel goes on as if it had.
+fn keep_offline<R: Runtime>(app: &AppHandle<R>, sent: &[Step]) -> Result<(), String> {
+    use crate::offline_timer::{Tap, OFFLINE_ID};
+    let now = crate::clock::unix_now();
+    let Some(tap) = sent.iter().filter(|(_, url, _)| url == TIMER_URL).find_map(|(_, _, body)| crate::offline_timer::tap_of(body)) else {
+        return Err("You seem to be offline. Try again in a moment.".into());
+    };
+    let running = with(app, |inner| {
+        let info = inner.info.as_ref()?;
+        let server_running = info.running.as_ref().is_some_and(|running| running.id != OFFLINE_ID);
+        // The project and note going on after "Drop the idle time and keep going".
+        let current = inner.offline.running().map(|open| (Some(open.project.clone()), open.note.clone()))
+            .or_else(|| info.running.as_ref().map(|running| (running.project_id.clone(), running.note.clone())));
+        let queue = &mut inner.offline;
+        match tap {
+            Tap::Start { project: Some(project), note } => queue.start(server_running, &project, note, now),
+            Tap::Start { project: None, .. } => return Some(Err(())),
+            Tap::Stop { at } => queue.stop(server_running, at.unwrap_or(now).min(now)),
+            Tap::Restart { at } => match current {
+                Some((Some(project), note)) => {
+                    queue.stop(server_running, at.min(now));
+                    queue.start(false, &project, note, now);
+                }
+                _ => return Some(Err(())),
+            },
+        }
+        let info = inner.info.as_ref()?;
+        Some(Ok(offline_running(info, &inner.offline)))
+    })
+    .flatten();
+    match running {
+        Some(Ok(running)) => {
+            set_running(app, running);
+            crate::mini::ask_hourly(app, "__cbbMiniHourlyAfter", &json!({
+                "file": false,
+                "notice": "You're offline. The timer goes on here and reaches the tracker when you're back: keep the app open until then.",
+            }));
+            Ok(())
+        }
+        Some(Err(())) => Err("You're offline. Pick a project to time it offline: time not yet filed needs the tracker.".into()),
+        None => Err("You seem to be offline. Try again in a moment.".into()),
     }
 }
 
@@ -1315,6 +1417,8 @@ enum Then {
         say: bool,
         /// An idle auto-stop (see `auto_stop`).
         auto: Option<AutoStop>,
+        /// Sending what was timed offline (offline_timer.rs): done with once sent.
+        replay: bool,
     },
     /// Saved without changing the running timer (filed, or time added):
     /// `filed` clears the question; `notice` is said in the panel.
@@ -1328,6 +1432,7 @@ fn send<R: Runtime>(app: &AppHandle<R>, steps: Vec<Step>, done: &str, then: Then
     let script = post_script(&steps, done);
     let app = app.clone();
     std::thread::spawn(move || {
+        let sent = steps;
         let _one = SENDING.lock();
         if window.eval(&script).is_err() {
             return panel_error(&app, "The tracker could not be reached.");
@@ -1349,7 +1454,10 @@ fn send<R: Runtime>(app: &AppHandle<R>, steps: Vec<Step>, done: &str, then: Then
                 });
                 crate::mini::push(&app);
             }
-            (Some(Outcome { ok: true, running, .. }), Then::Timer { file, notice, say: tell, .. }) => {
+            (Some(Outcome { ok: true, running, .. }), Then::Timer { file, notice, say: tell, replay, .. }) => {
+                if replay {
+                    with(&app, |inner| inner.offline = crate::offline_timer::Queue::default());
+                }
                 let running = running.filter(valid_running).map(unfiled_not_billable);
                 if tell && !panel_showing(&app) {
                     let what = match &running {
@@ -1400,6 +1508,24 @@ fn send<R: Runtime>(app: &AppHandle<R>, steps: Vec<Step>, done: &str, then: Then
                 let error = other
                     .and_then(|outcome| outcome.error)
                     .unwrap_or_else(|| "The tracker could not be reached.".into());
+                let offline = crate::offline_timer::is_offline(&error);
+                if let Then::Timer { replay: true, .. } = &then {
+                    if offline {
+                        // Still offline: kept, and tried on the next read.
+                        return;
+                    }
+                    // Refused: said once, not tried again and again.
+                    with(&app, |inner| inner.offline = crate::offline_timer::Queue::default());
+                    panel_error(&app, &format!("Your offline time didn't all reach the tracker ({}). Check it on My Hours.", error.trim_end_matches('.')));
+                    read(&app);
+                    return;
+                }
+                if offline && matches!(then, Then::Timer { .. }) {
+                    match keep_offline(&app, &sent) {
+                        Ok(()) => return,
+                        Err(why) => return panel_error(&app, &why),
+                    }
+                }
                 panel_error(&app, &error);
                 read(&app);
             }
@@ -1485,7 +1611,7 @@ fn start_with<R: Runtime>(
     let info = current(app)?;
     let steps = start_steps(project_id, note, for_client, &info).map_err(str::to_string)?;
     let done = if steps.len() > 1 { "Started, but the note isn't shown to the client:" } else { "" };
-    send(app, steps, done, Then::Timer { file: ends_unfiled(&info), notice: None, say: tell, auto: None })?;
+    send(app, steps, done, Then::Timer { file: ends_unfiled(&info), notice: None, say: tell, auto: None, replay: false })?;
     let what = match (info.running.is_some(), project_id.is_some()) {
         (true, _) => "hourly_switch",
         (false, false) => "hourly_start_unfiled",
@@ -1500,7 +1626,7 @@ fn stop<R: Runtime>(app: &AppHandle<R>, from: &'static str, tell: bool) -> Resul
     if info.running.is_none() {
         return Err("No timer is running.".into());
     }
-    send(app, vec![post(TIMER_URL, stop_body(None))], "", Then::Timer { file: ends_unfiled(&info), notice: None, say: tell, auto: None })?;
+    send(app, vec![post(TIMER_URL, stop_body(None))], "", Then::Timer { file: ends_unfiled(&info), notice: None, say: tell, auto: None, replay: false })?;
     crate::analytics::action(app, "hourly_stop", from);
     Ok(())
 }
@@ -1546,7 +1672,7 @@ pub(crate) fn mini_hourly_idle<R: Runtime>(app: AppHandle<R>, choice: String) ->
             // whether the timer stays stopped or starts again.
             let file = left_to_file(&ask.running, ask.from);
             let steps = steps.into_iter().map(|body| post(TIMER_URL, body)).collect();
-            let then = Then::Timer { file, notice: None, say: false, auto: None };
+            let then = Then::Timer { file, notice: None, say: false, auto: None, replay: false };
             if let Err(error) = send(&app, steps, "", then) {
                 panel_error(&app, &error);
             }
@@ -1699,7 +1825,7 @@ pub(crate) fn log_and_start<R: Runtime>(app: &AppHandle<R>, project_id: &str, st
     let begin = start_body(Some(project_id), None, &info).map_err(str::to_string)?;
     let label = info.projects.iter().find(|project| project.id == project_id).map(project_label).unwrap_or_default();
     let notice = format!("Logged {} on {label}, and the timer's running.", fmt_minutes((end - start) / 60));
-    let then = Then::Timer { file: None, notice: Some(notice), say: false, auto: None };
+    let then = Then::Timer { file: None, notice: Some(notice), say: false, auto: None, replay: false };
     send(app, vec![post(TIME_URL, add), post(TIMER_URL, begin)], "Logged the time, but the timer didn't start:", then)
 }
 
@@ -1708,6 +1834,7 @@ pub(crate) fn log_and_start<R: Runtime>(app: &AppHandle<R>, project_id: &str, st
 pub(crate) fn on_wrap<R: Runtime>(app: &AppHandle<R>) {
     // What the helper was building ends at a wrap too.
     crate::detector::close_now(app);
+    day_summary(app);
     let Some(label) = with(app, |inner| {
         let info = inner.info.as_ref()?;
         info.running.as_ref().map(|running| running_label(Some(info), running))
@@ -1717,6 +1844,48 @@ pub(crate) fn on_wrap<R: Runtime>(app: &AppHandle<R>) {
     };
     crate::mini::ask_hourly(app, "__cbbMiniHourlyWrap", &json!({ "project": label }));
     crate::analytics::action(app, "hourly_wrap_asked", "time_sheet");
+}
+
+/// "Today: 6h 20m on 3 projects. 2 still to confirm." `None` with nothing
+/// logged and nothing to confirm.
+pub(crate) fn summary_text(today: Option<&Today>, to_confirm: usize) -> Option<String> {
+    let minutes = today.map_or(0, |today| today.total_minutes);
+    let projects = today.map_or(0, |today| {
+        let mut ids: Vec<Option<&str>> = today.entries.iter().map(|entry| entry.project_id.as_deref()).collect();
+        ids.sort();
+        ids.dedup();
+        ids.len()
+    });
+    let logged = match (minutes, projects) {
+        (0, _) => "Nothing logged on the timer today.".to_string(),
+        (m, 1) => format!("Today: {} on 1 project.", fmt_minutes(m)),
+        (m, n) => format!("Today: {} on {n} projects.", fmt_minutes(m)),
+    };
+    match (minutes, to_confirm) {
+        (0, 0) => None,
+        (_, 0) => Some(logged),
+        (_, 1) => Some(format!("{logged} 1 thing still to confirm.")),
+        (_, n) => Some(format!("{logged} {n} things still to confirm.")),
+    }
+}
+
+/// A wrap on the time sheet: what today came to, so anything missing is put
+/// right before they leave. In the panel, and as a banner (unless quiet).
+fn day_summary<R: Runtime>(app: &AppHandle<R>) {
+    if with(app, |inner| inner.info.is_none()).unwrap_or(true) {
+        return;
+    }
+    let app = app.clone();
+    std::thread::spawn(move || {
+        read_entries(&app);
+        let to_confirm = crate::to_confirm::view(&app).map_or(0, |view| view.total);
+        let today = with(&app, |inner| inner.today.clone()).flatten();
+        let Some(text) = summary_text(today.as_ref(), to_confirm) else { return };
+        crate::mini::ask_hourly(&app, "__cbbMiniHourlyAfter", &json!({ "file": false, "notice": text }));
+        if !panel_showing(&app) && crate::quiet::allowed(&app, crate::quiet::Kind::Tracker) {
+            crate::banner::show(&app, "Your day on the timer", &text, crate::banner::Target::Panel);
+        }
+    });
 }
 
 /// "Add time…": a stretch the person confirmed, logged after the fact.
@@ -1888,6 +2057,7 @@ fn auto_stop<R: Runtime>(app: &AppHandle<R>, running: &Running, at: u64, back: b
             notice: Some(notice),
             say: false,
             auto: Some(AutoStop { timer: running.id.clone(), later: !back }),
+            replay: false,
         };
         if send(&app, vec![post(TIMER_URL, away_stop_body(at))], "", then).is_err() {
             with(&app, |inner| inner.auto_stopped = None);
@@ -2143,6 +2313,21 @@ mod tests {
         let body = json!({ "answered": ["desktop:1760000000", "booking:x", 7, "desktop:nope"] });
         assert_eq!(answered_keys(&body), vec!["desktop:1760000000".to_string()]);
         assert!(answered_keys(&json!({})).is_empty());
+    }
+
+    #[test]
+    fn the_wrap_says_what_today_came_to_and_what_is_left_to_confirm() {
+        let entry = |project: Option<&str>| Entry {
+            id: "e".into(), project_id: project.map(str::to_string), project_name: None, client_name: None, billable: true,
+            started_at: "2026-10-14T07:00:00.000Z".into(), ended_at: None, minutes: 0, note: None, billed: false, note_for_client: false,
+        };
+        let today = Today { day: "2026-10-14".into(), entries: vec![entry(Some("p1")), entry(Some("p2")), entry(Some("p1"))], total_minutes: 380, billable_minutes: 380 };
+        assert_eq!(summary_text(Some(&today), 0).as_deref(), Some("Today: 6h 20m on 2 projects."));
+        assert_eq!(summary_text(Some(&today), 2).as_deref(), Some("Today: 6h 20m on 2 projects. 2 things still to confirm."));
+        let one = Today { entries: vec![entry(Some("p1"))], total_minutes: 45, ..today.clone() };
+        assert_eq!(summary_text(Some(&one), 1).as_deref(), Some("Today: 45m on 1 project. 1 thing still to confirm."));
+        assert_eq!(summary_text(None, 1).as_deref(), Some("Nothing logged on the timer today. 1 thing still to confirm."));
+        assert_eq!(summary_text(None, 0), None);
     }
 
     #[test]

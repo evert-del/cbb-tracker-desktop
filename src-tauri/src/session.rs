@@ -16,7 +16,7 @@
 //! size straight away (built hidden, placed, then shown: no jump). This
 //! replaced tauri-plugin-window-state, which saved the sign-in size too.
 
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Mutex;
 
 use tauri::menu::MenuItem;
@@ -208,8 +208,42 @@ pub(crate) fn place_main_at_launch<R: Runtime>(main: &tauri::WebviewWindow<R>) {
         }
     }
     track_main(main);
+    // Shown once its first page is ready (launch_page_ready), so a launch
+    // never flashes a blank page or the sign-in page on the way to the
+    // dashboard. A slow or offline start still shows it after a few seconds.
+    let fallback = main.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(LAUNCH_SHOW_AFTER);
+        launch_page_ready(&fallback);
+    });
+}
+
+/// Longest the tracker window waits at launch for its first page.
+const LAUNCH_SHOW_AFTER: std::time::Duration = std::time::Duration::from_secs(6);
+
+/// Whether the main window has been shown since launch.
+static LAUNCH_SHOWN: AtomicBool = AtomicBool::new(false);
+
+/// The launch page is ready (or the wait is over): show the main window,
+/// once, then the one-time welcome.
+pub(crate) fn launch_page_ready<R: Runtime>(main: &tauri::WebviewWindow<R>) {
+    if main.label() != "main" || LAUNCH_SHOWN.swap(true, Ordering::Relaxed) {
+        return;
+    }
     let _ = main.show();
+    #[cfg(target_os = "macos")]
+    crate::tabs::show_tab_bar(main);
     maybe_welcome(main);
+}
+
+/// Whether the last session ended signed in (settings.json): the app then
+/// opens on the dashboard rather than the sign-in page.
+pub(crate) fn was_signed_in<R: Runtime>(app: &AppHandle<R>) -> bool {
+    app.store(STORE)
+        .ok()
+        .and_then(|store| store.get(SIGNED_IN_KEY))
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false)
 }
 
 /// The one-time welcome has been shown on this computer (settings.json).

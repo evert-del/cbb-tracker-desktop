@@ -591,6 +591,11 @@ pub(crate) fn build_tracker_window<R: Runtime>(
                 let cookies: String = serde_json::from_str(&cookies_json).unwrap_or_default();
                 if probe.label() == "main" {
                     session::update(probe.app_handle(), has_session_cookie(&cookies));
+                    // At launch the window waits for a page worth showing:
+                    // the dashboard when signed in (otherwise sign in, below).
+                    if has_session_cookie(&cookies) {
+                        session::launch_page_ready(&probe);
+                    }
                     // Signed in on the dashboard (where the app opens): what's
                     // new after an update, once (whats_new.rs).
                     if has_session_cookie(&cookies) {
@@ -613,6 +618,7 @@ pub(crate) fn build_tracker_window<R: Runtime>(
         // quick-panel tip, if it hasn't been shown yet.
         if page.path() != "/sign-in" {
             if window.label() == "main" {
+                session::launch_page_ready(&window);
                 mini::maybe_introduce(window.app_handle());
                 // After an update: what's new, once (whats_new.rs).
                 whats_new::maybe_show(window.app_handle());
@@ -637,17 +643,20 @@ pub(crate) fn build_tracker_window<R: Runtime>(
                 if let Ok(home) = APP_ORIGIN.parse::<url::Url>() {
                     let _ = probe.navigate(home);
                 }
+            } else if probe.label() == "main" {
+                // Signed out: the sign-in page is the page to show.
+                session::launch_page_ready(&probe);
             }
         });
     });
     #[cfg(target_os = "macos")]
     let builder = builder.tabbing_identifier(TAB_GROUP);
-    // Windows: files dragged in from Explorer reach the tracker's own drop
-    // zones (uploads). Tauri's file-drop handler is on by default and there
-    // it swallows those drops before the page sees them (macOS and Linux
-    // pass them on). The app does nothing with dropped files itself, and a
-    // file dropped elsewhere is refused by on_navigation (file: never loads).
-    #[cfg(windows)]
+    // Files dragged in from Finder / Explorer reach the tracker's own drop
+    // zones (uploads). Tauri's file-drop handler is on by default and it
+    // swallows those drops before the page sees them, on macOS as well as
+    // Windows (found on a Mac: nothing could be dropped). The app does
+    // nothing with dropped files itself, and a file dropped elsewhere is
+    // refused by on_navigation (file: never loads).
     let builder = builder.disable_drag_drop_handler();
     builder.build()
 }
@@ -971,10 +980,14 @@ pub fn run() {
             desktop_entry::keep_installed();
             #[cfg(target_os = "linux")]
             title_buttons::follow_host(app.handle());
+            // Signed in last time: open straight on the dashboard, so the
+            // sign-in page never flashes up first (an expired session is sent
+            // to sign in by the "/" check in on_page_load).
+            let start = if session::was_signed_in(app.handle()) { APP_ORIGIN } else { START_URL };
             let main_window = build_tracker_window(
                 app.handle(),
                 "main",
-                START_URL.parse().expect("START_URL is a valid URL"),
+                start.parse().expect("start URLs are valid"),
             )?;
             // Tab / window titles follow the page each window shows (tabs.rs).
             tabs::follow_titles(app.handle());
@@ -1013,7 +1026,8 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             tabs::allow_tabs(app.handle());
             // Size and place the main window for whoever is here (the sign-in
-            // window or the tracker as it was left), then show it (session.rs).
+            // window or the tracker as it was left); it shows once its first
+            // page is ready (session.rs).
             session::place_main_at_launch(&main_window);
             // The tab bar, once the window is on screen (hidden when signed out).
             #[cfg(target_os = "macos")]

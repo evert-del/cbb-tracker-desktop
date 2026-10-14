@@ -236,8 +236,8 @@ function tick() {
     view.state === "none" || view.state === "loading"
       ? ""
       : worked < 1 && rest < 1
-        ? "Nothing on the time sheet yet today"
-        : `Today ${fmtSpan(worked)} worked` + (rest >= 1 ? ` · ${fmtSpan(rest)} break` : "");
+        ? "Nothing logged yet today"
+        : `${fmtSpan(worked)} worked` + (rest >= 1 ? ` · ${fmtSpan(rest)} break` : "");
 }
 
 /**
@@ -316,10 +316,14 @@ function renderNeeds(view: View) {
     });
     list.appendChild(row);
   }
-  el("empty").hidden = view.unread > 0 || shown.length > 0;
+  // Nothing waiting: one line ("All caught up · Notifications"), no heading.
+  const nothing = view.unread === 0 && shown.length === 0;
+  el("empty").hidden = !nothing;
+  el("needs-label").hidden = nothing;
   el("needs-label").textContent = view.unread > 0 ? `Needs you · ${view.unread}` : "Needs you";
-  el("see-all-text").textContent =
-    view.unread > shown.length && shown.length > 0
+  el("see-all-text").textContent = nothing
+    ? "Notifications"
+    : view.unread > shown.length && shown.length > 0
       ? `See all ${view.unread} notifications`
       : "See all notifications";
 }
@@ -1462,6 +1466,15 @@ function liveRetainer(left: number | null | undefined, billable: boolean, client
   return same ? left - elapsedMinutes(r) : left;
 }
 
+/** The running timer's job and client, shown on two lines in the header. */
+function runningParts(r: HourlyRunning, projects: HourlyProject[]): { title: string; client: string } {
+  if (r.projectId === null) return { title: "Not yet filed", client: "" };
+  const name = r.projectName?.trim();
+  if (name) return { title: name, client: r.clientName?.trim() ?? "" };
+  const p = projects.find((x) => x.id === r.projectId);
+  return p ? { title: p.name || p.projectNumber, client: p.clientName?.trim() ?? "" } : { title: "", client: "" };
+}
+
 function projectTitle(p: HourlyProject): string {
   return [projectLabel(p), p.billable ? "Billable" : "Tracked only", retainerText(p)].filter(Boolean).join(" · ");
 }
@@ -1498,10 +1511,11 @@ function renderToday(t: Today | null) {
     const to = running ? "now" : TRACKER_TIME.format(new Date(e.endedAt ?? e.startedAt));
     const label = document.createElement("span");
     label.className = "l";
-    label.textContent = entryLabel(e);
+    // The job in bold; the client goes with the times underneath.
+    label.textContent = e.projectId === null ? "Not yet filed" : e.projectName?.trim() || "A project";
     const when = document.createElement("span");
     when.className = "w";
-    when.textContent = [`${from}–${to}`, e.note].filter(Boolean).join(" · ");
+    when.textContent = [e.projectId === null ? "" : e.clientName?.trim(), `${from}–${to}`, e.note].filter(Boolean).join(" · ");
     main.append(label, when);
     main.disabled = e.billed;
     main.title = e.billed ? "On an invoice: it can't be changed." : "Edit";
@@ -2016,7 +2030,10 @@ function renderHourly(h: Hourly | null) {
   if (running === null) el("hourly-wrap").hidden = true;
   if (running) {
     const unfiled = running.projectId === null;
-    el("hourly-project").textContent = runningLabel(running, h.projects);
+    const parts = runningParts(running, h.projects);
+    el("hourly-project").textContent = parts.title;
+    el("hourly-client").textContent = parts.client;
+    el("hourly-client").hidden = !parts.client;
     renderRunningRetainer(running);
     el("hourly-project").classList.toggle("unfiled", unfiled);
     const kind = el("hourly-kind");
@@ -2027,7 +2044,7 @@ function renderHourly(h: Hourly | null) {
     el("hourly-stop").title = unfiled ? "Stop, then pick the project on Hours" : "Stop the timer";
     el("hourly-card").title = unfiled
       ? "Not billable until it's filed under a project. Click for My Hours."
-      : `${el("hourly-project").textContent ?? ""}. Click for My Hours.`;
+      : `${runningLabel(running, h.projects)}. Click for My Hours.`;
     el("hourly-note").textContent = running.note ?? "";
     el("hourly-note").hidden = !running.note;
   }
@@ -2045,8 +2062,21 @@ function renderHourly(h: Hourly | null) {
     chip.type = "button";
     chip.className = "h-chip";
     chip.title = `${running ? "Switch to" : "Start"} ${projectTitle(p)}`;
+    // The job in bold, the client under it (the bit that tells rows apart
+    // comes first, so a long client name never hides it).
     const name = document.createElement("span");
-    name.textContent = projectLabel(p);
+    name.className = "h-name";
+    const title = document.createElement("span");
+    title.className = "t";
+    title.textContent = p.name || p.projectNumber;
+    name.appendChild(title);
+    const client = p.clientName?.trim();
+    if (client) {
+      const sub = document.createElement("span");
+      sub.className = "c";
+      sub.textContent = client;
+      name.appendChild(sub);
+    }
     const pinned = (h.pinned ?? []).includes(p.id);
     if (pinned) chip.classList.add("pinned");
     chip.append(svg(pinned ? STAR : PLAY), name);

@@ -2,8 +2,9 @@
 //! the same list as My Hours on the website (`GET
 //! /api/me/project-time-suggestions`), so time they seem to have worked but
 //! didn't log isn't forgotten: their bookings, days of task work, time cut
-//! off while they were away, and what "Suggest time from my work" noticed
-//! on another computer.
+//! off while they were away, what "Suggest time from my work" noticed on
+//! another computer, and the blanks in past days of their own time sheet
+//! (today's are day_gaps.rs's, worked out here).
 //!
 //! - Each row: "Log it" (as it stands, when it has a project and times),
 //!   "Fill in…" (opens it on My Hours, where it can be changed), "Not this".
@@ -64,10 +65,11 @@ pub(crate) struct List {
     pub items: Vec<Item>,
 }
 
-/// A key the tracker makes ("desktop:…", "away:…", "booking:…", "work:…").
+/// A key the tracker makes ("desktop:…", "away:…", "booking:…", "work:…",
+/// and "gap:…" for a blank in a past time sheet day).
 pub(crate) fn valid_key(key: &str) -> bool {
     let Some((kind, rest)) = key.split_once(':') else { return false };
-    matches!(kind, "desktop" | "away" | "booking" | "work")
+    matches!(kind, "desktop" | "away" | "booking" | "work" | "gap")
         && (1..=90).contains(&rest.len())
         && rest.chars().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, ':' | '_' | '-'))
 }
@@ -403,6 +405,7 @@ mod tests {
     fn keys_are_only_the_trackers_own() {
         assert!(valid_key("desktop:1760000000"));
         assert!(valid_key(&format!("work:{P1}:2026-10-12")));
+        assert!(valid_key("gap:2026-10-12:0930"));
         assert!(!valid_key("desktop:"));
         assert!(!valid_key("other:1"));
         assert!(!valid_key("booking:a'b"));

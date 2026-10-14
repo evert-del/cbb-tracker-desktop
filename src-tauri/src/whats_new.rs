@@ -36,6 +36,46 @@ pub(crate) fn notes(version: &str, os: &str, hourly: bool) -> Vec<Item> {
     let panel_key = if mac { "⌘⇧M" } else { "Ctrl+Alt+M" };
     let timer_key = if mac { "⌘⇧Y" } else { "Ctrl+Alt+Y" };
     match version {
+        // Everything new is the project timer's: only people who bill by
+        // the hour hear about it, and nobody else is shown a page.
+        "0.2.21" => {
+            if !hourly {
+                return Vec::new();
+            }
+            vec![
+                item(
+                    "Nothing forgotten: Still to confirm",
+                    "The quick panel lists time that looks worked but isn't logged: your bookings, days you worked on a project's tasks, time cut off while you were away, and what Suggest time from my work noticed. Log it, change it on My Hours, or Not this. Once a morning it reminds you if anything from before today is waiting."
+                        .into(),
+                ),
+                item(
+                    "Not logged today",
+                    "The blanks in your working day, from your own time sheet (or when you were at this computer), with nothing on the timer. Log it… fills in Add time with those times; Not work puts it away. Worked out on this computer: only what you log reaches the tracker."
+                        .into(),
+                ),
+                item(
+                    "Keeps timing offline",
+                    "Start, switch and stop with no connection: the panel says \"Offline: not sent yet\" and sends it all when you're back. Keep the app open until then."
+                        .into(),
+                ),
+                item(
+                    "Your day, and the estimate",
+                    "Wrapping on the time sheet says what today came to and what's still to confirm. A running project with an estimate shows the hours left, or how far over."
+                        .into(),
+                ),
+                item(
+                    "Which deliverable?",
+                    "On a project billed partly by the hour, starting the timer or logging time asks, if you like, which deliverable it was for. What's billable is still decided by billing, never by you."
+                        .into(),
+                ),
+                item(
+                    "A set-up guide",
+                    format!(
+                        "New to billing by the hour? A short guide walks you through the timer, {timer_key}, time away and never forgetting to log. Settings › Project timer › Set-up guide opens it again. Suggest time from my work now also hands the tracker your unanswered suggestions (a project and two times, never an app or a file name) so you can answer them on My Hours too."
+                    ),
+                ),
+            ]
+        }
         "0.2.20" => {
             let items = vec![
                 item(
@@ -270,7 +310,8 @@ mod tests {
         assert!(mac.iter().any(|i| i.how.contains("Dock")));
         assert!(!win.iter().any(|i| i.how.contains("Dock") || i.how.contains("menu bar")));
         assert!(notes("0.0.1", "macos", true).is_empty());
-        assert!(!notes(VERSION, "macos", false).is_empty(), "add notes for {VERSION} in whats_new.rs");
+        // A release may speak only to people who bill by the hour (0.2.21).
+        assert!(!notes(VERSION, "macos", true).is_empty(), "add notes for {VERSION} in whats_new.rs");
     }
 
     #[test]
@@ -308,6 +349,16 @@ mod tests {
             );
             assert_eq!(notes("0.2.19", os, true).len(), everyone.len() + 3);
         }
+    }
+
+    #[test]
+    fn the_timer_release_is_only_for_people_who_bill_by_the_hour() {
+        for os in ["macos", "windows", "linux"] {
+            assert!(notes("0.2.21", os, false).is_empty());
+            assert_eq!(notes("0.2.21", os, true).len(), 6);
+        }
+        assert!(notes("0.2.21", "macos", true).iter().any(|i| i.how.contains("⌘⇧Y")));
+        assert!(notes("0.2.21", "windows", true).iter().any(|i| i.how.contains("Ctrl+Alt+Y")));
     }
 
     #[test]

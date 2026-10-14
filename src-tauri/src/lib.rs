@@ -46,6 +46,7 @@ mod schedule;
 mod search;
 mod session;
 mod setup;
+mod to_confirm;
 mod system_open;
 mod tabs;
 mod title_buttons;
@@ -934,6 +935,7 @@ pub fn run() {
             mini::mini_whats_new_done,
             mini::mini_hourly_setup,
             mini::mini_hourly_setup_done,
+            to_confirm::mini_to_confirm,
             walkie::mini_walkie_open,
             walkie::mini_walkie_send,
             hourly::mini_hourly,

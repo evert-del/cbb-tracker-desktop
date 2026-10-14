@@ -36,6 +36,36 @@ pub(crate) fn notes(version: &str, os: &str, hourly: bool) -> Vec<Item> {
     let panel_key = if mac { "⌘⇧M" } else { "Ctrl+Alt+M" };
     let timer_key = if mac { "⌘⇧Y" } else { "Ctrl+Alt+Y" };
     match version {
+        "0.2.20" => {
+            let mut items = vec![
+                item(
+                    "A tidier quick panel",
+                    "The project you're timing sits in the pink header, with its time and Stop. Under the search, projects show the job first and the client underneath. When nothing needs you, notifications are one line at the bottom, and the footer is one slim row: Open tracker, then New window, Saved offline, updates, Settings and Quit."
+                        .into(),
+                ),
+                item(
+                    "Settings in groups",
+                    "Settings is now grouped: Project timer, Notifications, Window and panel, General and About, and each switch says what it does when it's on."
+                        .into(),
+                ),
+                item(
+                    "Drop files into the tracker",
+                    format!("Drag a file from {} onto an upload area in the tracker, as in a browser.", if mac { "Finder" } else { "your files" }),
+                ),
+                item(
+                    "Straight to your work",
+                    "Signed in, the app opens straight on the tracker: no sign-in page flashing up first.".into(),
+                ),
+            ];
+            if mac {
+                items.push(item(
+                    "True colours for design work",
+                    "Tracker pages now show in their real colours, so photos and design files look as they should. Prefer the tracker dark? Switch on Settings › Window and panel › Dark tracker pages (photo colours are then only approximate)."
+                        .into(),
+                ));
+            }
+            items
+        }
         "0.2.19" => {
             let mut items = Vec::new();
             if hourly {
@@ -243,6 +273,15 @@ mod tests {
         assert!(!win.iter().any(|i| i.how.contains("Dock") || i.how.contains("menu bar")));
         assert!(notes("0.0.1", "macos", true).is_empty());
         assert!(!notes(VERSION, "macos", false).is_empty(), "add notes for {VERSION} in whats_new.rs");
+    }
+
+    #[test]
+    fn the_panel_release_speaks_each_systems_words() {
+        let mac = notes("0.2.20", "macos", false);
+        let win = notes("0.2.20", "windows", false);
+        assert!(mac.len() >= 5 && win.len() >= 4);
+        assert!(mac.iter().any(|i| i.how.contains("Finder") || i.how.contains("Dark tracker pages")));
+        assert!(!win.iter().any(|i| i.how.contains("Finder") || i.how.contains("Dark tracker pages")));
     }
 
     #[test]

@@ -42,6 +42,8 @@ pub(crate) struct View {
     pub hourly: Option<crate::hourly::PanelView>,
     pub version: String,
     pub autostart: bool,
+    /// macOS: tracker pages flipped dark (theme.rs). Off keeps photo colours true.
+    pub tracker_dark: bool,
     /// Closing the main window quits the app (close.rs) instead of hiding it.
     pub close_quits: bool,
     pub pinned: bool,
@@ -126,6 +128,7 @@ pub(crate) fn plan(
         hourly: None,
         version: env!("CARGO_PKG_VERSION").into(),
         autostart: false,
+        tracker_dark: false,
         close_quits: false,
         pinned: false,
         on_top: true,
@@ -153,6 +156,7 @@ pub(crate) fn push<R: Runtime>(app: &AppHandle<R>) {
         .unwrap_or((0, Vec::new(), Vec::new()));
     let mut view = plan(clock.as_ref(), unread, needs, crate::clock::unix_now());
     view.autostart = crate::autostart_enabled(app);
+    view.tracker_dark = crate::close::flag(app, crate::theme::TRACKER_DARK);
     view.close_quits = crate::close::quits(app);
     view.pinned = is_pinned();
     view.compact = is_compact();
@@ -291,7 +295,32 @@ fn set_compact<R: Runtime>(app: &AppHandle<R>, compact: bool) {
     let (w, h) = if compact { COMPACT_SIZE } else { (FULL_SIZE.0, full_height()) };
     if let Some(mini) = app.get_webview_window("mini") {
         let _ = mini.set_size(tauri::LogicalSize::new(w, h));
+        keep_on_screen(&mini, (w, h));
     }
+}
+
+/// Growing from the mini timer keeps the top-left corner, so a timer at the
+/// right or bottom edge grew off the screen (found on a Mac: the full panel
+/// 30px past the right edge). Nudge it back inside the screen it's on.
+fn keep_on_screen<R: Runtime>(mini: &tauri::WebviewWindow<R>, size: (f64, f64)) {
+    let (Ok(Some(screen)), Ok(pos)) = (mini.current_monitor(), mini.outer_position()) else { return };
+    let scale = screen.scale_factor();
+    let origin = screen.position().to_logical::<f64>(scale);
+    let area = screen.size().to_logical::<f64>(scale);
+    let pos = pos.to_logical::<f64>(mini.scale_factor().unwrap_or(scale));
+    let (x, y) = fit_inside((pos.x, pos.y), size, (origin.x, origin.y, area.width, area.height));
+    if (x, y) != (pos.x, pos.y) {
+        let _ = mini.set_position(tauri::LogicalPosition::new(x, y));
+    }
+}
+
+/// Where a window of `size` at `pos` should go to sit inside `screen`
+/// (x, y, width, height), all in points.
+pub(crate) fn fit_inside(pos: (f64, f64), size: (f64, f64), screen: (f64, f64, f64, f64)) -> (f64, f64) {
+    let (sx, sy, sw, sh) = screen;
+    let x = pos.0.min(sx + sw - size.0).max(sx);
+    let y = pos.1.min(sy + sh - size.1).max(sy);
+    (x, y)
 }
 
 /// When the panel last hid itself. Clicking the tray icon while the panel
@@ -405,6 +434,23 @@ pub(crate) fn minimised_to_panel<R: Runtime>(app: &AppHandle<R>, label: &str) {
     if newly_pinned {
         crate::analytics::panel_mode(app, true, true);
     }
+    // Never leave nothing on screen: once (found on a Mac, right after
+    // launch) the tracker went away but the timer never showed. Check, show
+    // it again, and failing that bring the tracker back.
+    let app = app.clone();
+    std::thread::spawn(move || {
+        for attempt in 0..2 {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            let Some(mini) = app.get_webview_window("mini") else { break };
+            if mini.is_visible().unwrap_or(false) {
+                return;
+            }
+            if attempt == 0 {
+                let _ = mini.show();
+            }
+        }
+        crate::show_main(&app);
+    });
 }
 
 /// Drop the panel down by the tray: the top-right of the main screen on
@@ -997,6 +1043,7 @@ fn is_menu_item(item: &str) -> bool {
         || item == "auto-offline"
         || item == "on-top"
         || item == "minimise-to-timer"
+        || item == "tracker-dark"
         || idle_minutes_item(item).is_some()
 }
 
@@ -1088,6 +1135,14 @@ pub(crate) fn mini_menu<R: Runtime>(app: AppHandle<R>, item: String) -> Result<(
             if let Some(minutes) = idle_minutes_item(item) {
                 crate::hourly::set_idle_minutes(&app, minutes);
             }
+        }
+        "tracker-dark" => {
+            let on = !crate::close::flag(&app, crate::theme::TRACKER_DARK);
+            crate::close::set_flag(&app, crate::theme::TRACKER_DARK, on);
+            #[cfg(target_os = "macos")]
+            crate::theme::apply_tracker_dark(&app);
+            push(&app);
+            crate::analytics::setting_changed(&app, "tracker_dark", on);
         }
         "on-top" => {
             let on = !on_top(&app);
@@ -1303,11 +1358,23 @@ mod tests {
     }
 
     #[test]
+    fn a_growing_panel_stays_on_its_screen() {
+        let screen = (0.0, 0.0, 1728.0, 1117.0);
+        // The mini timer at the right edge grows to the full panel.
+        assert_eq!(fit_inside((1388.0, 33.0), (372.0, 720.0), screen), (1356.0, 33.0));
+        assert_eq!(fit_inside((100.0, 900.0), (372.0, 720.0), screen), (100.0, 397.0));
+        assert_eq!(fit_inside((-50.0, -10.0), (372.0, 720.0), screen), (0.0, 0.0));
+        assert_eq!(fit_inside((500.0, 200.0), (372.0, 720.0), screen), (500.0, 200.0));
+        // A screen above the main one (negative y).
+        assert_eq!(fit_inside((1700.0, -100.0), (332.0, 72.0), (-78.0, -1080.0, 1920.0, 1080.0)), (1510.0, -100.0));
+    }
+
+    #[test]
     fn only_known_menu_items_pass() {
         for item in [
             "offline", "new-window", "update", "diagnostics", "autostart", "close-keep", "close-quit", "quit",
             "banners-tracker", "banners-walkie", "banners-channel1", "auto-offline", "idle-5", "idle-20",
-            "on-top", "minimise-to-timer",
+            "on-top", "minimise-to-timer", "tracker-dark",
         ] {
             assert!(is_menu_item(item), "{item}");
         }

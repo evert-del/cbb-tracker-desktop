@@ -92,7 +92,7 @@
       #head[data-state="in"] #dot { background: #8ff0be; }
       #head[data-state="break"] #dot { background: #ffe08a; }
       #status { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; opacity: 0.95; }
-      .head-btn { color: #fff; opacity: 0.8; display: grid; place-items: center; width: 26px; height: 26px; border-radius: var(--r-ctl); }
+      .head-btn { color: #fff; opacity: 0.85; display: grid; place-items: center; width: 28px; height: 28px; border-radius: var(--r-ctl); }
       .head-btn:hover { opacity: 1; background: rgba(255, 255, 255, 0.16); }
       #pin[aria-pressed="true"] { opacity: 1; background: rgba(255, 255, 255, 0.24); }
       #pin[aria-pressed="true"] svg { fill: currentColor; }
@@ -103,8 +103,10 @@
       #c-pin[aria-pressed="true"] { opacity: 1; background: rgba(255, 255, 255, 0.24); }
       #c-pin[aria-pressed="true"] svg { fill: currentColor; }
       #pin-hint { font-size: 11px; opacity: 0.8; margin-top: 2px; }
-      #timer { font-size: 34px; font-weight: 600; letter-spacing: 0.01em; line-height: 1.15; margin-top: 6px; font-variant-numeric: tabular-nums; }
-      #today { font-size: 12px; opacity: 0.88; font-variant-numeric: tabular-nums; }
+      /* The day: time on the clock, with today's totals beside it. */
+      #head-time { display: flex; align-items: baseline; gap: 10px; margin-top: 4px; }
+      #timer { font-size: 28px; font-weight: 600; letter-spacing: 0.01em; line-height: 1.15; font-variant-numeric: tabular-nums; flex: none; }
+      #today { flex: 1; min-width: 0; text-align: right; font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
       /* The tracker's greeting after a clock tap, for a few seconds. */
       #greeting, #c-greeting { font-size: 12px; font-weight: 600; margin-top: 4px; animation: greet-in 0.25s ease-out; }
       #c-greeting { font-size: 12px; margin-top: 0; min-width: 0; flex: 1 1 auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -122,10 +124,11 @@
       .act:disabled, #c-action:disabled { opacity: 0.55; cursor: default; }
       .act.primary { background: var(--pink); color: #fff; }
       .act.primary:hover { background: var(--pink-ink); }
-      .act.wrap { background: var(--danger-bg); color: var(--danger-fg); }
+      /* Wrap ends the day; it isn't destructive, so it isn't red. */
+      .act.wrap { background: var(--tile); color: var(--fg); }
       #no-sheet { padding: 12px 16px; color: var(--muted); font-size: 12.5px; }
 
-      .section { font-size: 11px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--faint); padding: 8px 16px 4px; }
+      .section { font-size: 11px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); padding: 8px 16px 4px; }
       #needs { display: flex; flex-direction: column; }
       .need { display: flex; align-items: center; gap: 10px; padding: 8px 16px; text-align: left; border-top: 0.5px solid var(--rule); }
       .need:hover { background: var(--tile); }
@@ -142,16 +145,20 @@
       .tone-3 { background: var(--tone-3-bg); color: var(--tone-3-fg); }
       .tone-4 { background: var(--tone-4-bg); color: var(--tone-4-fg); }
       .tone-5 { background: var(--tone-5-bg); color: var(--tone-5-fg); }
-      #empty { padding: 10px 16px 14px; color: var(--muted); font-size: 12.5px; }
-      #see-all { display: flex; align-items: center; gap: 6px; padding: 9px 16px; color: var(--pink-ink); font-weight: 600; border-top: 0.5px solid var(--rule); }
+      /* Notifications: the list when something's waiting; one line when not. */
+      #needs-foot { display: flex; align-items: center; border-top: 0.5px solid var(--rule); margin-top: 4px; }
+      #empty { flex: 1; display: flex; align-items: center; gap: 6px; padding: 9px 0 9px 16px; color: var(--muted); font-size: 12.5px; }
+      #empty svg { width: 14px; height: 14px; }
+      #see-all { display: flex; align-items: center; gap: 6px; padding: 9px 16px; color: var(--pink-ink); font-weight: 600; margin-left: auto; }
       #see-all:hover { background: var(--tile); }
+      #empty:not([hidden]) + #see-all { padding-left: 8px; }
 
-      #shortcuts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; padding: 10px 14px; border-top: 0.5px solid var(--rule); margin-top: auto; }
-      .tile { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 8px 4px 7px; border-radius: var(--r-ctl); background: var(--tile); font-weight: 500; font-size: 12px; text-align: center; white-space: nowrap; }
-      .tile:hover { background: var(--tile-hover); }
-      .tile svg { color: var(--muted); }
+      /* The footer: Open tracker, then the rest as icons. */
+      .foot-main { flex: 1; display: flex; align-items: center; gap: 8px; min-height: 30px; padding: 0 8px; margin-left: -8px; border-radius: var(--r-ctl); font-weight: 600; color: var(--fg); }
+      .foot-main:hover { background: var(--tile); }
+      .foot-main svg { color: var(--muted); }
 
-      #foot { display: flex; align-items: center; gap: 4px; padding: 8px 10px 8px 16px; border-top: 0.5px solid var(--rule); color: var(--faint); font-size: 12px; }
+      #foot { display: flex; align-items: center; gap: 2px; padding: 6px 10px 6px 16px; border-top: 0.5px solid var(--rule); margin-top: auto; color: var(--muted); font-size: 12.5px; }
       #version { flex: 1; }
       .icon-btn { display: grid; place-items: center; width: 28px; height: 28px; border-radius: var(--r-ctl); color: var(--muted); }
       .icon-btn:hover { background: var(--tile); color: var(--fg); }
@@ -163,7 +170,7 @@
       .set-row { display: flex; align-items: center; gap: 10px; padding: 12px 16px; text-align: left; border-bottom: 0.5px solid var(--rule); width: 100%; box-sizing: border-box; }
       .set-row:hover { background: var(--tile); }
       .set-row .txt { flex: 1; }
-      .set-row .hint { font-size: 11.5px; color: var(--faint); }
+      .set-row .hint { font-size: 11.5px; color: var(--muted); }
       .switch { width: 34px; height: 20px; border-radius: 99px; background: var(--tile-hover); position: relative; flex: none; transition: background 0.15s; }
       .switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,0.25); transition: transform 0.15s; }
       .switch[aria-checked="true"] { background: var(--pink); }
@@ -178,7 +185,9 @@
       .seg[aria-checked="true"] { background: var(--card); color: var(--fg); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12); }
       #close-choice + .set-row, #dnd-choice + .set-row { border-top: 0.5px solid var(--rule); }
       /* Notifications (quiet.rs): which pop up, and do-not-disturb. */
-      .set-label { padding: 14px 16px 4px; font-size: 11px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--faint); }
+      .set-label { padding: 14px 16px 4px; font-size: 11px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); }
+      /* Each group of settings starts with its own heading. */
+      .set-section { padding-top: 20px; }
       #dnd-row { border-bottom: 0; padding-bottom: 6px; cursor: default; }
       #dnd-row:hover { background: none; }
       #dnd-choice { display: grid; grid-template-columns: repeat(5, 1fr); gap: 2px; margin: 0 16px 12px; padding: 2px; border-radius: var(--r-ctl); background: var(--tile); }
@@ -268,7 +277,8 @@
       #detector-body { padding: 0 16px 12px; display: flex; flex-direction: column; gap: 8px; border-bottom: 0.5px solid var(--rule); }
       #detector-body .set-label { padding: 6px 0 0; }
       #detector-apps { display: flex; flex-wrap: wrap; gap: 6px; }
-      #detector-apps .h-chip[aria-pressed="true"] { background: var(--pink); color: #fff; }
+      /* The chosen apps: quiet tinted chips (the list rarely changes). */
+      #detector-apps .h-chip[aria-pressed="true"] { background: var(--tone-0-bg); color: var(--tone-0-fg); }
       .d-kind { margin: 4px 0 2px; font-size: 11px; color: var(--muted); }
       #detector-add-app, #detector-link { align-self: flex-start; font-size: 12.5px; font-weight: 600; color: var(--pink-ink); }
       #detector-add-app:hover, #detector-link:hover { text-decoration: underline; }
@@ -278,7 +288,10 @@
       #detector-permission p { margin: 0; }
       .d-perm-acts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
       #detector-permission .d-perm-acts button { text-decoration: none !important; padding: 5px 10px; border-radius: var(--r-ctl); background: var(--card); color: var(--fg) !important; font-weight: 600; font-size: 12px; }
-      #detector-permission .d-perm-acts button:first-child:not([hidden]) { background: var(--pink); color: #fff !important; }
+      #detector-permission .d-perm-acts button.d-perm-main { background: var(--pink); color: #fff !important; }
+      #detector-permission .d-perm-acts button.d-perm-more-btn { background: none; padding: 5px 4px; text-decoration: underline !important; }
+      #detector-perm-more { margin-top: 8px; }
+      #detector-private { display: flex; flex-direction: column; gap: 4px; }
       #detector-perm-ok { margin: 0; font-size: 12px; color: var(--tone-2-fg); background: var(--tone-2-bg); padding: 6px 10px; border-radius: var(--r-ctl); }
       .d-app-acts { display: flex; flex-wrap: wrap; gap: 4px 16px; }
       #detector-change-apps { align-self: flex-start; font-size: 12.5px; font-weight: 600; color: var(--pink-ink); }
@@ -323,7 +336,11 @@
       #detector-privacy .h-choices { margin-top: 12px; }
       #detector-privacy-open { align-self: flex-start; font-size: 12.5px; font-weight: 600; color: var(--pink-ink); }
       #detector-privacy-open:hover { text-decoration: underline; }
-      #hourly-running { display: flex; align-items: center; gap: 10px; padding: 8px 8px 8px 12px; border-radius: var(--r-ctl); background: var(--tile); border-left: 3px solid var(--pink); }
+      /* The project being timed: a card in the header, under the day. */
+      #hourly-running { display: flex; align-items: center; gap: 10px; margin-top: 10px; padding: 8px 8px 8px 10px; border-radius: calc(var(--r-ctl) + 1px); background: rgba(255, 255, 255, 0.16); color: #fff; }
+      #hourly-running #hourly-client { font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+      #hourly-running .h-kind, #hourly-running .h-kind.tracked { background: rgba(255, 255, 255, 0.22); color: #fff; }
+      #hourly-running #hourly-retainer, #hourly-running #hourly-note { color: rgba(255, 255, 255, 0.9); }
       #hourly-card { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 1px; text-align: left; }
       #hourly-card:hover #hourly-project { text-decoration: underline; }
       .h-top { display: flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; }
@@ -333,10 +350,12 @@
       #hourly-retainer { font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
       #hourly-retainer.over { color: var(--danger-fg); }
       #hourly-note { font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
-      #hourly-elapsed { font-weight: 600; font-variant-numeric: tabular-nums; }
-      #hourly-stop { flex: none; min-height: 30px; padding: 0 12px; border-radius: var(--r-ctl); font-weight: 600; background: var(--danger-bg); color: var(--danger-fg); }
+      #hourly-elapsed { font-size: 16px; font-weight: 600; font-variant-numeric: tabular-nums; }
+      #hourly-stop { flex: none; display: inline-flex; align-items: center; gap: 5px; min-height: 30px; padding: 0 10px; border-radius: var(--r-ctl); font-weight: 600; background: #fff; color: #9c1f57; }
+      #hourly-stop:hover { background: rgba(255, 255, 255, 0.88); }
+      #hourly-stop svg { width: 11px; height: 11px; fill: currentColor; stroke: none; }
       #hourly-stop:disabled, .h-chip:disabled { opacity: 0.55; cursor: default; }
-      .h-label { font-size: 11px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--faint); }
+      .h-label { font-size: 11px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); }
       #hourly-quick { display: flex; flex-wrap: wrap; gap: 6px; }
       .h-chip { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; min-height: 28px; padding: 0 10px; border-radius: 99px; background: var(--tile); font-size: 12px; font-weight: 600; }
       .h-chip:hover { background: var(--tile-hover); }
@@ -364,6 +383,17 @@
       .h-pin[aria-pressed="true"] { color: var(--pink); }
       .h-pin[aria-pressed="true"] svg { fill: currentColor; }
       .h-chip.pinned svg { fill: var(--pink); }
+      /* Switch to: rows with the job in bold and the client under it. */
+      #hourly-quick { flex-direction: column; flex-wrap: nowrap; gap: 0; margin: 0 -14px; }
+      #hourly-quick .h-chip { display: flex; width: 100%; max-width: none; min-height: 40px; padding: 5px 16px; gap: 10px; border-radius: 0; background: none; font-weight: 400; text-align: left; border-top: 0.5px solid var(--rule); }
+      #hourly-quick .h-chip:first-child { border-top: 0; }
+      #hourly-quick .h-chip:hover { background: var(--tile); }
+      #hourly-quick .h-chip svg { width: 11px; height: 11px; }
+      #hourly-quick .h-name { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+      #hourly-quick .h-name .t { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      #hourly-quick .h-name .c { font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      #hourly-quick .h-chip.later { border-style: solid; border-width: 0.5px 0 0; border-color: var(--rule); color: var(--muted); }
+      #hourly-quick .h-chip.other { min-height: 34px; color: var(--pink-ink); font-weight: 600; }
       #hourly-head { display: flex; align-items: center; gap: 8px; }
       #hourly-head .h-label { flex: 1; }
       .h-booked { flex: none; font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 99px; background: var(--tone-3-bg); color: var(--tone-3-fg); }
@@ -515,12 +545,24 @@
             <button id="pin" class="head-btn" type="button" aria-pressed="false" aria-label="Pin as a floating timer" title="Pin as a floating timer">
               <svg viewBox="0 0 24 24"><path d="M9 4h6l-1 6 4 4H6l4-4zM12 14v7"/></svg>
             </button>
-            <button id="open-top" class="head-btn" type="button" aria-label="Open tracker" title="Open tracker">
+            <button id="open-top" class="head-btn" type="button" hidden aria-label="Open tracker" title="Open tracker">
               <svg viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg>
             </button>
           </div>
-          <div id="timer">0:00</div>
-          <div id="today"></div>
+          <div id="head-time">
+            <div id="timer">0:00</div>
+            <div id="today"></div>
+          </div>
+          <div id="hourly-running" hidden>
+            <button id="hourly-card" type="button" title="Open Hours in the tracker">
+              <span class="h-top"><span id="hourly-client"></span><span id="hourly-kind" class="h-kind"></span></span>
+              <span class="h-top"><span id="hourly-project"></span></span>
+              <span id="hourly-retainer" hidden></span>
+              <span id="hourly-note" hidden></span>
+            </button>
+            <span id="hourly-elapsed">0:00</span>
+            <button id="hourly-stop" type="button" aria-label="Stop the timer"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"/></svg><span>Stop</span></button>
+          </div>
           <div id="greeting" role="status" hidden></div>
           <div id="pin-hint" hidden>Pinned here. Unpin to move it.</div>
         </div>
@@ -554,28 +596,37 @@
             </div>
             <span id="hourly-suggest-more" hidden></span>
           </div>
-          <div id="hourly-running" hidden>
-            <button id="hourly-card" type="button" title="Open Hours in the tracker">
-              <span class="h-top"><span id="hourly-project"></span></span>
-              <span class="h-top"><span id="hourly-kind" class="h-kind"></span><span id="hourly-retainer" hidden></span></span>
-              <span id="hourly-note" hidden></span>
-            </button>
-            <span id="hourly-elapsed">0:00</span>
-            <button id="hourly-stop" type="button">Stop</button>
-          </div>
           <p class="h-error" id="hourly-error" role="alert" hidden></p>
           <p id="hourly-info" role="status" hidden></p>
         </div>
 
         <div id="search">
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
-          <input id="search-input" type="search" placeholder="Search projects, deliverables, ideas" autocomplete="off" spellcheck="false" aria-label="Search the tracker" aria-controls="search-results" />
+          <input id="search-input" type="search" placeholder="Find a project, deliverable or idea" autocomplete="off" spellcheck="false" aria-label="Search the tracker" aria-controls="search-results" />
           <button id="search-clear" type="button" hidden aria-label="Clear search" title="Clear">
             <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>
           </button>
         </div>
         <div id="lists">
         <div id="search-results" hidden role="listbox" aria-label="Search results"></div>
+        <div id="walkie" hidden>
+          <div class="section" id="walkie-label">Walkie</div>
+          <div id="chats"></div>
+        </div>
+        <!-- The timer's one-tap starts, straight under the search: what's
+             used most. The running timer sits in the header. -->
+        <div id="hourly-start" hidden>
+          <div id="hourly-head">
+            <div class="h-label" id="hourly-label">Time a project</div>
+            <button type="button" id="hourly-add-open" title="Log time you didn't run the timer for">Add time…</button>
+          </div>
+          <div id="hourly-quick"></div>
+          <input id="hourly-note-input" type="text" maxlength="500" placeholder="Note for the next timer (optional)" autocomplete="off" aria-label="Note for the next timer (optional)" />
+          <div id="hourly-today" hidden>
+            <div class="h-today-head"><span class="h-label">Today</span><span id="hourly-today-total"></span></div>
+            <div id="hourly-today-list"></div>
+          </div>
+        </div>
         <div id="next" hidden>
           <div class="section">Next call</div>
           <div id="next-card">
@@ -593,51 +644,30 @@
             </div>
           </div>
         </div>
-        <div id="walkie" hidden>
-          <div class="section" id="walkie-label">Walkie</div>
-          <div id="chats"></div>
-        </div>
         <div class="section" id="needs-label">Needs you</div>
         <div id="summary"></div>
         <div id="needs"></div>
-        <div id="empty" hidden>You're all caught up.</div>
+        <div id="needs-foot">
+        <div id="empty" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9M10.3 21a1.9 1.9 0 0 0 3.4 0"/></svg>All caught up</div>
         <button id="see-all" type="button">
           <span id="see-all-text">See all notifications</span>
           <svg viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
         </button>
-        <!-- The timer's one-tap starts, after the notifications so they stay
-             in view; they scroll with the lists (the running timer and its
-             questions stay above). -->
-        <div id="hourly-start" hidden>
-          <div id="hourly-head">
-            <div class="h-label" id="hourly-label">Time a project</div>
-            <button type="button" id="hourly-add-open" title="Log time you didn't run the timer for">Add time…</button>
-          </div>
-          <div id="hourly-quick"></div>
-          <input id="hourly-note-input" type="text" maxlength="500" placeholder="Note for the next timer (optional)" autocomplete="off" aria-label="Note for the next timer (optional)" />
-          <div id="hourly-today" hidden>
-            <div class="h-today-head"><span class="h-label">Today</span><span id="hourly-today-total"></span></div>
-            <div id="hourly-today-list"></div>
-          </div>
         </div>
         </div>
 
-        <div id="shortcuts">
-          <button class="tile" id="open-tracker" type="button">
-            <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M9 9v11"/></svg>
-            Open tracker
-          </button>
-          <button class="tile" id="new-window" type="button" title="Open another tracker window, to compare two review pages side by side">
-            <svg viewBox="0 0 24 24"><rect x="3" y="7" width="13" height="13" rx="2"/><path d="M8 7V5a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-3"/></svg>
-            New window
-          </button>
-          <button class="tile" id="open-offline" type="button">
-            <svg viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M12 11v6M9 14l3 3 3-3"/></svg>
-            Saved offline
-          </button>
-        </div>
         <div id="foot">
-          <span id="version"></span>
+          <button id="open-tracker" type="button" class="foot-main">
+            <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M9 9v11"/></svg>
+            <span>Open tracker</span>
+          </button>
+          <span id="version" hidden></span>
+          <button class="icon-btn" id="new-window" type="button" aria-label="New window" title="New window: compare two review pages side by side">
+            <svg viewBox="0 0 24 24"><rect x="3" y="7" width="13" height="13" rx="2"/><path d="M8 7V5a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-3"/></svg>
+          </button>
+          <button class="icon-btn" id="open-offline" type="button" aria-label="Saved offline" title="Saved offline">
+            <svg viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M12 11v6M9 14l3 3 3-3"/></svg>
+          </button>
           <button class="icon-btn" id="update" type="button" aria-label="Check for updates" title="Check for updates">
             <svg viewBox="0 0 24 24"><path d="M20 11a8 8 0 0 0-14.9-4M4 4v4h4M4 13a8 8 0 0 0 14.9 4M20 20v-4h-4"/></svg>
           </button>
@@ -854,14 +884,24 @@
             </div>
           </div>
           <div id="detector-body" hidden>
+            <div id="detector-private">
+              <p class="d-hint">Private: nothing about your screen, apps or files leaves this computer. Only time you say yes to goes to the tracker.</p>
+              <button type="button" id="detector-privacy-open">What it sees, and what it doesn't</button>
+            </div>
             <p id="detector-perm-ok" hidden>✓ Window names: macOS lets the app read them.</p>
             <div id="detector-permission" role="status" hidden>
               <p id="detector-permission-text"></p>
               <div class="d-perm-acts">
-                <button type="button" id="detector-permission-btn">Allow it…</button>
-                <button type="button" id="detector-open-settings">Open System Settings</button>
-                <button type="button" id="detector-reset-btn">Ask macOS again</button>
-                <button type="button" id="detector-restart-btn">Restart now</button>
+                <button type="button" class="d-perm-main" id="detector-permission-btn">Allow it…</button>
+                <button type="button" class="d-perm-main" id="detector-restart-btn">Restart now</button>
+                <button type="button" class="d-perm-more-btn" id="detector-perm-more-btn" aria-expanded="false" aria-controls="detector-perm-more">Still not working?</button>
+              </div>
+              <div id="detector-perm-more" hidden>
+                <p id="detector-perm-steps"></p>
+                <div class="d-perm-acts">
+                  <button type="button" id="detector-reset-btn">Ask macOS again</button>
+                  <button type="button" id="detector-open-settings">Open System Settings</button>
+                </div>
               </div>
             </div>
             <div class="set-label">Apps to look at</div>
@@ -875,8 +915,6 @@
             <p class="d-hint">Link as many as you like, on any drive. Link your Work folder (or a whole drive) as "Any project" and it tells the project from the client and project folders inside.</p>
             <div id="detector-folders"></div>
             <button type="button" id="detector-link">Link folders…</button>
-            <p class="d-hint">Nothing about your screen, apps or files leaves this computer. Only time you say yes to goes to the tracker: the project and the times.</p>
-            <button type="button" id="detector-privacy-open">What it sees, and what it doesn't</button>
           </div>
         </div>
         <div id="idle-settings" hidden>
@@ -891,18 +929,7 @@
           </div>
         </div>
         </div>
-        <button class="set-row" id="autostart-row" type="button" role="switch" aria-checked="false">
-          <span class="txt">Launch at login<span class="hint" style="display:block">Start CoolerBox Tracker when you sign in to this computer.</span></span>
-          <span class="switch" id="autostart-switch" aria-checked="false"></span>
-        </button>
-        <div class="set-row" id="close-row">
-          <span class="txt">When you close the window<span class="hint" id="close-hint" style="display:block">Keep running keeps your timer, reminders and notifications going.</span></span>
-        </div>
-        <div id="close-choice" role="radiogroup" aria-labelledby="close-row">
-          <button type="button" class="seg" id="close-keep" role="radio" aria-checked="true">Keep running</button>
-          <button type="button" class="seg" id="close-quit" role="radio" aria-checked="false">Quit the app</button>
-        </div>
-        <div class="set-label" id="notif-label">Notifications that pop up</div>
+        <div class="set-label set-section" id="notif-label">Notifications</div>
         <button class="set-row" id="banners-tracker" type="button" role="switch" aria-checked="true">
           <span class="txt">Tracker notifications<span class="hint" style="display:block">Approvals, phases and other updates.</span></span>
           <span class="switch" aria-hidden="true"></span>
@@ -915,18 +942,6 @@
           <span class="txt">Channel 1<span class="hint" style="display:block">Messages to everyone in the company.</span></span>
           <span class="switch" aria-hidden="true"></span>
         </button>
-        <button class="set-row" id="on-top" type="button" role="switch" aria-checked="true">
-          <span class="txt">Keep this panel on top<span class="hint" style="display:block">Off, other windows can cover it and the mini timer.</span></span>
-          <span class="switch" aria-hidden="true"></span>
-        </button>
-        <button class="set-row" id="minimise-to-timer" type="button" role="switch" aria-checked="true">
-          <span class="txt">Minimising shows the small panel<span class="hint" style="display:block" id="minimise-hint">Off, minimising the tracker is a normal minimise.</span></span>
-          <span class="switch" aria-hidden="true"></span>
-        </button>
-        <button class="set-row" id="auto-offline" type="button" role="switch" aria-checked="true">
-          <span class="txt">Save my call sheets for offline<span class="hint" style="display:block">The next two days' call sheets, ready without signal in Saved offline.</span></span>
-          <span class="switch" aria-hidden="true"></span>
-        </button>
         <div class="set-row" id="dnd-row">
           <span class="txt">Do not disturb<span class="hint" id="dnd-hint" style="display:block">Also quiets the tracker website. Call alerts still ring.</span></span>
         </div>
@@ -937,6 +952,36 @@
           <button type="button" class="seg" data-dnd="4h" role="radio" aria-checked="false">4h</button>
           <button type="button" class="seg" data-dnd="morning" role="radio" aria-checked="false" title="Until 08:00 tomorrow">Morning</button>
         </div>
+        <div class="set-label set-section" id="window-label">Window and panel</div>
+        <button class="set-row" id="on-top" type="button" role="switch" aria-checked="true">
+          <span class="txt">Keep the panel on top<span class="hint" style="display:block">Floats above your other windows, and so does the mini timer.</span></span>
+          <span class="switch" aria-hidden="true"></span>
+        </button>
+        <button class="set-row" id="minimise-to-timer" type="button" role="switch" aria-checked="true">
+          <span class="txt">Minimise to the mini timer<span class="hint" style="display:block" id="minimise-hint">Minimising the tracker shows the small floating timer instead.</span></span>
+          <span class="switch" aria-hidden="true"></span>
+        </button>
+        <div class="set-row" id="close-row">
+          <span class="txt">When you close the window<span class="hint" id="close-hint" style="display:block">Keep running keeps your timer, reminders and notifications going.</span></span>
+        </div>
+        <div id="close-choice" role="radiogroup" aria-labelledby="close-row">
+          <button type="button" class="seg" id="close-keep" role="radio" aria-checked="true">Keep running</button>
+          <button type="button" class="seg" id="close-quit" role="radio" aria-checked="false">Quit the app</button>
+        </div>
+        <button class="set-row" id="tracker-dark-row" type="button" role="switch" aria-checked="false" hidden>
+          <span class="txt">Dark tracker pages<span class="hint" style="display:block">Tracker pages go dark with your Mac. Photo and video colours are then only approximate, so leave it off for reviewing design work.</span></span>
+          <span class="switch" id="tracker-dark-switch" aria-checked="false"></span>
+        </button>
+        <div class="set-label set-section" id="general-label">General</div>
+        <button class="set-row" id="autostart-row" type="button" role="switch" aria-checked="false">
+          <span class="txt">Launch at login<span class="hint" style="display:block">Start CoolerBox Tracker when you sign in to this computer.</span></span>
+          <span class="switch" id="autostart-switch" aria-checked="false"></span>
+        </button>
+        <button class="set-row" id="auto-offline" type="button" role="switch" aria-checked="true">
+          <span class="txt">Save call sheets for offline<span class="hint" style="display:block">The next two days' call sheets, ready without signal in Saved offline.</span></span>
+          <span class="switch" aria-hidden="true"></span>
+        </button>
+        <div class="set-label set-section" id="about-label">About</div>
         <button class="set-row" id="whats-new-row" type="button">
           <span class="txt">What's new<span class="hint" style="display:block">What changed in this version, and how to use it.</span></span>
         </button>

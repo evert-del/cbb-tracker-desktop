@@ -119,7 +119,10 @@ user, then verify the bundle's signature against the public key in
 1. Bump `version` in `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml` and
    `package.json` (must be higher than what is installed).
 2. `git tag desktop-vX.Y.Z && git push origin desktop-vX.Y.Z`; wait for the
-   build, open the draft release.
+   build, open the draft release. No way to push a tag (a phone, a session
+   that can't)? Actions → "Build desktop installers" → Run workflow on
+   `main` with `release_tag` = `desktop-vX.Y.Z`: the same draft is built,
+   and the tag is made on main when it is published.
 3. Check the draft, then **Publish** it. `publish-downloads.yml` then copies
    the installers and update files into the tracker's R2 bucket
    (`platform/desktop/<version>/`), writes `latest.json` (its URLs rewritten

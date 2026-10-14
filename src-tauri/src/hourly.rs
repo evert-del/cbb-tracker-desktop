@@ -590,6 +590,8 @@ pub(crate) struct PanelView {
     pub clients: Vec<Client>,
     /// "Still to confirm" (to_confirm.rs), or `None` with nothing waiting.
     pub to_confirm: Option<crate::to_confirm::View>,
+    /// "Not logged today": the blanks in the working day (day_gaps.rs).
+    pub day_gaps: Option<crate::day_gaps::View>,
 }
 
 /// The project timer's project for today's booking: the booking is today
@@ -1083,6 +1085,7 @@ pub(crate) fn panel<R: Runtime>(app: &AppHandle<R>) -> Option<PanelView> {
             projects: info.projects.clone(),
             clients: info.clients.clone(),
             to_confirm,
+            day_gaps: crate::day_gaps::view(app, inner.today.as_ref(), info.running.as_ref()),
             asking: inner.ask.is_some(),
             filing: inner.to_file.is_some(),
             idle_minutes,
@@ -1848,7 +1851,7 @@ pub(crate) fn on_wrap<R: Runtime>(app: &AppHandle<R>) {
 
 /// "Today: 6h 20m on 3 projects. 2 still to confirm." `None` with nothing
 /// logged and nothing to confirm.
-pub(crate) fn summary_text(today: Option<&Today>, to_confirm: usize) -> Option<String> {
+pub(crate) fn summary_text(today: Option<&Today>, to_confirm: usize, unlogged_minutes: u64) -> Option<String> {
     let minutes = today.map_or(0, |today| today.total_minutes);
     let projects = today.map_or(0, |today| {
         let mut ids: Vec<Option<&str>> = today.entries.iter().map(|entry| entry.project_id.as_deref()).collect();
@@ -1861,11 +1864,12 @@ pub(crate) fn summary_text(today: Option<&Today>, to_confirm: usize) -> Option<S
         (m, 1) => format!("Today: {} on 1 project.", fmt_minutes(m)),
         (m, n) => format!("Today: {} on {n} projects.", fmt_minutes(m)),
     };
-    match (minutes, to_confirm) {
-        (0, 0) => None,
-        (_, 0) => Some(logged),
-        (_, 1) => Some(format!("{logged} 1 thing still to confirm.")),
-        (_, n) => Some(format!("{logged} {n} things still to confirm.")),
+    let blanks = if unlogged_minutes > 0 { format!(" {} of your day isn't logged.", fmt_minutes(unlogged_minutes)) } else { String::new() };
+    match (minutes, to_confirm, unlogged_minutes) {
+        (0, 0, 0) => None,
+        (_, 0, _) => Some(format!("{logged}{blanks}")),
+        (_, 1, _) => Some(format!("{logged}{blanks} 1 thing still to confirm.")),
+        (_, n, _) => Some(format!("{logged}{blanks} {n} things still to confirm.")),
     }
 }
 
@@ -1880,7 +1884,9 @@ fn day_summary<R: Runtime>(app: &AppHandle<R>) {
         read_entries(&app);
         let to_confirm = crate::to_confirm::view(&app).map_or(0, |view| view.total);
         let today = with(&app, |inner| inner.today.clone()).flatten();
-        let Some(text) = summary_text(today.as_ref(), to_confirm) else { return };
+        let running = with(&app, |inner| inner.info.as_ref().and_then(|info| info.running.clone())).flatten();
+        let unlogged = crate::day_gaps::view(&app, today.as_ref(), running.as_ref()).map_or(0, |gaps| gaps.minutes);
+        let Some(text) = summary_text(today.as_ref(), to_confirm, unlogged) else { return };
         crate::mini::ask_hourly(&app, "__cbbMiniHourlyAfter", &json!({ "file": false, "notice": text }));
         if !panel_showing(&app) && crate::quiet::allowed(&app, crate::quiet::Kind::Tracker) {
             crate::banner::show(&app, "Your day on the timer", &text, crate::banner::Target::Panel);
@@ -2027,6 +2033,7 @@ fn first_auto_stop<R: Runtime>(app: &AppHandle<R>, running: &Running) -> bool {
 /// began, nobody has answered: stop it when idling began.
 pub(crate) fn on_idle<R: Runtime>(app: &AppHandle<R>, now: u64, idle: Option<u64>) {
     let Some(idle) = idle else { return };
+    crate::day_gaps::note_idle(now, idle);
     let since = now.saturating_sub(idle);
     let running = with(app, |inner| inner.info.as_ref().and_then(|info| info.running.clone())).flatten();
     let Some(running) = running else { return };
@@ -2075,6 +2082,7 @@ struct AutoStop {
 
 /// Back from idle time (idle.rs).
 pub(crate) fn on_away<R: Runtime>(app: &AppHandle<R>, away: crate::idle::Away) {
+    crate::day_gaps::note_away(away.from, away.to);
     // Stopped while they were away: say so, and ask for its project if it
     // wasn't filed.
     let (notice, filing) = with(app, |inner| (inner.notice.take(), inner.to_file.is_some())).unwrap_or((None, false));
@@ -2322,12 +2330,13 @@ mod tests {
             started_at: "2026-10-14T07:00:00.000Z".into(), ended_at: None, minutes: 0, note: None, billed: false, note_for_client: false,
         };
         let today = Today { day: "2026-10-14".into(), entries: vec![entry(Some("p1")), entry(Some("p2")), entry(Some("p1"))], total_minutes: 380, billable_minutes: 380 };
-        assert_eq!(summary_text(Some(&today), 0).as_deref(), Some("Today: 6h 20m on 2 projects."));
-        assert_eq!(summary_text(Some(&today), 2).as_deref(), Some("Today: 6h 20m on 2 projects. 2 things still to confirm."));
+        assert_eq!(summary_text(Some(&today), 0, 0).as_deref(), Some("Today: 6h 20m on 2 projects."));
+        assert_eq!(summary_text(Some(&today), 2, 0).as_deref(), Some("Today: 6h 20m on 2 projects. 2 things still to confirm."));
         let one = Today { entries: vec![entry(Some("p1"))], total_minutes: 45, ..today.clone() };
-        assert_eq!(summary_text(Some(&one), 1).as_deref(), Some("Today: 45m on 1 project. 1 thing still to confirm."));
-        assert_eq!(summary_text(None, 1).as_deref(), Some("Nothing logged on the timer today. 1 thing still to confirm."));
-        assert_eq!(summary_text(None, 0), None);
+        assert_eq!(summary_text(Some(&one), 1, 0).as_deref(), Some("Today: 45m on 1 project. 1 thing still to confirm."));
+        assert_eq!(summary_text(None, 1, 0).as_deref(), Some("Nothing logged on the timer today. 1 thing still to confirm."));
+        assert_eq!(summary_text(None, 0, 0), None);
+        assert_eq!(summary_text(Some(&today), 1, 95).as_deref(), Some("Today: 6h 20m on 2 projects. 1h 35m of your day isn't logged. 1 thing still to confirm."));
     }
 
     #[test]

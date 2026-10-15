@@ -779,12 +779,12 @@ function renderSetup() {
   const parts: Node[] = [];
   let title = "";
   if (setup === 0) {
-    title = "You bill by the hour now";
+    title = "Hourly tracking is on";
     parts.push(
-      node("p", "Your company has set you up to bill by the hour, so this app now has a project timer: your own stopwatch for the projects you work on."),
+      node("p", "Your company has set you up for hourly tracking, so this app now has a project timer: your own stopwatch for the projects you work on."),
       list([
         "Only you start, stop and change your hours. Nobody else logs them for you.",
-        "The project decides the billing: hours on a project billed by the hour can go on the client's invoice; hours on a quoted project are only tracked, to see how long the work took.",
+        "The project decides the billing: hours on an hourly project can go on the client's invoice; hours on a quoted project are only tracked, to see how long the work took.",
         "Your hours are on My Hours in the tracker too, from any browser.",
       ]),
       node("p", "This takes about a minute. Skip any step, and find this guide again in Settings › Project timer.", "note"),
@@ -1935,7 +1935,7 @@ function openHourlyEdit(e: TodayEntry) {
   if (e.projectId === null) select.appendChild(new Option("Not yet filed", ""));
   // Its own project, even one no longer in the list.
   if (e.projectId && !h.projects.some((p) => p.id === e.projectId)) select.appendChild(new Option(entryLabel(e), e.projectId));
-  for (const [label, billable] of [["Billed by the hour", true], ["Quoted", false]] as const) {
+  for (const [label, billable] of [["Hourly", true], ["Quoted", false]] as const) {
     const rows = h.projects.filter((p) => p.billable === billable);
     if (rows.length === 0) continue;
     const group = document.createElement("optgroup");
@@ -2281,7 +2281,7 @@ function openHourlyAdd(span?: { from: number; to: number }) {
   hourlyAdd = true;
   const select = el<HTMLSelectElement>("hourly-add-project");
   select.replaceChildren();
-  for (const [label, billable] of [["Billed by the hour", true], ["Quoted", false]] as const) {
+  for (const [label, billable] of [["Hourly", true], ["Quoted", false]] as const) {
     const rows = h.projects.filter((p) => p.billable === billable);
     if (rows.length === 0) continue;
     const group = document.createElement("optgroup");
@@ -2506,7 +2506,7 @@ function renderHourlyPick() {
     return words.every((w) => text.includes(w));
   };
   let shown = 0;
-  for (const [label, billable] of [["Billed by the hour", true], ["Quoted", false]] as const) {
+  for (const [label, billable] of [["Hourly", true], ["Quoted", false]] as const) {
     const rows = h.projects.filter((p) => p.billable === billable && fits(p));
     if (rows.length === 0) continue;
     const head = document.createElement("div");

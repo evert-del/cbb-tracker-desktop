@@ -36,8 +36,18 @@ pub(crate) fn notes(version: &str, os: &str, hourly: bool) -> Vec<Item> {
     let panel_key = if mac { "⌘⇧M" } else { "Ctrl+Alt+M" };
     let timer_key = if mac { "⌘⇧Y" } else { "Ctrl+Alt+Y" };
     match version {
-        // Everything new is the project timer's: only people who bill by
-        // the hour hear about it, and nobody else is shown a page.
+        // Wording only, for people with hourly tracking.
+        "0.2.22" => {
+            if !hourly {
+                return Vec::new();
+            }
+            vec![item(
+                "Hourly tracking",
+                "The timer and its set-up guide now say hourly tracking, and projects are Hourly or Quoted. Nothing else changed.".into(),
+            )]
+        }
+        // Everything new is the project timer's: only people with hourly
+        // tracking hear about it, and nobody else is shown a page.
         "0.2.21" => {
             if !hourly {
                 return Vec::new();
@@ -65,13 +75,13 @@ pub(crate) fn notes(version: &str, os: &str, hourly: bool) -> Vec<Item> {
                 ),
                 item(
                     "Which deliverable?",
-                    "On a project billed partly by the hour, starting the timer or logging time asks, if you like, which deliverable it was for. What's billable is still decided by billing, never by you."
+                    "On a mixed project, starting the timer or logging time asks, if you like, which deliverable it was for. What's billable is still decided by billing, never by you."
                         .into(),
                 ),
                 item(
                     "A set-up guide",
                     format!(
-                        "New to billing by the hour? A short guide walks you through the timer, {timer_key}, time away and never forgetting to log. Settings › Project timer › Set-up guide opens it again. Suggest time from my work now also hands the tracker your unanswered suggestions (a project and two times, never an app or a file name) so you can answer them on My Hours too."
+                        "New to hourly tracking? A short guide walks you through the timer, {timer_key}, time away and never forgetting to log. Settings › Project timer › Set-up guide opens it again. Suggest time from my work now also hands the tracker your unanswered suggestions (a project and two times, never an app or a file name) so you can answer them on My Hours too."
                     ),
                 ),
             ]
@@ -108,7 +118,7 @@ pub(crate) fn notes(version: &str, os: &str, hourly: bool) -> Vec<Item> {
             let mut items = Vec::new();
             if hourly {
                 items.push(item(
-                    "A project timer, if you bill by the hour",
+                    "A project timer, for hourly tracking",
                     format!(
                         "Start, switch or stop a project in one tap from the quick panel ({panel_key}), the {tray}{}, or {timer_key} from anywhere. Forgot to start it? Add time…, or Just start and pick the project when you stop. Away from the computer with it running, it asks what to do with the idle time.",
                         if mac { " or the Dock icon's menu" } else { "" }
@@ -310,7 +320,7 @@ mod tests {
         assert!(mac.iter().any(|i| i.how.contains("Dock")));
         assert!(!win.iter().any(|i| i.how.contains("Dock") || i.how.contains("menu bar")));
         assert!(notes("0.0.1", "macos", true).is_empty());
-        // A release may speak only to people who bill by the hour (0.2.21).
+        // A release may speak only to people with hourly tracking (0.2.21).
         assert!(!notes(VERSION, "macos", true).is_empty(), "add notes for {VERSION} in whats_new.rs");
     }
 
@@ -343,7 +353,7 @@ mod tests {
             assert!(
                 !everyone.iter().any(|i| {
                     let text = format!("{} {}", i.title, i.how).to_lowercase();
-                    text.contains("timer") || text.contains("suggest time") || text.contains("by the hour")
+                    text.contains("timer") || text.contains("suggest time") || text.contains("by the hour") || text.contains("hourly")
                 }),
                 "{os}: {everyone:?}"
             );

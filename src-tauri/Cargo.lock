@@ -448,7 +448,7 @@ dependencies = [
 
 [[package]]
 name = "cbb-tracker-desktop"
-version = "0.2.21"
+version = "0.2.22"
 dependencies = [
  "gtk",
  "mac-notification-sys",

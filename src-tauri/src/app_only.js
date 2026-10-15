@@ -21,7 +21,11 @@
     return WEBSITE.indexOf(first) !== -1;
   }
 
+  // Signed in: the signed-in sidebar, or a sign-in cookie the page can see.
+  // Since 2026-10-15 the cookie is HttpOnly, so the sidebar is what counts
+  // (session.rs SIGNED_IN_JS says the same).
   function signedIn() {
+    if (document.querySelector('.gd-sidebar')) return true;
     return document.cookie.split('; ').some(function (pair) {
       var name = pair.split('=')[0];
       return name.indexOf('sb-') === 0 && name.indexOf('-auth-token') !== -1;
@@ -57,6 +61,8 @@
   setInterval(function () {
     var here = location.pathname;
     if (here === last) return;
+    // "/" is only judged once the page is there: the sidebar comes with it.
+    if (here === '/' && document.readyState !== 'complete') return;
     last = here;
     if (here === '/' && !signedIn()) {
       location.replace('/sign-in');

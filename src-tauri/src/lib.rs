@@ -589,18 +589,20 @@ pub(crate) fn build_tracker_window<R: Runtime>(
         // signing out; app_only.js covers the tracker's own page changes.
         if page.path() == "/" {
             let probe = window.clone();
-            let _ = window.eval_with_callback("document.cookie", move |cookies_json| {
-                let cookies: String = serde_json::from_str(&cookies_json).unwrap_or_default();
+            // Signed in shows the dashboard's sidebar (session.rs: the sign-in
+            // cookie is HttpOnly now, so the page can't see it).
+            let _ = window.eval_with_callback(session::SIGNED_IN_JS, move |answer| {
+                let signed_in = session::signed_in_answer(&answer).unwrap_or(false);
                 if probe.label() == "main" {
-                    session::update(probe.app_handle(), has_session_cookie(&cookies));
+                    session::update(probe.app_handle(), signed_in);
                     // At launch the window waits for a page worth showing:
                     // the dashboard when signed in (otherwise sign in, below).
-                    if has_session_cookie(&cookies) {
+                    if signed_in {
                         session::launch_page_ready(&probe);
                     }
                     // Signed in on the dashboard (where the app opens): what's
                     // new after an update, once (whats_new.rs).
-                    if has_session_cookie(&cookies) {
+                    if signed_in {
                         // The page can fetch now: read the clock and the
                         // project timer straight away, not on the next poll.
                         clock::read_now(probe.app_handle());
@@ -608,7 +610,7 @@ pub(crate) fn build_tracker_window<R: Runtime>(
                         whats_new::maybe_show(probe.app_handle());
                     }
                 }
-                if !has_session_cookie(&cookies) {
+                if !signed_in {
                     if let Ok(sign_in) = START_URL.parse::<url::Url>() {
                         let _ = probe.navigate(sign_in);
                     }

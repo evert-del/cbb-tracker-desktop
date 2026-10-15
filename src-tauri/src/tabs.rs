@@ -50,8 +50,7 @@ pub(crate) fn open_from_front<R: Runtime>(app: &AppHandle<R>, tab: bool) {
 /// page's version label, else its h1) and its path.
 const PAGE_LABEL_JS: &str = "JSON.stringify({t: document.title || '', \
     h: ((document.querySelector('.gd-title') || document.querySelector('main h1') || document.querySelector('h1') || {}).textContent || '').trim().slice(0, 80), \
-    p: location.pathname, o: location.host, \
-    s: document.cookie.split('; ').some(function (c) { var n = c.split('=')[0]; return n.indexOf('sb-') === 0 && n.indexOf('-auth-token') !== -1; })})";
+    p: location.pathname, o: location.host, s: SIGNED_IN})";
 
 #[derive(serde::Deserialize, Default)]
 struct PageLabel {
@@ -61,12 +60,13 @@ struct PageLabel {
     h: String,
     #[serde(default)]
     p: String,
-    /// The page's host, and whether it holds a session cookie (the page
-    /// answers yes or no; no cookie value leaves it). session.rs, tracker only.
+    /// The page's host, and whether it's signed in (session.rs
+    /// `SIGNED_IN_JS`: yes, no, or null when it can't tell yet; no cookie
+    /// value leaves it). Tracker only.
     #[serde(default)]
     o: String,
     #[serde(default)]
-    s: bool,
+    s: Option<bool>,
 }
 
 /// A tab / window title for what a tracker window shows. Most tracker pages
@@ -115,14 +115,14 @@ pub(crate) fn follow_titles<R: Runtime>(app: &AppHandle<R>) {
             let target = window.clone();
             let app = app.clone();
             let main = label == "main";
-            let _ = window.eval_with_callback(PAGE_LABEL_JS, move |raw| {
+            let _ = window.eval_with_callback(PAGE_LABEL_JS.replace("SIGNED_IN", crate::session::SIGNED_IN_JS), move |raw| {
                 // The page returns a JSON string; the callback gets it JSON-encoded.
                 let json: String = serde_json::from_str(&raw).unwrap_or_default();
                 let page: PageLabel = serde_json::from_str(&json).unwrap_or_default();
                 // Signed in or out, from the main window's tracker page only
                 // (a provider's sign-in page has none of the tracker's cookies).
-                if main && page.o == crate::APP_HOST {
-                    crate::session::update(&app, page.s);
+                if let (true, true, Some(signed_in)) = (main, page.o == crate::APP_HOST, page.s) {
+                    crate::session::update(&app, signed_in);
                 }
                 let title = tab_title(&page.t, &page.h, &page.p);
                 if target.title().ok().as_deref() != Some(title.as_str()) {

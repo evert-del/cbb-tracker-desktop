@@ -9,6 +9,12 @@
   if (window.top !== window || window.__cbbWalkieBridge || typeof window.fetch !== 'function') return;
   window.__cbbWalkieBridge = true;
 
+  // A hand-over to the shell that never asks "Leave site?" (hand_over.js).
+  function handOver(url) {
+    if (typeof window.__cbbHandOver === 'function') window.__cbbHandOver(url);
+    else location.href = url;
+  }
+
   var pageFetch = window.fetch;
   window.fetch = function (input, init) {
     var answer = pageFetch.apply(this, arguments);
@@ -20,7 +26,7 @@
           if (!r.ok) return;
           r.clone().text().then(function (text) {
             window.__cbbWalkie = text;
-            location.href = 'cbb-walkie://rail';
+            handOver('cbb-walkie://rail');
           }, function () {});
         }, function () {});
       }

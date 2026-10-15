@@ -22,6 +22,7 @@ use tauri::{
 };
 use tauri_plugin_deep_link::DeepLinkExt;
 
+mod adobe_panel;
 mod analytics;
 mod banner;
 mod clock;
@@ -102,7 +103,9 @@ const IN_APP_HOSTS: &[&str] = &[
 
 /// First path segments of `tracker://` URLs that map to hosted pages.
 /// Anything else is ignored.
-const DEEP_LINK_SEGMENTS: &[&str] = &["auth", "view", "quote", "invoice", "invite", "cb", "r"];
+/// `link-device` is the Adobe review panel's sign-in (adobe_panel.rs): it opens
+/// here, in the window that is already signed in, rather than a browser.
+const DEEP_LINK_SEGMENTS: &[&str] = &["auth", "view", "quote", "invoice", "invite", "cb", "r", "link-device"];
 
 /// True when the WebView itself may load `url`.
 pub(crate) fn webview_may_load(url: &url::Url) -> bool {
@@ -254,7 +257,7 @@ fn hosted_url_for_deep_link(url: &url::Url) -> Option<url::Url> {
 /// `tracker://panel` and `tracker://new-window`, beside `tracker://offline`.
 /// Only things that open something; nothing that changes data.
 pub(crate) fn is_app_action(url: &url::Url) -> bool {
-    url.scheme() == "tracker" && matches!(url.host_str(), Some("offline" | "panel" | "new-window"))
+    url.scheme() == "tracker" && matches!(url.host_str(), Some("offline" | "panel" | "new-window" | "adobe-panel"))
 }
 
 fn route_deep_link<R: Runtime>(app: &AppHandle<R>, url: &url::Url) {
@@ -262,6 +265,8 @@ fn route_deep_link<R: Runtime>(app: &AppHandle<R>, url: &url::Url) {
         match url.host_str() {
             Some("offline") => show_library(app),
             Some("panel") => mini::show(app),
+            // The Adobe review panel asking to be installed or updated: asks first (adobe_panel.rs).
+            Some("adobe-panel") => adobe_panel::install_now(app.clone()),
             _ => tabs::open_from_front(app, false),
         }
         return;
@@ -1064,6 +1069,10 @@ pub fn run() {
                 MenuItem::with_id(app, "tray-mini", "Quick panel", true, None::<&str>)?;
             let tray_update =
                 MenuItem::with_id(app, "tray-update", "Check for updates", true, None::<&str>)?;
+            // The Adobe review panel, installed and kept up to date by this app (adobe_panel.rs).
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            let tray_adobe_panel =
+                MenuItem::with_id(app, "tray-adobe-panel", "Install the Adobe panel", true, None::<&str>)?;
             let tray_diagnostics =
                 MenuItem::with_id(app, "tray-diagnostics", "Diagnostics", true, None::<&str>)?;            #[cfg(not(any(target_os = "android", target_os = "ios")))]
             let tray_autostart = {
@@ -1094,7 +1103,10 @@ pub fn run() {
                 &[
                     &clock_items.status, &clock_items.call_in, &clock_items.take_break, &clock_items.back,
                     &clock_items.wrap, &separator, &tray_show, &tray_new_window, &tray_notifications, &inbox_1, &inbox_2, &inbox_3,
-                    &separator2, &tray_offline, &tray_mini, &tray_update, &tray_diagnostics,
+                    &separator2, &tray_offline, &tray_mini,
+                    #[cfg(any(target_os = "macos", target_os = "windows"))]
+                    &tray_adobe_panel,
+                    &tray_update, &tray_diagnostics,
                     #[cfg(not(any(target_os = "android", target_os = "ios")))]
                     &tray_autostart,
                     &tray_quit,
@@ -1193,6 +1205,10 @@ pub fn run() {
                             analytics::clock_tapped(app, label, "tray_menu");
                         }
                     }
+                    "tray-adobe-panel" => {
+                        adobe_panel::install_now(app.clone());
+                        analytics::action(app, "adobe_panel", "tray_menu");
+                    }
                     "tray-update" => {
                         updater::check_now(app.clone());
                         analytics::action(app, "check_updates", "tray_menu");
@@ -1234,6 +1250,7 @@ pub fn run() {
             idle::start(app.handle().clone());
             clock::start(app.handle().clone());
             updater::start(app.handle().clone());
+            adobe_panel::start(app.handle().clone());
             Ok(())
         })
         .build(tauri::generate_context!())
@@ -1361,6 +1378,11 @@ mod tests {
             (
                 "tracker://quote/abc123",
                 "https://tracker.coolerboxbrothers.com/quote/abc123",
+            ),
+            // The Adobe review panel's sign-in opens here, already signed in (adobe_panel.rs).
+            (
+                "tracker://link-device?panel=link",
+                "https://tracker.coolerboxbrothers.com/link-device?panel=link",
             ),
         ] {
             assert_eq!(

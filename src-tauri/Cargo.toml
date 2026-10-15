@@ -31,6 +31,8 @@ tauri-plugin-store = "2"
 tauri-plugin-dialog = "2"
 reqwest = { version = "0.13", default-features = false, features = ["native-tls"] }
 percent-encoding = "2"
+# The Adobe review panel's packages are checked against the tracker's SHA-256 before Adobe's installer runs them (adobe_panel.rs).
+sha2 = "0.10"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

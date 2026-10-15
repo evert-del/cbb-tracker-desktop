@@ -36,6 +36,11 @@ pub(crate) fn notes(version: &str, os: &str, hourly: bool) -> Vec<Item> {
     let panel_key = if mac { "⌘⇧M" } else { "Ctrl+Alt+M" };
     let timer_key = if mac { "⌘⇧Y" } else { "Ctrl+Alt+Y" };
     match version {
+        // A fix for everyone: nothing new to show.
+        "0.2.23" => vec![item(
+            "Signing in keeps you signed in",
+            "After signing in, the app no longer sends you straight back to the sign-in page.".into(),
+        )],
         // Wording only, for people with hourly tracking.
         "0.2.22" => {
             if !hourly {

@@ -71,6 +71,25 @@ pub(crate) fn signed_in() -> bool {
     STATE.load(Ordering::Relaxed) != OUT
 }
 
+/// Signed in, from the tracker page itself: a sign-in cookie the page can
+/// see, or the signed-in sidebar (`.gd-sidebar`, every signed-in page). Since
+/// 2026-10-15 the sign-in cookie is HttpOnly, so the page can't see it and the
+/// sidebar is what counts. Signed out only on the sign-in page, or on the
+/// finished homepage with no sidebar; anything else (a page still loading)
+/// says nothing, so a slow page never signs anyone out.
+pub(crate) const SIGNED_IN_JS: &str = "(function () { \
+    var c = document.cookie.split('; ').some(function (p) { var n = p.split('=')[0]; return n.indexOf('sb-') === 0 && n.indexOf('-auth-token') !== -1; }); \
+    if (c || document.querySelector('.gd-sidebar')) return true; \
+    var path = location.pathname; \
+    if (path.indexOf('/sign-in') === 0 || (path === '/' && document.readyState === 'complete')) return false; \
+    return null; })()";
+
+/// The answer to `SIGNED_IN_JS`, as `eval_with_callback` hands it back:
+/// `None` when the page couldn't tell.
+pub(crate) fn signed_in_answer(raw: &str) -> Option<bool> {
+    serde_json::from_str::<Option<bool>>(raw.trim()).ok().flatten()
+}
+
 /// Whether a `document.cookie` string holds a Supabase session cookie.
 pub(crate) fn has_session_cookie(cookies: &str) -> bool {
     cookies.split("; ").any(|pair| {
@@ -350,6 +369,17 @@ fn become_tracker<R: Runtime>(app: &AppHandle<R>, was_sign_in: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_page_says_signed_in_out_or_nothing() {
+        assert_eq!(signed_in_answer("true"), Some(true));
+        assert_eq!(signed_in_answer("false"), Some(false));
+        assert_eq!(signed_in_answer("null"), None);
+        assert_eq!(signed_in_answer(""), None);
+        // The sidebar counts as signed in; the cookie isn't needed.
+        assert!(SIGNED_IN_JS.contains(".gd-sidebar"));
+        assert!(SIGNED_IN_JS.contains("'/sign-in'"));
+    }
 
     #[test]
     fn session_cookie_is_the_supabase_auth_token() {

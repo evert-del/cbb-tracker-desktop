@@ -710,7 +710,7 @@ mod tests {
         assert!(js.contains("url.pathname === '/api/walkie/channels'"));
         assert!(js.contains("url.origin === location.origin"));
         assert!(js.contains("r.clone()"), "the page still gets its own answer");
-        assert!(js.contains("location.href = 'cbb-walkie://rail'"));
+        assert!(js.contains("handOver('cbb-walkie://rail')"));
         assert_eq!(js.matches("pageFetch.apply").count(), 1, "no fetch of its own");
         assert!(!js.contains("localStorage") && !js.contains("console."));
     }

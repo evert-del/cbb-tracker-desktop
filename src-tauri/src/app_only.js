@@ -12,6 +12,12 @@
   if (location.hostname !== 'tracker.coolerboxbrothers.com') return;
   window.__cbbAppOnly = true;
 
+  // A hand-over to the shell that never asks "Leave site?" (hand_over.js).
+  function handOver(url) {
+    if (typeof window.__cbbHandOver === 'function') window.__cbbHandOver(url);
+    else location.href = url;
+  }
+
   // Must mirror WEBSITE_PATHS in lib.rs.
   var WEBSITE = ['pricing', 'watch', 'privacy', 'terms', 'blog', 'compare', 'templates',
     'affiliates', 'questions', 'landing', 'download', 'cbb-casting', 'dev-ui-kit', 'unsubscribe'];
@@ -33,7 +39,7 @@
   }
 
   function openInBrowser(href) {
-    location.href = 'cbb-browser://open?u=' + encodeURIComponent(href);
+    handOver('cbb-browser://open?u=' + encodeURIComponent(href));
   }
 
   document.addEventListener('click', function (e) {

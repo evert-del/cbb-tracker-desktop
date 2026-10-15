@@ -9,6 +9,12 @@
   if (location.protocol !== 'https:' || location.hostname !== 'tracker.coolerboxbrothers.com') return;
   window.__cbbGeo = true;
 
+  // A hand-over to the shell that never asks "Leave site?" (hand_over.js).
+  function handOver(url) {
+    if (typeof window.__cbbHandOver === 'function') window.__cbbHandOver(url);
+    else location.href = url;
+  }
+
   var nextId = 1;
   var waiting = {};
 
@@ -47,7 +53,7 @@
         window.__cbbGeoResult(id, { ok: false, code: 3, message: 'Timed out' });
       }, Math.max(ms, 60000)),
     };
-    location.href = 'cbb-geo://get?id=' + id;
+    handOver('cbb-geo://get?id=' + id);
   }
 
   var geolocation = {

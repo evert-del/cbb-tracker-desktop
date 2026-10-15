@@ -407,6 +407,9 @@ pub(crate) fn build_tracker_window<R: Runtime>(
         env!("CARGO_PKG_VERSION"),
         idle_supported
     ))
+    // Hand-overs (hand_over.js), before the scripts that use them: a
+    // cbb-*:// hand-over never sets off the page's "Leave site?" warning.
+    .initialization_script(include_str!("hand_over.js"))
     // Download helpers (nav_bar.js): file links are intercepted in
     // the page and handed to the shell, which saves them with the
     // window's own session. No on-page buttons: the tracker page is
@@ -1279,6 +1282,35 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A hand-over that navigates the page itself sets off its "Leave site?"
+    /// warning (a cut uploading asked once per Walkie line): every script goes
+    /// through hand_over.js, which is loaded before them.
+    #[test]
+    fn hand_overs_never_ask_leave_site() {
+        let scripts = [
+            ("nav_bar.js", include_str!("nav_bar.js")),
+            ("tracker_windows.js", include_str!("tracker_windows.js")),
+            ("app_only.js", include_str!("app_only.js")),
+            ("geo_bridge.js", include_str!("geo_bridge.js")),
+            ("walkie_bridge.js", include_str!("walkie_bridge.js")),
+        ];
+        for (name, js) in scripts {
+            assert!(!js.contains("location.href = 'cbb-"), "{name} navigates to the shell itself");
+            assert!(js.contains("handOver('cbb-"), "{name} hands over through hand_over.js");
+            assert!(js.contains("window.__cbbHandOver(url)"), "{name} uses the shared hand-over");
+        }
+        let hand_over = include_str!("hand_over.js");
+        assert!(hand_over.contains("addEventListener(\n    'beforeunload'"));
+        assert!(hand_over.contains("e.stopImmediatePropagation()"));
+        assert!(!hand_over.contains("preventDefault"), "never stops a real leave");
+        let source = include_str!("lib.rs");
+        let first = source.find("include_str!(\"hand_over.js\")").expect("hand_over.js is loaded");
+        for (name, _) in scripts {
+            let at = source.find(&format!("include_str!(\"{name}\"))")).expect(name);
+            assert!(first < at, "hand_over.js loads before {name}");
+        }
+    }
 
     #[test]
     fn only_the_apps_own_shortcuts_are_app_actions() {

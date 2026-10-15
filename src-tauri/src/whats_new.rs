@@ -36,7 +36,11 @@ pub(crate) fn notes(version: &str, os: &str, hourly: bool) -> Vec<Item> {
     let panel_key = if mac { "⌘⇧M" } else { "Ctrl+Alt+M" };
     let timer_key = if mac { "⌘⇧Y" } else { "Ctrl+Alt+Y" };
     match version {
-        // A fix for everyone: nothing new to show.
+        // A fix for everyone.
+        "0.2.25" => vec![item(
+            "No more \"Leave site?\" while you work",
+            "While a cut or file is uploading, or a page has unsaved changes, new Walkie messages, downloads and new tabs no longer ask whether you want to leave the page.".into(),
+        )],
         "0.2.24" => vec![item(
             "Signing in keeps you signed in",
             "After signing in, the app no longer sends you straight back to the sign-in page.".into(),

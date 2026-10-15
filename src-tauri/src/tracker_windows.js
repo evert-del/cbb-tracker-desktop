@@ -11,10 +11,16 @@
   if (window.top !== window || window.__cbbWindows) return;
   window.__cbbWindows = true;
 
+  // A hand-over to the shell that never asks "Leave site?" (hand_over.js).
+  function handOver(url) {
+    if (typeof window.__cbbHandOver === 'function') window.__cbbHandOver(url);
+    else location.href = url;
+  }
+
   var mac = /Mac/i.test(navigator.platform || navigator.userAgent);
 
   function open(href, tab) {
-    location.href = 'cbb-window://open?u=' + encodeURIComponent(href) + (tab ? '&tab=1' : '');
+    handOver('cbb-window://open?u=' + encodeURIComponent(href) + (tab ? '&tab=1' : ''));
   }
 
   function withModifier(e) {

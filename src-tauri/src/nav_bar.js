@@ -15,6 +15,12 @@
   if (window.top !== window || window.__cbbNavBar) return;
   window.__cbbNavBar = true;
 
+  // A hand-over to the shell that never asks "Leave site?" (hand_over.js).
+  function handOver(url) {
+    if (typeof window.__cbbHandOver === 'function') window.__cbbHandOver(url);
+    else location.href = url;
+  }
+
 
   // ---- download message -------------------------------------------------
   var toastEl;
@@ -81,9 +87,9 @@
         if (o.action.panel) {
           // The quick-panel tip's "Show me" (mini.rs maybe_introduce).
           window.__cbbToast({ kind: 'hide' });
-          location.href = 'cbb-panel://open';
+          handOver('cbb-panel://open');
         } else {
-          location.href = 'cbb-reveal://go?p=' + encodeURIComponent(o.action.path);
+          handOver('cbb-reveal://go?p=' + encodeURIComponent(o.action.path));
         }
       });
       box.appendChild(go);
@@ -136,7 +142,7 @@
         kind: 'busy',
         title: saveAs ? 'Preparing your download\u2026' : 'Opening\u2026'
       });
-      location.href = 'cbb-download://go?u=' + encodeURIComponent(u.href) + (saveAs ? '&save=1' : '');
+      handOver('cbb-download://go?u=' + encodeURIComponent(u.href) + (saveAs ? '&save=1' : ''));
     },
     true
   );

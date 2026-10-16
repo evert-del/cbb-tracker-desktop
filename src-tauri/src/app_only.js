@@ -4,6 +4,11 @@
 //    in the person's browser, handed over as cbb-browser://open?u=<page>
 //    (cancelled by the shell, so the page stays put). The tracker changes
 //    pages without loading them, so a click is caught here, before its router.
+//  - Links to other sites that open in a new tab (target="_blank", like the
+//    review page's "Comment in Frame.io ↗") go to the browser the same way,
+//    rather than through the WebView's new-window request: on Windows that
+//    request did nothing (George, 2026-10-16). The shell still checks each
+//    one (lib.rs browser_handover_allowed); new_window stays the fallback.
 //  - Signed out, the app shows only the sign-in screens: "/" is the website's
 //    homepage for a visitor (the dashboard once signed in), so a signed-out
 //    "/" goes to /sign-in, also after the router changes page.
@@ -21,6 +26,19 @@
   // Must mirror WEBSITE_PATHS in lib.rs.
   var WEBSITE = ['pricing', 'watch', 'privacy', 'terms', 'blog', 'compare', 'templates',
     'affiliates', 'questions', 'landing', 'download', 'cbb-casting', 'dev-ui-kit', 'unsubscribe'];
+
+  // Must mirror IN_APP_HOSTS in lib.rs: these load in the app, not the browser.
+  var IN_APP = ['wlwdhorybvelwbmhtftw.supabase.co', 'challenges.cloudflare.com',
+    'accounts.google.com', 'login.xero.com', 'auth.services.adobe.com',
+    'adobeid-na1.services.adobe.com', 'ims-na1.adobelogin.com', 'checkout.paystack.com'];
+
+  // Another site's link meant for a new tab.
+  function leavesTheApp(a, u) {
+    return (a.getAttribute('target') || '').toLowerCase() === '_blank'
+      && (u.protocol === 'https:' || u.protocol === 'http:')
+      && u.host !== location.host
+      && IN_APP.indexOf(u.hostname) === -1;
+  }
 
   function isWebsite(path) {
     var first = (path || '/').split('/')[1] || '';
@@ -48,6 +66,14 @@
     if (!a) return;
     var u;
     try { u = new URL(a.href, location.href); } catch (err) { return; }
+    if (leavesTheApp(a, u)) {
+      // Modifier clicks are left to the WebView, as before.
+      if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
+      e.preventDefault();
+      e.stopPropagation();
+      openInBrowser(u.href);
+      return;
+    }
     if (u.host !== location.host) return;
     if (isWebsite(u.pathname)) {
       e.preventDefault();

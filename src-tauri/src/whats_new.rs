@@ -36,10 +36,17 @@ pub(crate) fn notes(version: &str, os: &str, hourly: bool) -> Vec<Item> {
     let panel_key = if mac { "⌘⇧M" } else { "Ctrl+Alt+M" };
     let timer_key = if mac { "⌘⇧Y" } else { "Ctrl+Alt+Y" };
     match version {
-        "0.2.26" => vec![item(
-            "Comment in Frame.io opens again",
-            "On a review page, Comment in Frame.io ↗ opens the cut in your browser, where Frame.io lets you sign in and leave notes. Other links to outside sites that open in a new tab go there too.".into(),
-        )],
+        // 0.2.26 was never published: its note is here.
+        "0.2.27" => vec![
+            item(
+                "Updates by themselves",
+                "New versions now download quietly and install when you're away from the computer for a few minutes, so everyone has the latest app within the hour. Never while a page has unsaved changes or a cut is uploading.".into(),
+            ),
+            item(
+                "Comment in Frame.io opens again",
+                "On a review page, Comment in Frame.io ↗ opens the cut in your browser, where Frame.io lets you sign in and leave notes. Other links to outside sites that open in a new tab go there too.".into(),
+            ),
+        ],
         // A fix for everyone.
         "0.2.25" => vec![item(
             "No more \"Leave site?\" while you work",
@@ -382,7 +389,7 @@ mod tests {
     fn the_frame_io_fix_is_for_everyone() {
         for os in ["macos", "windows", "linux"] {
             for hourly in [false, true] {
-                assert!(notes("0.2.26", os, hourly).iter().any(|i| i.title.contains("Frame.io")));
+                assert!(notes("0.2.27", os, hourly).iter().any(|i| i.title.contains("Frame.io")));
             }
         }
     }

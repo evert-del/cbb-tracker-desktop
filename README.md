@@ -125,9 +125,12 @@ already signed in. Nothing about the person or their work is read or sent.
 
 The website itself needs no update — it loads fresh every time. Only changes
 to *this* repo (window, tray, notifications, downloads, routing) need a
-shell release. Installed apps check 30 s after launch and every 6 h, ask the
-user, then verify the bundle's signature against the public key in
-`src-tauri/tauri.conf.json` before installing.
+shell release. Installed apps (0.2.27 and later) check 30 s after launch and
+every 15 minutes, download a new version quietly (its signature checked
+against the public key in `src-tauri/tauri.conf.json`), and install it and
+restart once nobody has used the computer for 5 minutes or no tracker window
+is open, never while a page would warn before leaving or offline timer taps
+are unsent (`src-tauri/src/updater.rs`). The tray's "Check for updates" asks.
 
 1. Bump `version` in `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml` and
    `package.json` (must be higher than what is installed).

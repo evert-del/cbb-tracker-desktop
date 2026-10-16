@@ -1074,6 +1074,12 @@ fn with<R: Runtime, T>(app: &AppHandle<R>, run: impl FnOnce(&mut Inner) -> T) ->
     Some(run(&mut inner))
 }
 
+/// Taps made offline still waiting to be sent: they live in memory only, so
+/// the app must not restart for an update (updater.rs) until they're sent.
+pub(crate) fn has_unsent<R: Runtime>(app: &AppHandle<R>) -> bool {
+    with(app, |inner| !inner.offline.is_empty()).unwrap_or(false)
+}
+
 pub(crate) fn idle_minutes<R: Runtime>(app: &AppHandle<R>) -> u64 {
     let minutes = crate::close::number(app, IDLE_MINUTES, IDLE_DEFAULT);
     if IDLE_CHOICES.contains(&minutes) {

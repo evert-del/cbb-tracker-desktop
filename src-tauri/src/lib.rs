@@ -77,6 +77,7 @@ const START_URL: &str = "https://tracker.coolerboxbrothers.com/sign-in";
 /// Hosts allowed to load inside the WebView: the app itself, Supabase Auth,
 /// and the OAuth/billing providers' sign-in pages. Everything else opens in
 /// the system browser. Deliberately explicit (allow-list, not suffix match).
+/// app_only.js mirrors the hosts after APP_HOST (IN_APP).
 ///
 /// This doubles as the iframe policy: `on_navigation` cannot tell a subframe
 /// load from a top-level one, so any host a first-party page legitimately
@@ -231,6 +232,16 @@ pub(crate) fn new_window_action(url: &url::Url) -> NewWindowAction {
     } else {
         NewWindowAction::Ignore
     }
+}
+
+/// What a `cbb-browser://open?u=` hand-over from app_only.js may open in the
+/// browser: the website's own pages, and the links a new window would have
+/// sent there anyway (another site's `target="_blank"` link, such as the
+/// review page's "Comment in Frame.io ↗"). Never a tracker page, a file, a
+/// sign-in host or a non-web scheme.
+pub(crate) fn browser_handover_allowed(url: &url::Url) -> bool {
+    is_website_page(url)
+        || (matches!(url.scheme(), "https" | "http") && new_window_action(url) == NewWindowAction::OpenExternal)
 }
 
 /// Translate an inbound `tracker://<segment>/...` URL into its hosted https
@@ -460,13 +471,14 @@ pub(crate) fn build_tracker_window<R: Runtime>(
             }
             return false;
         }
-        // app_only.js: one of the website's own pages, for the browser.
+        // app_only.js: one of the website's own pages, or another site's
+        // new-tab link, for the browser.
         if url.scheme() == "cbb-browser" {
             if let Some(page) = url
                 .query_pairs()
                 .find(|(key, _)| key == "u")
                 .and_then(|(_, value)| value.parse::<url::Url>().ok())
-                .filter(is_website_page)
+                .filter(browser_handover_allowed)
             {
                 system_open::open_url(&opener_handle, page.as_str());
             }
@@ -1488,6 +1500,31 @@ mod tests {
         );
         assert_eq!(new_window_action(&parsed("javascript:alert(1)")), NewWindowAction::Ignore);
         assert_eq!(new_window_action(&parsed("file:///etc/passwd")), NewWindowAction::Ignore);
+    }
+
+    #[test]
+    fn new_tab_links_to_other_sites_may_be_handed_to_the_browser() {
+        for raw in [
+            "https://f.io/aBc12345",
+            "https://next.frame.io/share/abc/view/def",
+            "https://app.frame.io/reviews/abc123",
+            "https://drive.google.com/drive/folders/xyz",
+            "http://example.com/cut",
+            "https://tracker.coolerboxbrothers.com/pricing",
+        ] {
+            assert!(browser_handover_allowed(&parsed(raw)), "{raw}");
+        }
+        for raw in [
+            "https://tracker.coolerboxbrothers.com/projects/1",
+            "https://tracker.coolerboxbrothers.com/api/media/k%2Fx.png",
+            "https://accounts.google.com/o/oauth2/v2/auth",
+            "https://checkout.paystack.com/abc",
+            "mailto:crew@example.com",
+            "javascript:alert(1)",
+            "file:///etc/passwd",
+        ] {
+            assert!(!browser_handover_allowed(&parsed(raw)), "{raw}");
+        }
     }
 
     #[test]

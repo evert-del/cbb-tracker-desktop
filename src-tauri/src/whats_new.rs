@@ -354,8 +354,14 @@ mod tests {
         assert!(mac.iter().any(|i| i.how.contains("Dock")));
         assert!(!win.iter().any(|i| i.how.contains("Dock") || i.how.contains("menu bar")));
         assert!(notes("0.0.1", "macos", true).is_empty());
-        // A release may speak only to people with hourly tracking (0.2.21).
-        assert!(!notes(VERSION, "macos", true).is_empty(), "add notes for {VERSION} in whats_new.rs");
+        // A release may speak only to people with hourly tracking (0.2.21),
+        // or to one system (0.2.28, Linux).
+        assert!(
+            ["macos", "windows", "linux"].iter().any(|os| !notes(VERSION, os, true).is_empty()),
+            "add notes for {VERSION} in whats_new.rs"
+        );
+        assert!(notes("0.2.28", "macos", true).is_empty());
+        assert!(!notes("0.2.28", "linux", false).is_empty());
     }
 
     #[test]

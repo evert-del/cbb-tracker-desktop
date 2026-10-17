@@ -36,6 +36,16 @@ pub(crate) fn notes(version: &str, os: &str, hourly: bool) -> Vec<Item> {
     let panel_key = if mac { "⌘⇧M" } else { "Ctrl+Alt+M" };
     let timer_key = if mac { "⌘⇧Y" } else { "Ctrl+Alt+Y" };
     match version {
+        // Only Linux changed.
+        "0.2.28" => {
+            if os != "linux" {
+                return Vec::new();
+            }
+            vec![item(
+                "Quicker on laptops with two graphics cards",
+                "On laptops with both Intel or AMD graphics and an NVIDIA card, the app now draws on the graphics that run your screen, so scrolling and opening pages feel as quick as in Chrome.".into(),
+            )]
+        }
         // 0.2.26 was never published: its note is here.
         "0.2.27" => vec![
             item(
@@ -344,8 +354,14 @@ mod tests {
         assert!(mac.iter().any(|i| i.how.contains("Dock")));
         assert!(!win.iter().any(|i| i.how.contains("Dock") || i.how.contains("menu bar")));
         assert!(notes("0.0.1", "macos", true).is_empty());
-        // A release may speak only to people with hourly tracking (0.2.21).
-        assert!(!notes(VERSION, "macos", true).is_empty(), "add notes for {VERSION} in whats_new.rs");
+        // A release may speak only to people with hourly tracking (0.2.21),
+        // or to one system (0.2.28, Linux).
+        assert!(
+            ["macos", "windows", "linux"].iter().any(|os| !notes(VERSION, os, true).is_empty()),
+            "add notes for {VERSION} in whats_new.rs"
+        );
+        assert!(notes("0.2.28", "macos", true).is_empty());
+        assert!(!notes("0.2.28", "linux", false).is_empty());
     }
 
     #[test]

@@ -14,9 +14,10 @@ pub(crate) fn text(
     unread: u32,
     online: bool,
     offline_saved: &str,
+    graphics: &str,
 ) -> String {
     format!(
-        "CoolerBox Tracker {shell_version} ({os}/{arch})\nClock: {clock}\nUnread: {unread}\nNetwork: {}\nSaved for offline: {offline_saved}",
+        "CoolerBox Tracker {shell_version} ({os}/{arch})\nClock: {clock}\nUnread: {unread}\nNetwork: {}\nSaved for offline: {offline_saved}\nGraphics: {graphics}",
         if online { "online" } else { "OFFLINE" },
     )
 }
@@ -63,6 +64,7 @@ pub(crate) fn show<R: Runtime>(app: &AppHandle<R>) {
         unread,
         online,
         &offline_saved,
+        &crate::gpu_env::describe(),
     );
     app.dialog().message(body).title("Diagnostics").show(|_| {});
 }
@@ -73,11 +75,11 @@ mod tests {
 
     #[test]
     fn summary_names_everything_support_needs() {
-        let body = text("0.2.9", "macos", "aarch64", "in since 08:02", 3, true, "2 item(s) with links");
-        for needle in ["0.2.9", "macos", "aarch64", "in since 08:02", "Unread: 3", "online", "2 item(s)"] {
+        let body = text("0.2.9", "macos", "aarch64", "in since 08:02", 3, true, "2 item(s) with links", "GPU fast path on");
+        for needle in ["0.2.9", "macos", "aarch64", "in since 08:02", "Unread: 3", "online", "2 item(s)", "Graphics: GPU fast path on"] {
             assert!(body.contains(needle), "{needle} missing in:\n{body}");
         }
-        let offline = text("0.2.9", "windows", "x86_64", "out", 0, false, "nothing unread with a link");
+        let offline = text("0.2.9", "windows", "x86_64", "out", 0, false, "nothing unread with a link", "not chosen (not Linux)");
         assert!(offline.contains("OFFLINE"));
     }
 }

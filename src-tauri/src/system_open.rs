@@ -69,7 +69,10 @@ fn spawn_host_xdg_open(target: &str, appdir: &str) -> std::io::Result<()> {
     let mut child = std::process::Command::new("xdg-open")
         .arg(target)
         .env_clear()
-        .envs(host_env(std::env::vars(), appdir))
+        .envs(host_env(
+            std::env::vars().filter(|(key, _)| !crate::gpu_env::set_by_shell().contains(&key.as_str())),
+            appdir,
+        ))
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())

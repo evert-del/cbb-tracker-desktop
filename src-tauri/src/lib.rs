@@ -35,6 +35,7 @@ mod dock;
 mod diagnostics;
 mod download;
 mod google_sign_in;
+mod gpu_env;
 mod hourly;
 mod idle;
 #[cfg(windows)]
@@ -770,14 +771,9 @@ pub(crate) fn shortcut_modifiers() -> tauri_plugin_global_shortcut::Modifiers {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // WebKitGTK's DMA-BUF renderer blanks the whole page to black for a
-    // few frames at a time on Wayland and on Intel + NVIDIA laptops
-    // (seen on WebKitGTK 2.52, GNOME). It must be off before GTK starts.
-    // Only when unset, so anyone can still turn it back on with =0.
+    // Which GPU WebKitGTK draws with, before GTK starts (see gpu_env.rs).
     #[cfg(target_os = "linux")]
-    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
-        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
-    }
+    gpu_env::apply();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())

@@ -36,6 +36,16 @@ pub(crate) fn notes(version: &str, os: &str, hourly: bool) -> Vec<Item> {
     let panel_key = if mac { "⌘⇧M" } else { "Ctrl+Alt+M" };
     let timer_key = if mac { "⌘⇧Y" } else { "Ctrl+Alt+Y" };
     match version {
+        // Only Linux changed.
+        "0.2.28" => {
+            if os != "linux" {
+                return Vec::new();
+            }
+            vec![item(
+                "Quicker on laptops with two graphics cards",
+                "On laptops with both Intel or AMD graphics and an NVIDIA card, the app now draws on the graphics that run your screen, so scrolling and opening pages feel as quick as in Chrome.".into(),
+            )]
+        }
         // 0.2.26 was never published: its note is here.
         "0.2.27" => vec![
             item(

@@ -293,9 +293,10 @@ fn route_deep_link<R: Runtime>(app: &AppHandle<R>, url: &url::Url) {
     };
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.navigate(hosted);
-        let _ = window.unminimize();
-        let _ = window.set_focus();
     }
+    // Shown too, not only focused: the main window may be hidden behind the
+    // quick panel or the tray (the Adobe panel's link-device sign-in).
+    show_main(app);
 }
 
 /// True when a `document.cookie` string holds a Supabase auth-token cookie.

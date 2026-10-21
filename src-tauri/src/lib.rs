@@ -293,9 +293,10 @@ fn route_deep_link<R: Runtime>(app: &AppHandle<R>, url: &url::Url) {
     };
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.navigate(hosted);
-        let _ = window.unminimize();
-        let _ = window.set_focus();
     }
+    // Shown, not only focused: with the quick panel or the tray holding the
+    // window hidden, a link (the Review panel's sign-in) seemed to do nothing.
+    show_main(app);
 }
 
 /// True when a `document.cookie` string holds a Supabase auth-token cookie.

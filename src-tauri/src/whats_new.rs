@@ -36,6 +36,10 @@ pub(crate) fn notes(version: &str, os: &str, hourly: bool) -> Vec<Item> {
     let panel_key = if mac { "⌘⇧M" } else { "Ctrl+Alt+M" };
     let timer_key = if mac { "⌘⇧Y" } else { "Ctrl+Alt+Y" };
     match version {
+        "0.2.29" => vec![item(
+            "Links come to the front",
+            "Signing in the Adobe review panel, or opening any tracker link, now brings the tracker window forward, even while only the quick panel is showing.".into(),
+        )],
         // Only Linux changed.
         "0.2.28" => {
             if os != "linux" {

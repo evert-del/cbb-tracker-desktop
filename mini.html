@@ -78,6 +78,11 @@
         border: 0.5px solid var(--rule);
         box-shadow: 0 12px 32px rgba(0, 0, 0, 0.22), 0 2px 6px rgba(0, 0, 0, 0.12);
       }
+      #card { position: relative; }
+      .grip { position: absolute; bottom: 0; width: 14px; height: 14px; z-index: 5; }
+      #grip-sw { left: 0; cursor: nesw-resize; }
+      #grip-se { right: 0; cursor: nwse-resize; }
+      #card:has(#compact-view:not([hidden])) .grip { display: none; }
       button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
       button:focus-visible { outline: 2px solid var(--pink); outline-offset: 2px; border-radius: var(--r-ctl); }
       svg { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
@@ -733,6 +738,10 @@
           </button>
         </div>
       </div>
+
+      <!-- Drag the bottom corners to make the full panel bigger (mini.rs). -->
+      <div class="grip" id="grip-sw" aria-hidden="true"></div>
+      <div class="grip" id="grip-se" aria-hidden="true"></div>
 
       <!-- The mini timer: one thin row. Status and notification summary are
            in the hover text and on the bell, to keep it out of the way. -->

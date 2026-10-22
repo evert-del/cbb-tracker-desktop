@@ -3143,6 +3143,31 @@ window.addEventListener("DOMContentLoaded", () => {
     if ((e.target as HTMLElement).closest("button")) return;
     void invoke("mini_dragging").finally(() => getCurrentWindow().startDragging());
   });
+  // The bottom corners resize the full panel: the page follows the mouse and
+  // mini.rs sizes the window (and keeps the size).
+  for (const [id, fromLeft] of [["grip-sw", true], ["grip-se", false]] as const) {
+    const grip = el(id);
+    let start: { x: number; y: number; w: number; h: number } | null = null;
+    let frame = 0;
+    grip.addEventListener("pointerdown", (e) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      grip.setPointerCapture(e.pointerId);
+      start = { x: e.screenX, y: e.screenY, w: window.innerWidth, h: window.innerHeight };
+      void invoke("mini_dragging");
+    });
+    grip.addEventListener("pointermove", (e) => {
+      if (!start) return;
+      const dx = e.screenX - start.x;
+      const width = start.w + (fromLeft ? -dx : dx);
+      const height = start.h + e.screenY - start.y;
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => void invoke("mini_resize", { width, height, fromLeft }));
+    });
+    const stop = () => { start = null; };
+    grip.addEventListener("pointerup", stop);
+    grip.addEventListener("pointercancel", stop);
+  }
   const search = el<HTMLInputElement>("search-input");
   search.addEventListener("input", onSearchInput);
   search.addEventListener("keydown", (e) => {

@@ -184,36 +184,83 @@ fn with_pass(path: &str, ticket: Option<&str>) -> String {
     }
 }
 
-async fn fetch_manifest(client: &reqwest::Client, ticket: Option<&str>) -> Result<PanelManifest, String> {
-    let url = with_pass(MANIFEST_PATH, ticket);
-    let response = client.get(url).send().await.map_err(|_| "Could not reach the tracker.".to_string())?;
-    if !response.status().is_success() {
-        return Err("The Review panel isn't available from the tracker yet.".into());
+/// Why the tracker wouldn't hand over the panel.
+#[derive(Debug, PartialEq)]
+pub(crate) enum Refusal {
+    /// While it's tried out by named companies, only their signed-in people get it,
+    /// and this app has no sign-in of its own until the panel asks for an update pass.
+    SignIn,
+    /// Too many downloads from this address in the hour.
+    TooMany,
+    Other(String),
+}
+
+pub(crate) fn refusal(status: u16) -> Refusal {
+    match status {
+        401 | 403 | 404 => Refusal::SignIn,
+        429 => Refusal::TooMany,
+        _ => Refusal::Other("The tracker didn't hand over the Review panel. Try again later.".into()),
     }
-    let text = response.text().await.map_err(|_| "Could not read the tracker's answer.".to_string())?;
-    parse_manifest(&text).ok_or_else(|| "The tracker's panel manifest isn't valid.".into())
+}
+
+const SIGN_IN_FIRST: &str = "The Review panel is installed from the tracker's Download page the first time.\n\nSign in to the tracker in your browser with your work account, open Download, and install it from there. From then on this app keeps it up to date.";
+const TOO_MANY: &str = "That is a lot of panel downloads from this network in an hour. Try again in an hour.";
+
+async fn fetch_manifest(client: &reqwest::Client, ticket: Option<&str>) -> Result<PanelManifest, Refusal> {
+    let url = with_pass(MANIFEST_PATH, ticket);
+    let response = client.get(url).send().await.map_err(|_| Refusal::Other("Could not reach the tracker.".into()))?;
+    if !response.status().is_success() {
+        return Err(refusal(response.status().as_u16()));
+    }
+    let text = response.text().await.map_err(|_| Refusal::Other("Could not read the tracker's answer.".into()))?;
+    parse_manifest(&text).ok_or_else(|| Refusal::Other("The tracker's panel manifest isn't valid.".into()))
+}
+
+/// Says why, and for a sign-in offers to open the Download page in the browser.
+fn tell_refusal<R: Runtime>(app: &AppHandle<R>, why: Refusal) {
+    match why {
+        Refusal::SignIn => {
+            let app = app.clone();
+            app.dialog()
+                .message(SIGN_IN_FIRST)
+                .title("Review panel")
+                .buttons(MessageDialogButtons::OkCancelCustom("Open the Download page".into(), "Not now".into()))
+                .show(move |open| {
+                    if open {
+                        crate::system_open::open_url(&app, &format!("{}/download", crate::APP_ORIGIN));
+                    }
+                });
+        }
+        Refusal::TooMany => tell(app, "Review panel", TOO_MANY.into()),
+        Refusal::Other(message) => tell(app, "Review panel", message),
+    }
 }
 
 /// Downloads, checks and installs every package. Returns how many installed.
-async fn install_all<R: Runtime>(app: &AppHandle<R>, manifest: &PanelManifest, ticket: Option<&str>) -> Result<usize, String> {
+async fn install_all<R: Runtime>(app: &AppHandle<R>, manifest: &PanelManifest, ticket: Option<&str>) -> Result<usize, Refusal> {
     let installer = installer().ok_or_else(|| {
-        "Adobe's plugin installer wasn't found. Install or update Creative Cloud Desktop, then try again.".to_string()
+        Refusal::Other("Adobe's plugin installer wasn't found. Install or update Creative Cloud Desktop, then try again.".into())
     })?;
     let folder = app
         .path()
         .app_data_dir()
-        .map_err(|_| "No app folder to download into.".to_string())?
+        .map_err(|_| Refusal::Other("No app folder to download into.".into()))?
         .join("adobe-panel")
         .join(&manifest.version);
-    std::fs::create_dir_all(&folder).map_err(|_| "Could not make the download folder.".to_string())?;
+    std::fs::create_dir_all(&folder).map_err(|_| Refusal::Other("Could not make the download folder.".into()))?;
     let client = reqwest::Client::new();
     let mut installed = 0;
     let mut failed = Vec::new();
+    let mut refused = None;
     for (package, file) in manifest.files.iter().filter(|(p, f)| installs_with_adobe(p, f)) {
         let url = with_pass(&format!("/download/adobe-panel/{}", slug(package)), ticket);
         let bytes = match client.get(url).send().await {
             Ok(r) if r.status().is_success() => r.bytes().await.map_err(|_| ()),
-            _ => Err(()),
+            Ok(r) => {
+                refused = Some(refusal(r.status().as_u16()));
+                Err(())
+            }
+            Err(_) => Err(()),
         };
         let Ok(bytes) = bytes else {
             failed.push(package.clone());
@@ -236,7 +283,8 @@ async fn install_all<R: Runtime>(app: &AppHandle<R>, manifest: &PanelManifest, t
         if ok { installed += 1 } else { failed.push(package.clone()) }
     }
     if installed == 0 {
-        return Err("Adobe's installer didn't take the panel. Close your Adobe apps and try again.".into());
+        // The tracker turned the download down: say that, not that Adobe's installer did.
+        return Err(refused.unwrap_or_else(|| Refusal::Other("Adobe's installer didn't take the panel. Close your Adobe apps and try again.".into())));
     }
     if !failed.is_empty() {
         eprintln!("[adobe-panel] not installed: {failed:?}");
@@ -271,7 +319,7 @@ pub(crate) fn install_now<R: Runtime>(app: AppHandle<R>, ticket: Option<String>)
         tauri::async_runtime::block_on(async {
             let client = reqwest::Client::new();
             match fetch_manifest(&client, ticket.as_deref()).await {
-                Err(message) => tell(&app, "Review panel", message),
+                Err(why) => tell_refusal(&app, why),
                 Ok(manifest) => {
                     let current = installed_version(&app);
                     let ask = app
@@ -292,7 +340,7 @@ pub(crate) fn install_now<R: Runtime>(app: AppHandle<R>, ticket: Option<String>)
                                     if n == 1 { "" } else { "s" }
                                 ));
                             }
-                            Err(message) => tell(&app, "Review panel", message),
+                            Err(why) => tell_refusal(&app, why),
                         }
                     }
                 }
@@ -354,6 +402,14 @@ mod tests {
         assert_eq!(pass("tracker://adobe-panel/install?ticket=a%26b%3Dc"), None);
         assert_eq!(pass(&format!("tracker://adobe-panel/install?ticket={}", "a".repeat(1001))), None);
         assert_eq!(with_pass("/x", Some("t.s")), format!("{}/x?ticket=t.s", crate::APP_ORIGIN));
+    }
+
+    #[test]
+    fn tells_a_sign_in_apart_from_too_many_downloads() {
+        assert_eq!(refusal(404), Refusal::SignIn);
+        assert_eq!(refusal(403), Refusal::SignIn);
+        assert_eq!(refusal(429), Refusal::TooMany);
+        assert!(matches!(refusal(500), Refusal::Other(_)));
     }
 
     #[test]

@@ -36,6 +36,16 @@ pub(crate) fn notes(version: &str, os: &str, hourly: bool) -> Vec<Item> {
     let panel_key = if mac { "⌘⇧M" } else { "Ctrl+Alt+M" };
     let timer_key = if mac { "⌘⇧Y" } else { "Ctrl+Alt+Y" };
     match version {
+        // Only the Adobe review panel's install changed, which is for Mac and Windows.
+        "0.2.33" => {
+            if os == "linux" {
+                return Vec::new();
+            }
+            vec![item(
+                "Clearer help installing the Review panel",
+                "If the tracker wants you signed in for the first install, the app now says so and opens the Download page for you.".into(),
+            )]
+        }
         // Only Windows changed.
         "0.2.32" => {
             if os != "windows" {

@@ -36,6 +36,19 @@ pub(crate) fn notes(version: &str, os: &str, hourly: bool) -> Vec<Item> {
     let panel_key = if mac { "⌘⇧M" } else { "Ctrl+Alt+M" };
     let timer_key = if mac { "⌘⇧Y" } else { "Ctrl+Alt+Y" };
     match version {
+        "0.2.30" => {
+            let mut items = vec![item(
+                "Make the quick panel bigger",
+                "Drag either bottom corner of the quick panel to make it wider or taller. It keeps that size next time.".into(),
+            )];
+            if os != "linux" {
+                items.push(item(
+                    "Linked apps in the menu",
+                    format!("Linked apps… in the {tray} menu shows the Adobe apps linked to your account, to link or unlink one."),
+                ));
+            }
+            items
+        }
         "0.2.29" => vec![item(
             "Links come to the front",
             "Signing in the Adobe review panel, or opening any tracker link, now brings the tracker window forward, even while only the quick panel is showing.".into(),

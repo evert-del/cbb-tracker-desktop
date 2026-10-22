@@ -1087,6 +1087,10 @@ pub fn run() {
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             let tray_adobe_panel =
                 MenuItem::with_id(app, "tray-adobe-panel", "Install the Adobe panel", true, None::<&str>)?;
+            // The Adobe apps linked to your account, to link or unlink one (/link-device).
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            let tray_linked_apps =
+                MenuItem::with_id(app, "tray-linked-apps", "Linked apps…", true, None::<&str>)?;
             let tray_diagnostics =
                 MenuItem::with_id(app, "tray-diagnostics", "Diagnostics", true, None::<&str>)?;            #[cfg(not(any(target_os = "android", target_os = "ios")))]
             let tray_autostart = {
@@ -1120,6 +1124,8 @@ pub fn run() {
                     &separator2, &tray_offline, &tray_mini,
                     #[cfg(any(target_os = "macos", target_os = "windows"))]
                     &tray_adobe_panel,
+                    #[cfg(any(target_os = "macos", target_os = "windows"))]
+                    &tray_linked_apps,
                     &tray_update, &tray_diagnostics,
                     #[cfg(not(any(target_os = "android", target_os = "ios")))]
                     &tray_autostart,
@@ -1222,6 +1228,13 @@ pub fn run() {
                     "tray-adobe-panel" => {
                         adobe_panel::install_now(app.clone());
                         analytics::action(app, "adobe_panel", "tray_menu");
+                    }
+                    // Opens like the panel's own tracker://link-device link.
+                    "tray-linked-apps" => {
+                        if let Ok(link) = "tracker://link-device".parse::<url::Url>() {
+                            route_deep_link(app, &link);
+                        }
+                        analytics::action(app, "linked_apps", "tray_menu");
                     }
                     "tray-update" => {
                         updater::check_now(app.clone());

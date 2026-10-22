@@ -325,7 +325,7 @@ pub(crate) fn clamp_size(size: (f64, f64), screen: (f64, f64)) -> (f64, f64) {
     )
 }
 
-/// At launch: the size the person left the panel at, and resizing on.
+/// At launch: the size the person left the panel at.
 pub(crate) fn restore_size<R: Runtime>(app: &AppHandle<R>) {
     let Some(mini) = app.get_webview_window("mini") else { return };
     let saved = app.store("settings.json").ok().and_then(|store| store.get(SIZE_KEY)).and_then(|value| {
@@ -382,11 +382,14 @@ pub(crate) fn mini_resize<R: Runtime>(app: AppHandle<R>, width: f64, height: f64
     Ok(())
 }
 
-/// Resizable at the full panel's size, fixed as the mini timer.
+/// A smallest size at the full panel's size, none as the mini timer. The
+/// window itself stays not resizable: only mini.html's corner grips resize
+/// it (mini_resize). Resizable, Windows gives the frameless window a resize
+/// border in its transparent shadow margin, and grabbing that took the
+/// panel's focus, so the drop-down hid itself (0.2.30).
 fn set_resizing<R: Runtime>(mini: &tauri::WebviewWindow<R>, on: bool) {
     let min = on.then(|| tauri::LogicalSize::new(FULL_SIZE.0, FULL_SIZE.1));
     let _ = mini.set_min_size(min);
-    let _ = mini.set_resizable(on);
 }
 
 /// The panel's window changed size (lib.rs): if the person dragged it,

@@ -9,6 +9,7 @@
 
 use serde::Serialize;
 use tauri::{AppHandle, Manager, Runtime};
+use tauri_plugin_store::StoreExt;
 
 /// What the panel shows. Pushed to the page as JSON.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -275,12 +276,152 @@ fn fit_height<R: Runtime>(app: &AppHandle<R>, hourly: bool) {
         .unwrap_or(800.0);
     let want = if hourly { FULL_HOURLY_HEIGHT.min(screen - 100.0).max(FULL_SIZE.1) } else { FULL_SIZE.1 };
     let changed = FULL_HEIGHT.lock().map(|mut h| std::mem::replace(&mut *h, want) != want).unwrap_or(false);
-    if changed && !is_compact() {
-        let _ = mini.set_size(tauri::LogicalSize::new(FULL_SIZE.0, want));
+    // A size the person chose stays as they left it.
+    if changed && !is_compact() && chosen_size().is_none() {
+        give_size(&mini, (FULL_SIZE.0, want));
         if mini.is_visible().unwrap_or(false) && !is_pinned() {
             place_under_tray(&mini);
         }
     }
+}
+
+/// The full panel can be dragged bigger from its edges and bottom corners
+/// (mini.html's grips), never smaller than FULL_SIZE. The size is kept in
+/// settings.json for the next run; the mini timer keeps its own fixed size.
+const SIZE_KEY: &str = "panel_size";
+
+/// The size the person dragged the full panel to, if they did.
+static CHOSEN: std::sync::Mutex<Option<(f64, f64)>> = std::sync::Mutex::new(None);
+
+/// The size this app last gave the window: a resize to it is ours, not the
+/// person's.
+static GIVEN: std::sync::Mutex<(f64, f64)> = std::sync::Mutex::new(FULL_SIZE);
+
+/// Bumped on every resize by the person: only the last one is saved.
+static SIZE_SAVES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn chosen_size() -> Option<(f64, f64)> {
+    CHOSEN.lock().ok().and_then(|chosen| *chosen)
+}
+
+/// The full panel's size now: the person's, else the one for them.
+fn full_size() -> (f64, f64) {
+    chosen_size().unwrap_or((FULL_SIZE.0, full_height()))
+}
+
+fn give_size<R: Runtime>(mini: &tauri::WebviewWindow<R>, size: (f64, f64)) {
+    if let Ok(mut given) = GIVEN.lock() {
+        *given = size;
+    }
+    let _ = mini.set_size(tauri::LogicalSize::new(size.0, size.1));
+}
+
+/// A saved size, no smaller than the panel's own and no bigger than the
+/// main screen (it may be a smaller screen than the one it was chosen on).
+pub(crate) fn clamp_size(size: (f64, f64), screen: (f64, f64)) -> (f64, f64) {
+    (
+        size.0.min(screen.0 - 16.0).max(FULL_SIZE.0),
+        size.1.min(screen.1 - 60.0).max(FULL_SIZE.1),
+    )
+}
+
+/// At launch: the size the person left the panel at, and resizing on.
+pub(crate) fn restore_size<R: Runtime>(app: &AppHandle<R>) {
+    let Some(mini) = app.get_webview_window("mini") else { return };
+    let saved = app.store("settings.json").ok().and_then(|store| store.get(SIZE_KEY)).and_then(|value| {
+        Some((value.get("w")?.as_f64()?, value.get("h")?.as_f64()?))
+    });
+    if let Some(saved) = saved {
+        let screen = mini
+            .primary_monitor()
+            .ok()
+            .flatten()
+            .map(|m| {
+                let area = m.size().to_logical::<f64>(m.scale_factor());
+                (area.width, area.height)
+            })
+            .unwrap_or((1280.0, 800.0));
+        if let Ok(mut chosen) = CHOSEN.lock() {
+            *chosen = Some(clamp_size(saved, screen));
+        }
+    }
+    set_resizing(&mini, true);
+    give_size(&mini, full_size());
+}
+
+/// A bottom corner of the full panel is being dragged (mini.ts): make the
+/// window that size. The page follows the mouse itself because macOS can't
+/// start a resize from inside the page (tao: drag_resize_window), and its
+/// transparent shadow margin lets clicks on the window's own edge through.
+/// Dragging the left corner keeps the right edge where it is.
+#[tauri::command]
+pub(crate) fn mini_resize<R: Runtime>(app: AppHandle<R>, width: f64, height: f64, from_left: bool) -> Result<(), String> {
+    if is_compact() {
+        return Ok(());
+    }
+    let mini = app.get_webview_window("mini").ok_or("no panel")?;
+    let scale = mini.scale_factor().unwrap_or(1.0);
+    let screen = mini
+        .current_monitor()
+        .ok()
+        .flatten()
+        .map(|m| {
+            let area = m.size().to_logical::<f64>(m.scale_factor());
+            (area.width, area.height)
+        })
+        .unwrap_or((1280.0, 800.0));
+    let (w, h) = clamp_size((width.round(), height.round()), screen);
+    if from_left {
+        if let (Ok(pos), Ok(size)) = (mini.outer_position(), mini.outer_size()) {
+            let pos = pos.to_logical::<f64>(scale);
+            let right = pos.x + size.to_logical::<f64>(scale).width;
+            let _ = mini.set_position(tauri::LogicalPosition::new(right - w, pos.y));
+        }
+    }
+    let _ = mini.set_size(tauri::LogicalSize::new(w, h));
+    Ok(())
+}
+
+/// Resizable at the full panel's size, fixed as the mini timer.
+fn set_resizing<R: Runtime>(mini: &tauri::WebviewWindow<R>, on: bool) {
+    let min = on.then(|| tauri::LogicalSize::new(FULL_SIZE.0, FULL_SIZE.1));
+    let _ = mini.set_min_size(min);
+    let _ = mini.set_resizable(on);
+}
+
+/// The panel's window changed size (lib.rs): if the person dragged it,
+/// keep that size, saved once they stop.
+pub(crate) fn resized<R: Runtime>(app: &AppHandle<R>, size: tauri::PhysicalSize<u32>) {
+    if is_compact() {
+        return;
+    }
+    let Some(mini) = app.get_webview_window("mini") else { return };
+    let size = size.to_logical::<f64>(mini.scale_factor().unwrap_or(1.0));
+    let size = (size.width.round(), size.height.round());
+    let given = GIVEN.lock().map(|given| *given).unwrap_or(FULL_SIZE);
+    if (size.0 - given.0).abs() < 2.0 && (size.1 - given.1).abs() < 2.0 {
+        return;
+    }
+    // Resizing can take the panel's focus (Windows), like a drag.
+    note_moved();
+    if let Ok(mut given) = GIVEN.lock() {
+        *given = size;
+    }
+    if let Ok(mut chosen) = CHOSEN.lock() {
+        *chosen = Some(size);
+    }
+    let save = SIZE_SAVES.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    let app = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(600));
+        if SIZE_SAVES.load(std::sync::atomic::Ordering::Relaxed) != save {
+            return;
+        }
+        if let Ok(store) = app.store("settings.json") {
+            store.set(SIZE_KEY, serde_json::json!({ "w": size.0, "h": size.1 }));
+            let _ = store.save();
+        }
+    });
 }
 /// A 300x44 row, plus the transparent room around the card for its shadow
 /// (body padding: 16px each side, 6px above, 22px below).
@@ -288,9 +429,16 @@ const COMPACT_SIZE: (f64, f64) = (332.0, 72.0);
 
 fn set_compact<R: Runtime>(app: &AppHandle<R>, compact: bool) {
     COMPACT.store(compact, std::sync::atomic::Ordering::Relaxed);
-    let (w, h) = if compact { COMPACT_SIZE } else { (FULL_SIZE.0, full_height()) };
+    let (w, h) = if compact { COMPACT_SIZE } else { full_size() };
     if let Some(mini) = app.get_webview_window("mini") {
-        let _ = mini.set_size(tauri::LogicalSize::new(w, h));
+        // The minimum size goes before shrinking, and comes back after growing.
+        if compact {
+            set_resizing(&mini, false);
+        }
+        give_size(&mini, (w, h));
+        if !compact {
+            set_resizing(&mini, true);
+        }
         keep_on_screen(&mini, (w, h));
     }
 }
@@ -1213,6 +1361,13 @@ pub(crate) fn mini_menu<R: Runtime>(app: AppHandle<R>, item: String) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_saved_size_fits_the_panel_and_the_screen() {
+        assert_eq!(clamp_size((500.0, 900.0), (1440.0, 900.0)), (500.0, 840.0));
+        assert_eq!(clamp_size((100.0, 100.0), (1440.0, 900.0)), FULL_SIZE);
+        assert_eq!(clamp_size((2000.0, 700.0), (1280.0, 800.0)), (1264.0, 700.0));
+    }
 
     fn clock(state: &str, since: &str) -> crate::clock::Clock {
         crate::clock::Clock {

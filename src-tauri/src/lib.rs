@@ -920,6 +920,10 @@ pub fn run() {
             if window.label() == "mini" && matches!(event, tauri::WindowEvent::Moved(_)) {
                 mini::note_moved();
             }
+            // Dragged bigger or smaller: remembered (mini.rs).
+            if let (true, tauri::WindowEvent::Resized(size)) = (window.label() == "mini", event) {
+                mini::resized(window.app_handle(), *size);
+            }
             if window.label() == "mini"
                 && matches!(event, tauri::WindowEvent::Focused(false))
                 && !mini::moved_recently()
@@ -940,6 +944,7 @@ pub fn run() {
             offline::offline_storage_info,
             mini::mini_action,
             mini::mini_dragging,
+            mini::mini_resize,
             mini::mini_expand,
             mini::mini_expand_notifications,
             mini::mini_hide,
@@ -1025,6 +1030,8 @@ pub fn run() {
                 .build()?;
             // Above other windows unless the person switched it off (mini.rs).
             mini::apply_on_top(app.handle());
+            // Resizable, at the size the person left it (mini.rs).
+            mini::restore_size(app.handle());
             // The tracker itself never floats above other apps.
             let _ = main_window.set_always_on_top(false);
             // macOS: Tauri turns window tabbing off app-wide whenever it

@@ -278,7 +278,7 @@ fn route_deep_link<R: Runtime>(app: &AppHandle<R>, url: &url::Url) {
             Some("offline") => show_library(app),
             Some("panel") => mini::show(app),
             // The Adobe review panel asking to be installed or updated: asks first (adobe_panel.rs).
-            Some("adobe-panel") => adobe_panel::install_now(app.clone()),
+            Some("adobe-panel") => adobe_panel::install_now(app.clone(), adobe_panel::update_pass(url)),
             _ => tabs::open_from_front(app, false),
         }
         return;
@@ -1220,7 +1220,7 @@ pub fn run() {
                         }
                     }
                     "tray-adobe-panel" => {
-                        adobe_panel::install_now(app.clone());
+                        adobe_panel::install_now(app.clone(), None);
                         analytics::action(app, "adobe_panel", "tray_menu");
                     }
                     "tray-update" => {

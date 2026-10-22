@@ -1030,7 +1030,7 @@ pub fn run() {
                 .build()?;
             // Above other windows unless the person switched it off (mini.rs).
             mini::apply_on_top(app.handle());
-            // Resizable, at the size the person left it (mini.rs).
+            // At the size the person left it (mini.rs).
             mini::restore_size(app.handle());
             // The tracker itself never floats above other apps.
             let _ = main_window.set_always_on_top(false);

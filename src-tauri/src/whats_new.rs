@@ -36,6 +36,16 @@ pub(crate) fn notes(version: &str, os: &str, hourly: bool) -> Vec<Item> {
     let panel_key = if mac { "⌘⇧M" } else { "Ctrl+Alt+M" };
     let timer_key = if mac { "⌘⇧Y" } else { "Ctrl+Alt+Y" };
     match version {
+        // Only Windows changed.
+        "0.2.32" => {
+            if os != "windows" {
+                return Vec::new();
+            }
+            vec![item(
+                "The quick panel stays open at its edges",
+                "Moving the mouse to the quick panel's edges no longer closes it. Drag a bottom corner to make it bigger.".into(),
+            )]
+        }
         // Only the Adobe review panel changed, which is for Mac and Windows.
         "0.2.31" => {
             if os == "linux" {

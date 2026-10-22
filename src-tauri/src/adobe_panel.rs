@@ -163,8 +163,29 @@ fn remember_version<R: Runtime>(app: &AppHandle<R>, version: &str) {
     }
 }
 
-async fn fetch_manifest(client: &reqwest::Client) -> Result<PanelManifest, String> {
-    let url = format!("{}{MANIFEST_PATH}", crate::APP_ORIGIN);
+/// The pass the panel asked the tracker for on the person's behalf
+/// (tracker://adobe-panel/install?ticket=…): while the panel is tried out by
+/// named companies, the tracker offers its downloads only to their people,
+/// and this app downloads without the window's sign-in. Only the characters a
+/// pass is made of, and not too long; anything else is dropped.
+pub(crate) fn update_pass(url: &url::Url) -> Option<String> {
+    let ticket = url.query_pairs().find(|(k, _)| k == "ticket")?.1.into_owned();
+    let plain = !ticket.is_empty()
+        && ticket.len() <= 1000
+        && ticket.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+    plain.then_some(ticket)
+}
+
+/// A download address on the tracker, with the pass when there is one.
+fn with_pass(path: &str, ticket: Option<&str>) -> String {
+    match ticket {
+        Some(t) => format!("{}{path}?ticket={t}", crate::APP_ORIGIN),
+        None => format!("{}{path}", crate::APP_ORIGIN),
+    }
+}
+
+async fn fetch_manifest(client: &reqwest::Client, ticket: Option<&str>) -> Result<PanelManifest, String> {
+    let url = with_pass(MANIFEST_PATH, ticket);
     let response = client.get(url).send().await.map_err(|_| "Could not reach the tracker.".to_string())?;
     if !response.status().is_success() {
         return Err("The Review panel isn't available from the tracker yet.".into());
@@ -174,7 +195,7 @@ async fn fetch_manifest(client: &reqwest::Client) -> Result<PanelManifest, Strin
 }
 
 /// Downloads, checks and installs every package. Returns how many installed.
-async fn install_all<R: Runtime>(app: &AppHandle<R>, manifest: &PanelManifest) -> Result<usize, String> {
+async fn install_all<R: Runtime>(app: &AppHandle<R>, manifest: &PanelManifest, ticket: Option<&str>) -> Result<usize, String> {
     let installer = installer().ok_or_else(|| {
         "Adobe's plugin installer wasn't found. Install or update Creative Cloud Desktop, then try again.".to_string()
     })?;
@@ -189,7 +210,7 @@ async fn install_all<R: Runtime>(app: &AppHandle<R>, manifest: &PanelManifest) -
     let mut installed = 0;
     let mut failed = Vec::new();
     for (package, file) in manifest.files.iter().filter(|(p, f)| installs_with_adobe(p, f)) {
-        let url = format!("{}/download/adobe-panel/{}", crate::APP_ORIGIN, slug(package));
+        let url = with_pass(&format!("/download/adobe-panel/{}", slug(package)), ticket);
         let bytes = match client.get(url).send().await {
             Ok(r) if r.status().is_success() => r.bytes().await.map_err(|_| ()),
             _ => Err(()),
@@ -238,7 +259,7 @@ fn tell<R: Runtime>(app: &AppHandle<R>, title: &str, message: String) {
 
 /// The tray's "Install the Adobe panel" (and `tracker://adobe-panel`): asks
 /// first, then installs or updates, and always says how it went.
-pub(crate) fn install_now<R: Runtime>(app: AppHandle<R>) {
+pub(crate) fn install_now<R: Runtime>(app: AppHandle<R>, ticket: Option<String>) {
     if !supported() {
         tell(&app, "Review panel", "The Review panel is for Adobe apps on a Mac or Windows computer.".into());
         return;
@@ -249,7 +270,7 @@ pub(crate) fn install_now<R: Runtime>(app: AppHandle<R>) {
         }
         tauri::async_runtime::block_on(async {
             let client = reqwest::Client::new();
-            match fetch_manifest(&client).await {
+            match fetch_manifest(&client, ticket.as_deref()).await {
                 Err(message) => tell(&app, "Review panel", message),
                 Ok(manifest) => {
                     let current = installed_version(&app);
@@ -263,7 +284,7 @@ pub(crate) fn install_now<R: Runtime>(app: AppHandle<R>) {
                         .buttons(MessageDialogButtons::OkCancelCustom("Install".into(), "Not now".into()));
                     let yes = tauri::async_runtime::spawn_blocking(move || ask.blocking_show()).await.unwrap_or(false);
                     if yes {
-                        match install_all(&app, &manifest).await {
+                        match install_all(&app, &manifest, ticket.as_deref()).await {
                             Ok(n) => {
                                 remember_version(&app, &manifest.version);
                                 tell(&app, "Review panel installed", format!(
@@ -294,9 +315,10 @@ pub(crate) fn start<R: Runtime>(app: AppHandle<R>) {
                 if !BUSY.swap(true, Ordering::SeqCst) {
                     tauri::async_runtime::block_on(async {
                         let client = reqwest::Client::new();
-                        if let Ok(manifest) = fetch_manifest(&client).await {
+                        // No pass here: works once the panel is offered to everyone.
+                        if let Ok(manifest) = fetch_manifest(&client, None).await {
                             if is_newer(&manifest.version, Some(&installed)) {
-                                if install_all(&app, &manifest).await.is_ok() {
+                                if install_all(&app, &manifest, None).await.is_ok() {
                                     remember_version(&app, &manifest.version);
                                     crate::banner::show(
                                         &app,
@@ -322,6 +344,16 @@ mod tests {
 
     fn manifest(name: &str, sha: &str) -> String {
         format!(r#"{{"version":"0.2.0","publishedAt":"2026-10-14T12:00:00Z","minimum":"0.1.0","files":{{"premierepro":{{"name":"{name}","size":3,"sha256":"{sha}"}}}}}}"#)
+    }
+
+    #[test]
+    fn takes_only_a_plain_update_pass() {
+        let pass = |link: &str| update_pass(&url::Url::parse(link).unwrap());
+        assert_eq!(pass("tracker://adobe-panel/install?ticket=eyJhIjoxfQ.sig-_9"), Some("eyJhIjoxfQ.sig-_9".into()));
+        assert_eq!(pass("tracker://adobe-panel/install"), None);
+        assert_eq!(pass("tracker://adobe-panel/install?ticket=a%26b%3Dc"), None);
+        assert_eq!(pass(&format!("tracker://adobe-panel/install?ticket={}", "a".repeat(1001))), None);
+        assert_eq!(with_pass("/x", Some("t.s")), format!("{}/x?ticket=t.s", crate::APP_ORIGIN));
     }
 
     #[test]
